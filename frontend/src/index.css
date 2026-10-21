@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-100 text-slate-800 antialiased;
+}
+
+/* Scrollbars discretas */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
+*::-webkit-scrollbar-thumb:hover { @apply bg-slate-400; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Impresión de comprobantes */
+@media print {
+  body { @apply bg-white; }
+  .no-print { display: none !important; }
+  .print-area {
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 9999 !important;
+    background: white !important;
+    padding: 24px !important;
+    overflow: visible !important;
+  }
+  @page { margin: 12mm; }
+}
