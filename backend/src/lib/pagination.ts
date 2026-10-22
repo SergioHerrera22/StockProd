@@ -1,4 +1,5 @@
 import { Request } from 'express';
+import { ApiError } from './errors';
 
 export interface PageParams {
   page: number;
@@ -21,6 +22,17 @@ export function intParam(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const n = parseInt(String(value), 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * ID de recurso tomado de la ruta (/transfers/:id).
+ * Si no es un entero positivo lanza 404: sin esto, valores como "undefined"
+ * llegaban a PostgreSQL como NaN y devolvian un error 500 crudo.
+ */
+export function pathId(value: string | undefined): number {
+  const n = parseInt(String(value ?? ''), 10);
+  if (!Number.isInteger(n) || n <= 0) throw ApiError.notFound('Recurso no encontrado');
+  return n;
 }
 
 export function strParam(value: unknown): string | undefined {

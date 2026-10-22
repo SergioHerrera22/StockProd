@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, qs } from '../lib/api';
+import { api, qs, checkDeliveryAvailability, confirmDeliveryWithAlternatives } from '../lib/api';
 import { fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
-import type { Delivery, Location, StockRow } from '../types';
+import type { Delivery, Location, StockRow, DeliveryAvailabilityItem, UserAlternativeChoice } from '../types';
 import {
-  Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select, Textarea, useConfirm,
+  Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select, Textarea,
 } from '../components/ui';
 import { ScanInput } from '../components/ScanInput';
 import { ProductPicker } from '../components/ProductPicker';
@@ -24,9 +24,132 @@ interface Line {
 
 const emptyLine: Omit<Line, 'productId' | 'code' | 'name' | 'unit'> = { stock: 0, minStock: 0, quantity: 1 };
 
+/** Modal para elegir ubicaciones alternativas cuando hay faltantes */
+function AlternativeLocationModal({
+  open,
+  onClose,
+  items,
+  onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  items: DeliveryAvailabilityItem[];
+  onConfirm: (choices: UserAlternativeChoice[]) => void;
+}) {
+  const [choices, setChoices] = useState<Map<number, { locationId: number; quantity: number }>>(new Map());
+
+  if (!open) return null;
+
+  // Solo items con faltantes
+  const shortfallItems = items.filter(i => i.shortfall > 0);
+
+  const handleLocationChange = (productId: number, locationId: number) => {
+    const item = shortfallItems.find(i => i.productId === productId);
+    const maxQty = item ? Math.min(item.shortfall, 
+      item.alternativeLocations.find(a => a.locationId === locationId)?.availableQuantity || 0) : 0;
+    setChoices(prev => {
+      const next = new Map(prev);
+      next.set(productId, { locationId, quantity: maxQty });
+      return next;
+    });
+  };
+
+  const handleQtyChange = (productId: number, qty: number) => {
+    setChoices(prev => {
+      const next = new Map(prev);
+      const current = next.get(productId);
+      if (current) next.set(productId, { ...current, quantity: qty });
+      return next;
+    });
+  };
+
+  const allSelected = shortfallItems.every(item => {
+    const choice = choices.get(item.productId);
+    return choice && choice.locationId > 0 && choice.quantity > 0;
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Derivar faltantes a otra sucursal" width="lg">
+      <p className="mb-4 text-sm text-slate-600">
+        Los siguientes productos tienen stock insuficiente en la sucursal de salida. 
+        Seleccioná la sucursal de destino y la cantidad para cada uno. 
+        Se creará un <strong>comprobante de retiro</strong> para que el cliente retire en esa sucursal.
+      </p>
+      
+      <div className="max-h-96 overflow-y-auto space-y-4">
+        {shortfallItems.map(item => {
+          const choice = choices.get(item.productId);
+          return (
+            <div key={item.productId} className="border border-slate-200 rounded-lg p-4 bg-white">
+              <div className="mb-3">
+                <div className="font-medium text-slate-800">{item.productName}</div>
+                <div className="text-xs text-slate-500">{item.productCode} · Pedido: {fmtQty(item.requestedQuantity)} · Disponible acá: {fmtQty(item.availableAtMain)} · <strong className="text-red-600">Faltan: {fmtQty(item.shortfall)}</strong></div>
+              </div>
+              
+              {item.alternativeLocations.length === 0 ? (
+                <div className="text-red-600 text-sm p-3 bg-red-50 rounded">No hay stock en otras sucursales</div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Sucursal destino *</label>
+                    <select
+                      className="input w-full"
+                      value={choice?.locationId || ''}
+                      onChange={e => handleLocationChange(item.productId, parseInt(e.target.value))}
+                      required
+                    >
+                      <option value="">Seleccionar sucursal...</option>
+                      {item.alternativeLocations.map(loc => (
+                        <option key={loc.locationId} value={loc.locationId}>
+                          {loc.locationName} ({loc.locationCode}) — Disponible: {fmtQty(loc.availableQuantity)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Cantidad a derivar *</label>
+                    <input
+                      type="number"
+                      min="0.001"
+                      step="0.001"
+                      max={choice ? Math.min(item.shortfall, 
+                        item.alternativeLocations.find(a => a.locationId === choice.locationId)?.availableQuantity || 0) : item.shortfall}
+                      value={choice?.quantity || ''}
+                      onChange={e => handleQtyChange(item.productId, parseFloat(e.target.value) || 0)}
+                      className="input w-full"
+                      required
+                    />
+                  </div>
+                  <div className="sm:col-span-3 text-xs text-slate-500">
+                    Se reservará el stock en la sucursal elegida. El cliente presenta el código QR para retirar.
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 flex justify-end gap-3">
+        <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+        <Button variant="primary" onClick={() => {
+          const choicesArray: UserAlternativeChoice[] = [];
+          choices.forEach((v, productId) => {
+            if (v.locationId && v.quantity > 0) {
+              choicesArray.push({ productId, chosenLocationId: v.locationId, quantity: v.quantity });
+            }
+          });
+          onConfirm(choicesArray);
+        }} disabled={!allSelected}>
+          Confirmar y crear retiros
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 export default function DeliveryNew() {
   const toast = useToast();
-  const confirm = useConfirm();
   const navigate = useNavigate();
   const user = useAuth((s) => s.user);
 
@@ -37,9 +160,14 @@ export default function DeliveryNew() {
   const [notes, setNotes] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [stockMap, setStockMap] = useState<Record<string, number>>({});
   const pickerRef = useRef(false);
+  
+  // Nuevos estados para flujo multi-sucursal
+  const [availabilityItems, setAvailabilityItems] = useState<DeliveryAvailabilityItem[]>([]);
+  const [altModalOpen, setAltModalOpen] = useState(false);
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const [draftDeliveryId, setDraftDeliveryId] = useState<number | null>(null);
 
   // Ubicaciones disponibles
   useMemo(() => {
@@ -139,7 +267,6 @@ export default function DeliveryNew() {
     if (lines.length === 0) return 'Agregá al menos un producto';
     for (const l of lines) {
       if (!Number.isFinite(l.quantity) || l.quantity <= 0) return `Cantidad inválida en ${l.code}`;
-      if (l.quantity > l.stock) return `Stock insuficiente de "${l.name}" (disponible ${fmtQty(l.stock)})`;
     }
     return null;
   }
@@ -159,17 +286,68 @@ export default function DeliveryNew() {
     }
   }
 
-  async function confirmDelivery() {
+  /** Paso 1: Verificar disponibilidad antes de confirmar */
+  async function checkAvailabilityAndProceed() {
     const err = validate();
     if (err) { toast.error(err); return; }
+    
+    // Primero guardar como borrador para tener ID
     setSaving(true);
     try {
-      const res = await api<{ id: number; number: string }>('/deliveries?confirm=true', { method: 'POST', body });
+      const draftRes = await api<{ id: number; number: string }>('/deliveries', { method: 'POST', body });
+      const deliveryId = draftRes.id;
+      setDraftDeliveryId(deliveryId);
+      
+      // Verificar disponibilidad
+      setCheckingAvailability(true);
+      const avail = await checkDeliveryAvailability(deliveryId);
+      setAvailabilityItems(avail.items);
+      
+      if (avail.canFullyDeliverLocally) {
+        // Todo disponible localmente -> confirmar directo
+        await confirmDeliveryDirect(deliveryId);
+      } else {
+        // Hay faltantes -> mostrar modal para elegir alternativas
+        setAltModalOpen(true);
+      }
+    } catch (e: any) {
+      toast.error('Error verificando stock: ' + e.message);
+    } finally {
+      setSaving(false);
+      setCheckingAvailability(false);
+    }
+  }
+
+  /** Confirmar entrega directa (todo en local) */
+  async function confirmDeliveryDirect(deliveryId: number) {
+    try {
+      const res = await api<{ id: number; number: string }>(`/deliveries/${deliveryId}/confirm`, { method: 'POST' });
       toast.success(`Entrega ${res.number} confirmada: stock actualizado`);
       navigate(`/entregas/${res.id}`);
-    } catch (e) {
-      toast.error((e as Error).message);
-      setConfirmOpen(false);
+    } catch (e: any) {
+      toast.error('Error confirmando: ' + e.message);
+    }
+  }
+
+  /** Confirmar con alternativas elegidas por el usuario */
+  async function handleConfirmWithAlternatives(choices: UserAlternativeChoice[]) {
+    setAltModalOpen(false);
+    if (!draftDeliveryId) {
+      toast.error('No hay borrador de entrega activo');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await confirmDeliveryWithAlternatives({ choices }, draftDeliveryId);
+      
+      if (res.pendingDelivery) {
+        toast.success(`Entrega ${res.deliveryNumber} confirmada parcialmente. Se creó retiro: ${res.pendingDelivery.barcode}`);
+      } else {
+        toast.success(`Entrega ${res.deliveryNumber} confirmada`);
+      }
+      navigate(`/entregas/${res.deliveryId}`);
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
     } finally {
       setSaving(false);
     }
@@ -181,7 +359,7 @@ export default function DeliveryNew() {
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="Nueva entrega de mercadería"
-        subtitle="Verificá y cargá solo lo que realmente se entrega. El stock se descuenta al confirmar."
+        subtitle="Verificá y cargá solo lo que realmente se entrega. Si falta stock, podés derivar a otra sucursal."
         actions={<Button variant="secondary" onClick={() => navigate('/entregas')}>← Volver</Button>}
       />
 
@@ -235,7 +413,7 @@ export default function DeliveryNew() {
               <tbody>
                 {lines.map((l) => {
                   const liveStock = stockMap[l.code] ?? l.stock;
-                  const insufficient = l.quantity > liveStock;
+                  const insufficient = l.quantity > liveStock || (l.requestedQuantity ?? 0) > liveStock;
                   return (
                     <tr key={l.productId} className={`border-b border-slate-100 last:border-0 ${insufficient ? 'bg-red-50' : ''}`}>
                       <td className="px-3 py-2">
@@ -246,7 +424,7 @@ export default function DeliveryNew() {
                         <span className={insufficient ? 'font-bold text-red-600' : 'text-slate-600'}>
                           {fmtQty(liveStock)} {l.unit.toLowerCase()}
                         </span>
-                        {insufficient && <div className="text-xs text-red-500">Stock insuficiente</div>}
+                        {insufficient && <div className="text-xs text-red-500">Stock insuficiente - se derivará</div>}
                       </td>
                       <td className="px-3 py-2 text-center">
                         <Input
@@ -301,49 +479,23 @@ export default function DeliveryNew() {
           <Button
             variant="success"
             size="lg"
-            onClick={() => {
-              const err = validate();
-              if (err) { toast.error(err); return; }
-              setConfirmOpen(true);
-            }}
-            disabled={!lines.length || saving}
+            onClick={checkAvailabilityAndProceed}
+            disabled={!lines.length || saving || checkingAvailability}
           >
-            ✅ Confirmar entrega
+            {checkingAvailability ? '⏳ Verificando stock...' : '✅ Confirmar entrega'}
           </Button>
         </div>
       </div>
 
-      {/* Resumen previo a confirmar */}
-      <Modal
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        title="Confirmar entrega"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirmOpen(false)}>Revisar de nuevo</Button>
-            <Button variant="success" loading={saving} onClick={confirmDelivery}>Confirmar y descontar stock</Button>
-          </>
-        }
-      >
-        <p className="mb-3 text-sm text-slate-500">
-          Se descontará del stock de <strong>{locations.find((l) => String(l.id) === locationId)?.name}</strong>:
-        </p>
-        <table className="w-full text-sm">
-          <tbody>
-            {lines.map((l) => (
-              <tr key={l.productId} className="border-b border-slate-100 last:border-0">
-                <td className="py-1.5 text-slate-600">{l.name}</td>
-                <td className="py-1.5 text-right font-semibold">−{fmtQty(l.quantity)} {l.unit.toLowerCase()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {invoiceNumber && <p className="mt-2 text-xs text-slate-400">Factura de referencia: {invoiceNumber}</p>}
-        <div className="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-700">
-          Esta operación es transaccional: si algo falla no se aplica ningún descuento. Una vez confirmada, la entrega
-          queda registrada y las correcciones requieren permisos especiales.
-        </div>
-      </Modal>
+      {/* Toast is provided by ToastProvider in App.tsx */}
+
+      {/* Modal Derivar Faltantes */}
+      <AlternativeLocationModal
+        open={altModalOpen}
+        onClose={() => setAltModalOpen(false)}
+        items={availabilityItems}
+        onConfirm={handleConfirmWithAlternatives}
+      />
 
       <ProductPicker
         open={pickerOpen}

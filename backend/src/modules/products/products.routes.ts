@@ -4,7 +4,7 @@ import { query } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
-import { pageParams, intParam, strParam } from '../../lib/pagination';
+import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
 import { createProduct, checkDuplicates, updateProduct, importProducts, ProductInput } from './products.service';
 
 const router = Router();
@@ -92,7 +92,7 @@ router.get(
 router.get(
   '/:id',
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const r = await query(
       `SELECT p.*, c.name AS category_name FROM products p
        LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = $1`,
@@ -140,7 +140,7 @@ router.put(
   '/:id',
   requirePerm('products.write'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const input = productSchema.partial().parse(req.body);
     const result = await updateProduct(req.user!, req.ip, id, input);
     res.json(result);
@@ -152,7 +152,7 @@ router.delete(
   '/:id',
   requirePerm('products.write'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     await updateProduct(req.user!, req.ip, id, { isActive: false });
     res.json({ ok: true });
   })

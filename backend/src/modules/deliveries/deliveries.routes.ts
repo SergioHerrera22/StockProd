@@ -2,8 +2,19 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
-import { pageParams, intParam, strParam } from '../../lib/pagination';
-import { createDelivery, updateDelivery, confirmDelivery, voidDelivery, getDelivery, listDeliveries } from './deliveries.service';
+import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
+import { 
+  createDelivery, 
+  confirmDelivery, 
+  voidDelivery, 
+  getDelivery, 
+  listDeliveries,
+  updateDelivery,
+  confirmDeliveryWithAlternatives,
+  checkDeliveryAvailability,
+  approveDelivery,
+  getPendingDeliveryForDelivery
+} from './deliveries.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('deliveries.read'));
@@ -16,14 +27,13 @@ const itemSchema = z.object({
 
 const draftSchema = z.object({
   locationId: z.number().int().positive(),
-  invoiceNumber: z.string().max(40).nullable().optional(),
+  invoiceNumber: z.string().max(150).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   items: z.array(itemSchema).min(1),
 });
 
 router.get(
   '/',
-  requirePerm('deliveries.read'),
   asyncH(async (req, res) => {
     const { page, pageSize, offset } = pageParams(req, 20);
     const result = await listDeliveries({
@@ -36,15 +46,19 @@ router.get(
   })
 );
 
-router.get(
-  '/:id',
-  asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    const delivery = await getDelivery(id);
-    if (!delivery) return res.status(404).json({ error: 'Entrega no encontrada' });
-    res.json({ delivery });
-  })
-);
+router.get('/:id', asyncH(async (req, res) => {
+  const delivery = await getDelivery(pathId(req.params.id));
+  if (!delivery) return res.status(404).json({ error: 'Entrega no encontrada' });
+  res.json({ delivery });
+}));
+
+// Disponibilidad multi-sucursal de un borrador: faltantes + alternativas.
+// Es lo que el frontend consulta antes de confirmar para mostrar el modal
+// de derivación a otra sucursal.
+router.get('/:id/check-availability', asyncH(async (req, res) => {
+  const result = await checkDeliveryAvailability(pathId(req.params.id));
+  res.json(result);
+}));
 
 router.post(
   '/',
@@ -61,20 +75,54 @@ router.put(
   '/:id',
   requirePerm('deliveries.write'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
     const input = draftSchema.parse(req.body);
-    const result = await updateDelivery(req.user!, req.ip, id, input);
+    const result = await updateDelivery(req.user!, req.ip, pathId(req.params.id), input);
     res.json(result);
   })
 );
 
 router.post(
   '/:id/confirm',
-  requirePerm('deliveries.write'),
+  requirePerm('deliveries.confirm'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    await confirmDelivery(req.user!, req.ip, id);
-    res.json({ ok: true });
+    const result = await confirmDelivery(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
+  })
+);
+
+router.post(
+  '/:id/confirm-with-alternatives',
+  requirePerm('deliveries.confirm'),
+  asyncH(async (req, res) => {
+    const choiceSchema = z.array(z.object({
+      productId: z.number().int().positive(),
+      chosenLocationId: z.number().int().positive(),
+      quantity: z.number().positive(),
+    }));
+    // El frontend envía { choices: [...] }; se acepta también el array plano
+    // para no romper llamadas existentes.
+    const parsed = z.union([choiceSchema, z.object({ choices: choiceSchema })]).parse(req.body);
+    const choices = Array.isArray(parsed) ? parsed : parsed.choices;
+    const result = await confirmDeliveryWithAlternatives(req.user!, req.ip, pathId(req.params.id), choices);
+    res.json(result);
+  })
+);
+
+router.post(
+  '/:id/approve',
+  requirePerm('deliveries.approve'),
+  asyncH(async (req, res) => {
+    const result = await approveDelivery(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
+  })
+);
+
+router.get(
+  '/:id/pending-delivery',
+  asyncH(async (req, res) => {
+    const pd = await getPendingDeliveryForDelivery(pathId(req.params.id));
+    if (!pd) return res.status(404).json({ error: 'No hay entrega pendiente asociada' });
+    res.json({ pendingDelivery: pd });
   })
 );
 
@@ -82,9 +130,11 @@ router.post(
   '/:id/void',
   requirePerm('deliveries.void'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    const { reason } = z.object({ reason: z.string().min(5, 'Explica el motivo (minimo 5 caracteres)').max(255) }).parse(req.body);
-    await voidDelivery(req.user!, req.ip, id, reason);
+    const { reason, voidApprovedBy } = z.object({ 
+      reason: z.string().min(5).max(255),
+      voidApprovedBy: z.number().int().positive().optional()
+    }).parse(req.body);
+    await voidDelivery(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
     res.json({ ok: true });
   })
 );

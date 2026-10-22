@@ -7,11 +7,20 @@ import { Badge, Button, Card, Input, PageHeader, Select } from '../components/ui
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 
-export const DELIVERY_STATUS: Record<Delivery['status'], { label: string; color: 'amber' | 'green' | 'red' }> = {
+type DeliveryStatusStyle = { label: string; color: 'amber' | 'green' | 'red' | 'blue' | 'gray' };
+
+export const DELIVERY_STATUS: Record<Delivery['status'], DeliveryStatusStyle> = {
   BORRADOR: { label: 'Borrador', color: 'amber' },
   CONFIRMADO: { label: 'Confirmada', color: 'green' },
+  // Parte del stock derivado a otra sucursal, con orden de retiro abierta
+  PARCIAL: { label: 'Parcial', color: 'blue' },
   ANULADO: { label: 'Anulada', color: 'red' },
 };
+
+/** Etiqueta/color de un estado, con fallback para estados no conocidos. */
+export function deliveryStatusStyle(status: string): DeliveryStatusStyle {
+  return DELIVERY_STATUS[status as Delivery['status']] ?? { label: status, color: 'gray' };
+}
 
 export default function Deliveries() {
   const toast = useToast();
@@ -54,7 +63,7 @@ export default function Deliveries() {
     { key: 'line_count', label: 'Líneas', align: 'right', render: (d) => d.line_count ?? '—' },
     { key: 'total_items', label: 'Unidades', align: 'right', render: (d) => fmtQty(d.total_items ?? 0) },
     { key: 'status', label: 'Estado', render: (d) => {
-      const s = DELIVERY_STATUS[d.status];
+      const s = deliveryStatusStyle(d.status);
       return <Badge color={s.color}>{s.label}</Badge>;
     } },
     { key: 'created_by_name', label: 'Usuario', render: (d) => d.created_by_name },
@@ -80,6 +89,7 @@ export default function Deliveries() {
             <option value="">Todos los estados</option>
             <option value="BORRADOR">Borradores</option>
             <option value="CONFIRMADO">Confirmadas</option>
+            <option value="PARCIAL">Parciales</option>
             <option value="ANULADO">Anuladas</option>
           </Select>
           <Select value={locationId} onChange={(e) => { setLocationId(e.target.value); setPage(1); }} className="w-48">

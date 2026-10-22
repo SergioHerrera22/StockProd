@@ -5,6 +5,7 @@ import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { writeAudit } from '../../services/audit.service';
+import { pathId } from '../../lib/pagination';
 
 const router = Router();
 router.use(authRequired);
@@ -52,7 +53,7 @@ router.put(
   '/:id',
   requirePerm('locations.manage'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const data = locationSchema.partial().parse(req.body);
     const r = await query('SELECT id FROM locations WHERE id = $1', [id]);
     if (!r.rows[0]) throw ApiError.notFound('Ubicacion no encontrada');

@@ -30,6 +30,8 @@ export default function Counts() {
   const [counted, setCounted] = useState<Record<number, string>>({});
   const [applyOpen, setApplyOpen] = useState(false);
   const [applyReason, setApplyReason] = useState('');
+  const [voidOpen, setVoidOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Nuevo inventario
@@ -133,8 +135,10 @@ export default function Counts() {
     if (!detail) return;
     setSaving(true);
     try {
-      await api(`/counts/${detail.id}/void`, { method: 'POST' });
+      await api(`/counts/${detail.id}/void`, { method: 'POST', body: { reason: voidReason.trim() } });
       toast.success('Inventario anulado');
+      setVoidOpen(false);
+      setVoidReason('');
       setDetail(null);
       void load();
     } catch (e) {
@@ -218,7 +222,7 @@ export default function Counts() {
         footer={
           detail?.status === 'ABIERTO' ? (
             <>
-              {can('counts.write') && <Button variant="secondary" onClick={() => confirm({ title: '¿Anular inventario?', message: 'El recuento abierto se marcará como anulado.', danger: true, onConfirm: voidCount })}>Anular</Button>}
+              {can('counts.write') && <Button variant="secondary" onClick={() => { setVoidReason(''); setVoidOpen(true); }}>Anular</Button>}
               {can('counts.write') && <Button variant="secondary" loading={saving} onClick={saveItems}>💾 Guardar conteo</Button>}
               {can('counts.apply') && <Button variant="success" onClick={() => { setApplyReason(''); setApplyOpen(true); }}>✅ Aplicar ajustes</Button>}
             </>
@@ -302,6 +306,29 @@ export default function Counts() {
         </p>
         <Field label="Motivo del ajuste" required hint="Obligatorio, queda registrado">
           <Input value={applyReason} onChange={(e) => setApplyReason(e.target.value)} placeholder="Ej: roturas, faltantes de reposición…" />
+        </Field>
+      </Modal>
+
+      {/* Anular */}
+      <Modal
+        open={voidOpen}
+        onClose={() => setVoidOpen(false)}
+        title="Anular inventario"
+        width="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setVoidOpen(false)}>Cancelar</Button>
+            <Button variant="danger" loading={saving} disabled={voidReason.trim().length < 5} onClick={voidCount}>
+              Anular recuento
+            </Button>
+          </>
+        }
+      >
+        <p className="mb-3 text-sm text-slate-500">
+          El recuento quedará anulado y no generará ajustes de stock.
+        </p>
+        <Field label="Motivo de la anulación" required hint="Obligatorio, queda registrado">
+          <Input value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Ej: se recounta en otra sucursal…" />
         </Field>
       </Modal>
     </div>

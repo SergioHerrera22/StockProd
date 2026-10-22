@@ -12,45 +12,65 @@ export type Permission =
   | 'deliveries.read'
   | 'deliveries.write'
   | 'deliveries.void'
+  | 'deliveries.confirm'
+  | 'deliveries.approve'
   | 'entries.read'
   | 'entries.write'
+  | 'entries.confirm'
+  | 'entries.void'
+  | 'entries.approve'
   | 'transfers.read'
   | 'transfers.write'
   | 'transfers.receive'
+  | 'transfers.dispatch'
+  | 'transfers.verify'
+  | 'transfers.void'
+  | 'transfers.approve'
   | 'counts.read'
   | 'counts.write'
   | 'counts.apply'
+  | 'counts.void'
+  | 'counts.approve'
   | 'movements.read'
   | 'dashboard.read'
   | 'reports.read'
   | 'locations.read'
   | 'locations.manage'
+  | 'users.read'
   | 'users.manage'
-  | 'audit.read';
+  | 'audit.read'
+  | 'approvals.read'
+  | 'approvals.approve'
+  | 'alerts.read'
+  | 'alerts.manage';
 
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write',
   'stock.read', 'stock.adjust',
-  'deliveries.read', 'deliveries.write', 'deliveries.void',
-  'entries.read', 'entries.write',
-  'transfers.read', 'transfers.write', 'transfers.receive',
-  'counts.read', 'counts.write', 'counts.apply',
+  'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve',
+  'entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve',
+  'transfers.read', 'transfers.write', 'transfers.receive', 'transfers.dispatch', 'transfers.verify', 'transfers.void', 'transfers.approve',
+  'counts.read', 'counts.write', 'counts.apply', 'counts.void', 'counts.approve',
   'movements.read', 'dashboard.read', 'reports.read',
   'locations.read',
+  'approvals.read', 'approvals.approve',
+  'alerts.read', 'alerts.manage',
 ];
 
 const EMPLEADO: Permission[] = [
   'products.read',
   'stock.read',
-  'deliveries.read', 'deliveries.write',
+  'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
+  'approvals.read',
+  'alerts.read',
 ];
 
 export const PERMISSIONS: Record<Role, Permission[]> = {
   ADMIN: [
     ...ENCARGADO,
-    'locations.manage', 'users.manage', 'audit.read',
+    'locations.manage', 'users.manage', 'users.read', 'audit.read',
   ],
   ENCARGADO,
   EMPLEADO,

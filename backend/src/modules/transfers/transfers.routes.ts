@@ -2,8 +2,17 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
-import { pageParams, intParam, strParam } from '../../lib/pagination';
-import { createTransfer, receiveTransfer, voidTransfer, getTransfer, listTransfers } from './transfers.service';
+import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
+import { 
+  createTransfer, 
+  receiveTransfer, 
+  voidTransfer, 
+  getTransfer, 
+  listTransfers,
+  approveTransfer,
+  rejectTransfer,
+  verifyTransferReceipt
+} from './transfers.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('transfers.read'));
@@ -29,7 +38,7 @@ router.get(
 );
 
 router.get('/:id', asyncH(async (req, res) => {
-  const transfer = await getTransfer(parseInt(req.params.id, 10));
+  const transfer = await getTransfer(pathId(req.params.id));
   if (!transfer) return res.status(404).json({ error: 'Transferencia no encontrada' });
   res.json({ transfer });
 }));
@@ -45,10 +54,29 @@ router.post(
 );
 
 router.post(
+  '/:id/approve',
+  requirePerm('transfers.approve'),
+  asyncH(async (req, res) => {
+    const result = await approveTransfer(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
+  })
+);
+
+router.post(
+  '/:id/reject',
+  requirePerm('transfers.approve'),
+  asyncH(async (req, res) => {
+    const { reason } = z.object({ reason: z.string().min(5).max(255) }).parse(req.body);
+    const result = await rejectTransfer(req.user!, req.ip, pathId(req.params.id), reason);
+    res.json(result);
+  })
+);
+
+router.post(
   '/:id/receive',
   requirePerm('transfers.receive'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const { items } = z
       .object({
         items: z.array(
@@ -62,11 +90,23 @@ router.post(
 );
 
 router.post(
-  '/:id/void',
-  requirePerm('transfers.write'),
+  '/:id/verify',
+  requirePerm('transfers.verify'),
   asyncH(async (req, res) => {
-    const { reason } = z.object({ reason: z.string().min(5).max(255) }).parse(req.body);
-    await voidTransfer(req.user!, req.ip, parseInt(req.params.id, 10), reason);
+    const result = await verifyTransferReceipt(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
+  })
+);
+
+router.post(
+  '/:id/void',
+  requirePerm('transfers.void'),
+  asyncH(async (req, res) => {
+    const { reason, voidApprovedBy } = z.object({ 
+      reason: z.string().min(5).max(255),
+      voidApprovedBy: z.number().int().positive().optional()
+    }).parse(req.body);
+    await voidTransfer(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
     res.json({ ok: true });
   })
 );

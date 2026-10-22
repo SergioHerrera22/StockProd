@@ -6,6 +6,14 @@ import { nextDocNumber } from '../../services/numbering';
 import { writeAudit } from '../../services/audit.service';
 import { assertLocationAccess, assertTransferAccess } from '../../lib/locationGuard';
 import { AuthUser } from '../../middleware/auth';
+import { 
+  reserveStockBatch, 
+  consumeReservation, 
+  releaseAllReservationsForReference 
+} from '../../services/reservation.service';
+import { evaluateBusinessRules } from '../../services/businessRules.service';
+import { createApprovalRequest } from '../../services/approval.service';
+import { createAlert } from '../../services/alerts.service';
 
 export interface TransferDraftInput {
   originLocationId: number;
@@ -32,8 +40,9 @@ async function validateTransferItems(c: PoolClient, items: TransferDraftInput['i
 }
 
 /**
- * Crea la transferencia y SALIDA del stock del origen en la misma transaccion.
+ * Crea la transferencia: RESERVA stock en origen y CONSUME (descuenta) atómicamente.
  * La mercaderia queda EN_TRANSITO: no suma al destino hasta recibir.
+ * Ahora con: evaluación de reglas, solicitud de aprobación si corresponde, segregación de funciones.
  */
 export async function createTransfer(user: AuthUser, ip: string | undefined, input: TransferDraftInput) {
   assertTransferAccess(user, input.originLocationId, input.destinationLocationId);
@@ -50,37 +59,188 @@ export async function createTransfer(user: AuthUser, ip: string | undefined, inp
       throw ApiError.badRequest('Ubicacion de origen o destino invalida');
     }
 
+    const qtySum = input.items.reduce((s, it) => s + it.quantity, 0);
+    const context = { qty_sum: qtySum, location_id: input.originLocationId, user_role: user.role };
+
+    // Evaluar reglas de negocio ANTES de crear
+    const rules = await evaluateBusinessRules('TRANSFER', 'BEFORE_CREATE', context);
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    let status: 'BORRADOR' | 'EN_TRANSITO' = 'EN_TRANSITO';
+    let approvalRequestId: number | null = null;
+
+    if (requiresApproval) {
+      status = 'BORRADOR';  // Queda en borrador hasta aprobación
+    }
+
     const number = await nextDocNumber(c, 'transfer');
     const t = await c.query<{ id: number }>(
-      `INSERT INTO transfers (number, origin_location_id, destination_location_id, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [number, input.originLocationId, input.destinationLocationId, input.notes?.trim() || null, user.id]
+      `INSERT INTO transfers (number, origin_location_id, destination_location_id, notes, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [number, input.originLocationId, input.destinationLocationId, input.notes?.trim() || null, user.id, status]
     );
     const transferId = t.rows[0].id;
 
+    // Insertar items
     for (const it of input.items) {
       await c.query(
         'INSERT INTO transfer_items (transfer_id, product_id, quantity_sent) VALUES ($1,$2,$3)',
         [transferId, it.productId, it.quantity]
       );
-      await applyStockChange(c, {
-        productId: it.productId,
-        locationId: input.originLocationId,
-        delta: -Number(it.quantity),
-        type: 'TRANS_SALIDA',
-        referenceType: 'TRANSFER',
-        referenceId: transferId,
-        referenceNumber: number,
-        userId: user.id,
+    }
+
+    // Si requiere aprobación, crear solicitud y NO reservar/consumir aún
+    if (requiresApproval) {
+      const rule = rules.find(r => r.action.require_approval)!;
+      await createApprovalRequest({
+        ruleId: rule.ruleId,
+        entityType: 'TRANSFER',
+        entityId: transferId,
+        entityNumber: number,
+        requestedBy: user.id,
+        context: { ...context, items: input.items, origin: locs.rows.find(l => l.id === input.originLocationId)?.name, destination: locs.rows.find(l => l.id === input.destinationLocationId)?.name },
+      });
+      await writeAudit(c, { userId: user.id, action: 'TRANSFER_CREATE_PENDING_APPROVAL', entity: 'transfer', entityId: transferId, details: { number, requiresApproval: true, rules: rules.map(r => r.ruleCode) }, ip });
+      return { id: transferId, number, status: 'BORRADOR', requiresApproval: true };
+    }
+
+    // ===== RESERVAR + CONSUMIR stock en origen (atómico) =====
+    const reservationInputs = input.items.map(it => ({
+      referenceType: 'TRANSFER' as const,
+      referenceId: transferId,
+      productId: it.productId,
+      sourceLocationId: input.originLocationId,
+      quantity: it.quantity,
+      reservedBy: user.id,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h para transferencias
+    }));
+
+    const reservations = await reserveStockBatch(c, reservationInputs);
+
+    for (let i = 0; i < input.items.length; i++) {
+      const it = input.items[i];
+      const reservation = reservations[i];
+      
+      const consumeResult = await consumeReservation(c, {
+        reservationId: reservation.reservationId,
+        quantity: it.quantity,
+        consumedBy: user.id,
+        movementType: 'TRANS_SALIDA',
         reason: `Envio a transferencia ${number}`,
       });
+      
+      if (!consumeResult.success) {
+        throw ApiError.conflict(`Error al consumir reserva: ${consumeResult.message}`);
+      }
     }
+
+    // Registrar dispatched_by y dispatched_at (quien despacha)
+    await c.query(
+      `UPDATE transfers SET dispatched_by = $1, dispatched_at = now() WHERE id = $2`,
+      [user.id, transferId]
+    );
 
     await writeAudit(c, {
       userId: user.id, action: 'TRANSFER_CREATE', entity: 'transfer', entityId: transferId,
-      details: { number, origin: input.originLocationId, destination: input.destinationLocationId }, ip,
+      details: { number, origin: input.originLocationId, destination: input.destinationLocationId, dispatchedBy: user.id }, ip,
     });
-    return { id: transferId, number };
+    return { id: transferId, number, status: 'EN_TRANSITO', requiresApproval: false };
+  });
+}
+
+/**
+ * Aprobar transferencia en borrador: reserva y consume stock, pasa a EN_TRANSITO
+ */
+export async function approveTransfer(user: AuthUser, ip: string | undefined, id: number) {
+  return withTx(async (c) => {
+    const t = await c.query<{ id: number; number: string; status: string; origin_location_id: number; destination_location_id: number; created_by: number }>(
+      'SELECT id, number, status, origin_location_id, destination_location_id, created_by FROM transfers WHERE id = $1 FOR UPDATE', [id]
+    );
+    const transfer = t.rows[0];
+    if (!transfer) throw ApiError.notFound('Transferencia no encontrada');
+    if (transfer.status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar transferencias en borrador');
+    assertTransferAccess(user, transfer.origin_location_id, transfer.destination_location_id);
+
+    // Verificar que el aprobador no sea el creador (segregación)
+    if (transfer.created_by === user.id) {
+      throw ApiError.forbidden('No puedes aprobar tu propia transferencia (segregación de funciones)');
+    }
+
+    const items = await c.query<{ product_id: number; quantity: string }>(
+      'SELECT product_id, quantity_sent as quantity FROM transfer_items WHERE transfer_id = $1', [id]
+    );
+
+    const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
+    const context = { qty_sum: qtySum, location_id: transfer.origin_location_id, user_role: user.role };
+
+    // Evaluar reglas al momento de aprobar (por si cambiaron)
+    const rules = await evaluateBusinessRules('TRANSFER', 'BEFORE_CONFIRM', context);
+    const stillRequiresApproval = rules.some(r => r.action.require_approval);
+    if (stillRequiresApproval && user.role === 'EMPLEADO') {
+      throw ApiError.forbidden('Esta transferencia requiere aprobador con rol ENCARGADO o superior');
+    }
+
+    // Reservar y consumir
+    const reservationInputs = items.rows.map(it => ({
+      referenceType: 'TRANSFER' as const,
+      referenceId: transfer.id,
+      productId: it.product_id,
+      sourceLocationId: transfer.origin_location_id,
+      quantity: Number(it.quantity),
+      reservedBy: user.id,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    }));
+
+    const reservations = await reserveStockBatch(c, reservationInputs);
+
+    for (let i = 0; i < items.rows.length; i++) {
+      const it = items.rows[i];
+      const consumeResult = await consumeReservation(c, {
+        reservationId: reservations[i].reservationId,
+        quantity: Number(it.quantity),
+        consumedBy: user.id,
+        movementType: 'TRANS_SALIDA',
+        reason: `Envio a transferencia ${transfer.number} (aprobada)`,
+      });
+      if (!consumeResult.success) {
+        throw ApiError.conflict(`Error al consumir reserva: ${consumeResult.message}`);
+      }
+    }
+
+    await c.query(
+      `UPDATE transfers SET status = 'EN_TRANSITO', dispatched_by = $1, dispatched_at = now() WHERE id = $2`,
+      [user.id, id]
+    );
+
+    await writeAudit(c, {
+      userId: user.id, action: 'TRANSFER_APPROVE', entity: 'transfer', entityId: id,
+      details: { number: transfer.number, approvedBy: user.id }, ip,
+    });
+
+    // Resolver solicitud de aprobación si existe
+    await c.query(
+      `UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'TRANSFER' AND entity_id = $2 AND status = 'PENDIENTE'`,
+      [user.id, id]
+    );
+
+    return { ok: true, status: 'EN_TRANSITO' };
+  });
+}
+
+/**
+ * Rechazar transferencia en borrador
+ */
+export async function rejectTransfer(user: AuthUser, ip: string | undefined, id: number, reason: string) {
+  return withTx(async (c) => {
+    const t = await c.query<{ id: number; number: string; status: string }>(
+      'SELECT id, number, status FROM transfers WHERE id = $1 FOR UPDATE', [id]
+    );
+    if (!t.rows[0]) throw ApiError.notFound('Transferencia no encontrada');
+    if (t.rows[0].status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden rechazar transferencias en borrador');
+
+    await c.query(`UPDATE transfers SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2 WHERE id = $3`, [user.id, `Rechazada: ${reason}`, id]);
+    await c.query(`UPDATE approval_requests SET status = 'RECHAZADO', resolved_by = $1, resolved_at = now(), resolution_notes = $2 WHERE entity_type = 'TRANSFER' AND entity_id = $3 AND status = 'PENDIENTE'`, [user.id, reason, id]);
+    await writeAudit(c, { userId: user.id, action: 'TRANSFER_REJECT', entity: 'transfer', entityId: id, details: { reason }, ip });
+    return { ok: true };
   });
 }
 
@@ -98,6 +258,12 @@ export async function receiveTransfer(
     assertLocationAccess(user, transfer.destination_location_id);
     if (transfer.status !== 'EN_TRANSITO') {
       throw ApiError.conflict(`La transferencia ${transfer.number} ya fue procesada`);
+    }
+
+    // Segregación: quien recibe NO puede ser quien despachó
+    const dispatched = await c.query<{ dispatched_by: number }>('SELECT dispatched_by FROM transfers WHERE id = $1', [id]);
+    if (dispatched.rows[0]?.dispatched_by === user.id) {
+      throw ApiError.forbidden('No puedes recibir una transferencia que tú mismo despachaste (segregación de funciones)');
     }
 
     const dbItems = await c.query<{ id: number; product_id: number; quantity_sent: string }>(
@@ -123,7 +289,6 @@ export async function receiveTransfer(
       updates.push({ itemId: it.itemId, qty: it.quantityReceived });
     }
 
-    // Los items no informados se reciben en 0 (diferencia documentada)
     for (const dbItem of dbItems.rows) {
       if (!updates.some((u) => u.itemId === dbItem.id)) {
         updates.push({ itemId: dbItem.id, qty: 0 });
@@ -155,49 +320,125 @@ export async function receiveTransfer(
 
     const status = allComplete ? 'RECIBIDO' : 'RECIBIDO_CON_DIF';
     await c.query(
-      'UPDATE transfers SET status = $1, received_by = $2, received_at = now() WHERE id = $3',
+      `UPDATE transfers SET status = $1, received_by = $2, received_at = now() WHERE id = $3`,
       [status, user.id, id]
     );
 
     await writeAudit(c, {
       userId: user.id, action: 'TRANSFER_RECEIVE', entity: 'transfer', entityId: id,
-      details: { status, items: updates }, ip,
+      details: { status, items: updates, receivedBy: user.id }, ip,
     });
     return { ok: true, status };
   });
 }
 
-/** Anula una transferencia en transito y devuelve el stock al origen. */
-export async function voidTransfer(user: AuthUser, ip: string | undefined, id: number, reason: string) {
+/**
+ * Verificar recepción (segunda persona) - opcional, para transferencias críticas
+ */
+export async function verifyTransferReceipt(user: AuthUser, ip: string | undefined, id: number) {
   return withTx(async (c) => {
-    const t = await c.query<{ status: string; number: string; origin_location_id: number }>(
-      'SELECT status, number, origin_location_id FROM transfers WHERE id = $1 FOR UPDATE', [id]
+    const t = await c.query<{ id: number; number: string; status: string; received_by: number }>(
+      'SELECT id, number, status, received_by FROM transfers WHERE id = $1 FOR UPDATE', [id]
+    );
+    if (!t.rows[0]) throw ApiError.notFound('Transferencia no encontrada');
+    if (!['RECIBIDO', 'RECIBIDO_CON_DIF'].includes(t.rows[0].status)) {
+      throw ApiError.conflict('Solo se pueden verificar transferencias recibidas');
+    }
+    if (t.rows[0].received_by === user.id) {
+      throw ApiError.forbidden('No puedes verificar una recepción que tú mismo hiciste (segregación de funciones)');
+    }
+
+    await c.query(
+      `UPDATE transfers SET verified_by = $1, verified_at = now() WHERE id = $2`,
+      [user.id, id]
+    );
+
+    await writeAudit(c, { userId: user.id, action: 'TRANSFER_VERIFY', entity: 'transfer', entityId: id, details: { verifiedBy: user.id }, ip });
+    return { ok: true };
+  });
+}
+
+/** Anula una transferencia en transito y devuelve el stock al origen. Libera reservas.
+ *  Requiere DOBLE AUTORIZACIÓN: voided_by != void_approved_by (rol >= ENCARGADO)
+ */
+export async function voidTransfer(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
+  return withTx(async (c) => {
+    const t = await c.query<{ status: string; number: string; origin_location_id: number; void_approved_by: number | null }>(
+      'SELECT status, number, origin_location_id, void_approved_by FROM transfers WHERE id = $1 FOR UPDATE', [id]
     );
     const transfer = t.rows[0];
     if (!transfer) throw ApiError.notFound('Transferencia no encontrada');
     assertLocationAccess(user, transfer.origin_location_id);
-    if (transfer.status !== 'EN_TRANSITO') {
-      throw ApiError.conflict('Solo se pueden anular transferencias en transito');
+
+    // Si ya estaba confirmada/recibida, requiere doble autorización
+    const requiresDualAuth = ['CONFIRMADO', 'RECIBIDO', 'RECIBIDO_CON_DIF'].includes(transfer.status);
+    if (requiresDualAuth) {
+      if (!voidApprovedBy) throw ApiError.badRequest('Anulación de transferencia procesada requiere segundo autorizador (voidApprovedBy)');
+      if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
+      // Verificar rol del aprobador
+      const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
+      if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
+        throw ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+      }
     }
-    const items = await c.query<{ product_id: number; quantity_sent: string }>(
-      'SELECT product_id, quantity_sent FROM transfer_items WHERE transfer_id = $1', [id]
+
+    if (transfer.status === 'ANULADO') throw ApiError.conflict('La transferencia ya esta anulada');
+
+    // Evaluar reglas de anulación
+    const rules = await evaluateBusinessRules('VOID', 'VOID', { entity_id: id, user_role: user.role });
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    if (requiresApproval && !voidApprovedBy) {
+      throw ApiError.badRequest('Esta anulación requiere aprobación según reglas de negocio');
+    }
+
+    // Liberar reservas de la transferencia
+    await releaseAllReservationsForReference(c, 'TRANSFER', id, user.id, `Anulación: ${reason}`);
+
+    // Si hay stock en tránsito devuelto, crear movimientos de entrada en origen
+    if (['EN_TRANSITO', 'RECIBIDO', 'RECIBIDO_CON_DIF'].includes(transfer.status)) {
+      const items = await c.query<{ product_id: number; quantity_sent: string; quantity_received: string | null }>(
+        'SELECT product_id, quantity_sent, quantity_received FROM transfer_items WHERE transfer_id = $1', [id]
+      );
+      for (const it of items.rows) {
+        const sent = Number(it.quantity_sent);
+        const received = it.quantity_received ? Number(it.quantity_received) : 0;
+        const toReturn = sent - received;  // Lo que no llegó se devuelve a origen
+        if (toReturn > 0) {
+          await applyStockChange(c, {
+            productId: it.product_id, locationId: transfer.origin_location_id,
+            delta: toReturn,
+            type: 'TRANS_ENTRADA', referenceType: 'TRANSFER', referenceId: id,
+            referenceNumber: transfer.number, userId: user.id,
+            reason: `Anulacion de transferencia ${transfer.number}: ${reason}`,
+          });
+        }
+      }
+    }
+
+    await c.query(
+      `UPDATE transfers SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`,
+      [user.id, reason, voidApprovedBy ?? null, id]
     );
-    for (const it of items.rows) {
-      await applyStockChange(c, {
-        productId: it.product_id, locationId: transfer.origin_location_id,
-        delta: Number(it.quantity_sent),
-        type: 'TRANS_ENTRADA', referenceType: 'TRANSFER', referenceId: id,
-        referenceNumber: transfer.number, userId: user.id,
-        reason: `Anulacion de transferencia ${transfer.number}: ${reason}`,
+
+    await writeAudit(c, {
+      userId: user.id, action: 'TRANSFER_VOID', entity: 'transfer', entityId: id,
+      details: { reason, voidApprovedBy, requiresDualAuth }, ip,
+    });
+
+    // Alerta si anulación inusual
+    if (requiresDualAuth) {
+      await createAlert({
+        code: 'TRANSFER_VOID_DUAL_AUTH',
+        severity: 'WARNING',
+        entityType: 'TRANSFER',
+        entityId: id,
+        title: `Transferencia anulada con doble autorización: ${transfer.number}`,
+        message: `Anulada por ${user.fullName}, autorizada por usuario ${voidApprovedBy}. Motivo: ${reason}`,
+        data: { transferId: id, voidedBy: user.id, voidApprovedBy, reason },
+        targetRoles: ['ADMIN'],
       });
     }
-    await c.query(
-      `UPDATE transfers SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2 WHERE id = $3`,
-      [user.id, reason, id]
-    );
-    await writeAudit(c, {
-      userId: user.id, action: 'TRANSFER_VOID', entity: 'transfer', entityId: id, details: { reason }, ip,
-    });
+
     return { ok: true };
   });
 }
@@ -206,12 +447,17 @@ export async function getTransfer(id: number) {
   return withTx(async (c) => {
     const head = await c.query(
       `SELECT t.*, lo.name AS origin_name, ld.name AS destination_name,
-              cu.full_name AS created_by_name, ru.full_name AS received_by_name
+              cu.full_name AS created_by_name, ru.full_name AS received_by_name,
+              du.full_name AS dispatched_by_name, vu.full_name AS verified_by_name,
+              vau.full_name AS void_approved_by_name
        FROM transfers t
        JOIN locations lo ON lo.id = t.origin_location_id
        JOIN locations ld ON ld.id = t.destination_location_id
        JOIN users cu ON cu.id = t.created_by
        LEFT JOIN users ru ON ru.id = t.received_by
+       LEFT JOIN users du ON du.id = t.dispatched_by
+       LEFT JOIN users vu ON vu.id = t.verified_by
+       LEFT JOIN users vau ON vau.id = t.void_approved_by
        WHERE t.id = $1`, [id]
     );
     if (!head.rows[0]) return null;
@@ -235,7 +481,8 @@ export async function listTransfers(opts: { status?: string; locationId?: number
   const rows = await query(
     `SELECT t.id, t.number, t.status, t.origin_location_id, t.destination_location_id,
             lo.name AS origin_name, ld.name AS destination_name,
-            t.created_at, t.received_at, cu.full_name AS created_by_name,
+            t.created_at, t.dispatched_at, t.received_at, t.verified_at,
+            cu.full_name AS created_by_name,
             (SELECT COUNT(*) FROM transfer_items WHERE transfer_id = t.id) AS line_count
      FROM transfers t
      JOIN locations lo ON lo.id = t.origin_location_id

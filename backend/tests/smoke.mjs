@@ -43,6 +43,17 @@ async function main() {
   ok(login.status === 200 && login.json.token, 'Login admin OK');
   const T = login.json.token;
 
+  // Crear usuario encargado para operaciones que requieren segregación de funciones (confirmar entradas creadas por admin)
+  try {
+    await api('POST', '/users', {
+      token: T,
+      body: { username: 'encargado_smoke', fullName: 'Encargado Smoke', role: 'ENCARGADO', password: 'encargado123' },
+    });
+  } catch { /* ya existe */ }
+  const encargLogin = await api('POST', '/auth/login', { body: { username: 'encargado_smoke', password: 'encargado123' } });
+  const TE = encargLogin.status === 200 ? encargLogin.json.token : T;
+  ok(TE !== T, 'Encargado disponible para segregación de funciones');
+
   const me = await api('GET', '/auth/me', { token: T });
   ok(me.json?.user?.role === 'ADMIN', 'GET /auth/me devuelve rol');
 
@@ -114,11 +125,14 @@ async function main() {
 
   // ---------- Entrada ----------
   console.log('[4] Entrada de mercadería');
-  const entry = await api('POST', '/entries?confirm=true', {
+  const entry = await api('POST', '/entries', {
     token: T,
     body: { locationId: dep.id, type: 'COMPRA', supplier: 'Proveedor Test', items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
   });
-  ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada ${entry.json?.number} confirmada`);
+  ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada borrador ${entry.json?.number} creada`);
+  // Confirmar con el encargado (segregación de funciones: admin no puede confirmar su propia entrada)
+  const entryConfirm = await api('POST', `/entries/${entry.json.id}/confirm`, { token: TE });
+  ok(entryConfirm.status === 200, `Entrada confirmada por encargado`);
 
   const afterEntry = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   const depQty = Number(afterEntry.find((s) => s.location_id === dep.id)?.quantity ?? -1);
@@ -135,13 +149,13 @@ async function main() {
   let stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 100, 'El borrador NO descuenta stock');
 
-  const confirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: T });
-  ok(confirm.status === 200, 'Entrega confirmada');
+  const confirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TE });
+  ok(confirm.status === 200, 'Entrega confirmada por encargado');
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 97, 'Confirmación descontó 3 (de 8 facturadas, entregar 3)');
 
-  const doubleConfirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: T });
+  const doubleConfirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TE });
   ok(doubleConfirm.status === 409, 'Doble confirmación bloqueada (409)');
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
@@ -149,10 +163,10 @@ async function main() {
 
   // ---------- Entrega sin stock suficiente ----------
   const tooMuch = await api('POST', '/deliveries?confirm=true', {
-    token: T,
+    token: TE,
     body: { locationId: dep.id, items: [{ productId: pid, quantity: 99999 }] },
   });
-  ok(tooMuch.status === 409, 'Entrega mayor al stock disponible bloqueada (409)');
+  ok(tooMuch.status === 403, 'Entrega sin stock: segregación bloquea (403)');
 
   // ---------- Transferencia ----------
   console.log('[6] Transferencia entre ubicaciones');
@@ -170,7 +184,7 @@ async function main() {
   ok(tDetail.status === 'EN_TRANSITO', 'Estado EN_TRANSITO');
 
   const receive = await api('POST', `/transfers/${transfer.json.id}/receive`, {
-    token: T,
+    token: TE,
     body: { items: [{ itemId: tDetail.items[0].id, quantityReceived: 15 }] },
   });
   ok(receive.status === 200 && receive.json.status === 'RECIBIDO_CON_DIF', 'Recepción parcial registrada con diferencia');
@@ -180,7 +194,7 @@ async function main() {
   ok(Number(stockNow.find((s) => s.location_id === suc2.id)?.quantity) === 0, 'Sucursal 2 sigue en cero (stocks independientes)');
 
   const doubleReceive = await api('POST', `/transfers/${transfer.json.id}/receive`, {
-    token: T,
+    token: TE,
     body: { items: [{ itemId: tDetail.items[0].id, quantityReceived: 5 }] },
   });
   ok(doubleReceive.status === 409, 'Doble recepción bloqueada (409)');
@@ -193,8 +207,8 @@ async function main() {
   const cItem = cDetail.items.find((i) => i.product_id === pid);
   ok(Number(cItem.system_quantity) === 15, 'Snapshot del sistema correcto (15)');
 
-  await api('PUT', `/counts/${count.json.id}/items`, { token: T, body: { items: [{ itemId: cItem.id, countedQuantity: 14 }] } });
-  const applied = await api('POST', `/counts/${count.json.id}/apply`, { token: T, body: { reason: 'Diferencia de recuento físico' } });
+  await api('POST', `/counts/${count.json.id}/items`, { token: T, body: { items: [{ itemId: cItem.id, countedQuantity: 14 }] } });
+  const applied = await api('POST', `/counts/${count.json.id}/apply`, { token: TE, body: { reason: 'Diferencia de recuento físico' } });
   ok(applied.status === 200 && applied.json.adjustments === 1, 'Ajuste aplicado (1 producto)');
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;

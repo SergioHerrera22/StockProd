@@ -1,0 +1,262 @@
+name: Deploy to Hostinger
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20.x'
+  BACKEND_DIR: './backend'
+  FRONTEND_DIR: './frontend'
+
+jobs:
+  # ============================================
+  # LINT & TYPE CHECK
+  # ============================================
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install backend dependencies
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm ci
+
+      - name: Type check backend
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: npx tsc --noEmit
+
+      - name: Type check frontend
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npx tsc --noEmit
+
+  # ============================================
+  # TESTS
+  # ============================================
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Run backend smoke tests
+        working-directory: ${{ env.BACKEND_DIR }}
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/robles_stock_test
+          JWT_SECRET: test-secret-key-for-testing-only-do-not-use-in-production
+          NODE_ENV: test
+        run: |
+          # Start PostgreSQL for tests
+          sudo systemctl start postgresql
+          # Create test database
+          psql -h localhost -U postgres -c "CREATE DATABASE robles_stock_test;" || true
+          psql -h localhost -U postgres -d robles_stock_test -f migrations/001_init.sql
+          psql -h localhost -U postgres -d robles_stock_test -f migrations/002_sessions_and_restrictions.sql
+          # Run tests
+          npm run test:smoke
+
+  # ============================================
+  # BUILD
+  # ============================================
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Build backend
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: npm run build
+
+      - name: Build frontend
+        working-directory: ${{ env.FRONTEND_DIR }}
+        env:
+          VITE_API_URL: /api
+        run: npm run build
+
+      - name: Upload backend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dist
+          path: backend/dist/
+          retention-days: 1
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+
+      - name: Upload package.json files
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-files
+          path: |
+            backend/package.json
+            backend/package-lock.json
+          retention-days: 1
+
+  # ============================================
+  # DEPLOY TO HOSTINGER
+  # ============================================
+  deploy:
+    name: Deploy to Hostinger
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download backend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-dist
+          path: backend/dist/
+
+      - name: Download frontend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      - name: Download package files
+        uses: actions/download-artifact@v4
+        with:
+          name: package-files
+          path: backend/
+
+      - name: Create backend .env file
+        run: |
+          cat > backend/.env << 'EOF'
+          ${{ secrets.HOSTINGER_BACKEND_ENV }}
+          EOF
+
+      - name: Create frontend .env file
+        run: |
+          cat > frontend/.env << 'EOF'
+          ${{ secrets.HOSTINGER_FRONTEND_ENV }}
+          EOF
+
+      - name: Deploy to Hostinger via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.HOSTINGER_FTP_HOST }}
+          username: ${{ secrets.HOSTINGER_FTP_USER }}
+          password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
+          server-dir: ${{ secrets.HOSTINGER_FTP_DIR }}/
+          local-dir: ./
+          exclude: |
+            **/.git*
+            **/.github*
+            **/node_modules/**
+            **/*.log
+            backend/.env.example
+            frontend/.env.example
+            backend/src/**
+            backend/migrations/**
+            backend/scripts/**
+            backend/tests/**
+            backend/tsconfig.json
+            frontend/src/**
+            frontend/public/**
+            frontend/vite.config.ts
+            frontend/tsconfig.json
+            frontend/tailwind.config.js
+            frontend/postcss.config.js
+            frontend/index.html
+            docs/**
+            README.md
+            .gitignore
+            *.md
+
+      - name: Run database migrations on Hostinger (via SSH)
+        if: secrets.HOSTINGER_SSH_HOST != ''
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          username: ${{ secrets.HOSTINGER_SSH_USER }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          script: |
+            cd ${{ secrets.HOSTINGER_SSH_DIR }}
+            # Ejecutar migraciones si existen nuevas
+            if [ -f "backend/scripts/migrate.mjs" ]; then
+              node backend/scripts/migrate.mjs
+            fi
+            # Reiniciar la aplicación (ajusta según tu configuración en Hostinger)
+            # Opción A: PM2
+            pm2 restart robles-stock || true
+            # Opción B: systemctl (si tienes acceso)
+            # sudo systemctl restart robles-stock || true
+            # Opción C: Solo reiniciar el proceso Node
+            # pkill -f "node backend/dist/index.js" && nohup node backend/dist/index.js > app.log 2>&1 &
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "✅ Despliegue completado exitosamente en Hostinger"
+          echo "🌐 Tu aplicación debería estar disponible en tu dominio configurado"
+
+      - name: Notify deployment failure
+        if: failure()
+        run: |
+          echo "❌ El despliegue falló. Revisa los logs arriba para más detalles."
+          exit 1

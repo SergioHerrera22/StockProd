@@ -6,6 +6,9 @@ import { nextDocNumber } from '../../services/numbering';
 import { writeAudit } from '../../services/audit.service';
 import { assertLocationAccess } from '../../lib/locationGuard';
 import { AuthUser } from '../../middleware/auth';
+import { evaluateBusinessRules } from '../../services/businessRules.service';
+import { createApprovalRequest } from '../../services/approval.service';
+import { createAlert } from '../../services/alerts.service';
 
 export interface EntryDraftInput {
   locationId: number;
@@ -42,11 +45,19 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
     const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion de destino invalida');
 
+    const qtySum = input.items.reduce((s, it) => s + it.quantity, 0);
+    const context = { qty_sum: qtySum, location_id: input.locationId, user_role: user.role };
+
+    // Evaluar reglas ANTES de crear
+    const rules = await evaluateBusinessRules('ENTRY', 'BEFORE_CREATE', context);
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    let status: 'BORRADOR' | 'CONFIRMADO' = 'BORRADOR';
+
     const number = await nextDocNumber(c, 'entry');
     const r = await c.query<{ id: number }>(
-      `INSERT INTO stock_entries (number, location_id, type, supplier, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [number, input.locationId, input.type, input.supplier?.trim() || null, input.notes?.trim() || null, user.id]
+      `INSERT INTO stock_entries (number, location_id, type, supplier, notes, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [number, input.locationId, input.type, input.supplier?.trim() || null, input.notes?.trim() || null, user.id, status]
     );
     const entryId = r.rows[0].id;
     for (const it of input.items) {
@@ -55,24 +66,53 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
         [entryId, it.productId, it.quantity, it.unitCost ?? null]
       );
     }
+
+    if (requiresApproval) {
+      const rule = rules.find(r => r.action.require_approval)!;
+      await createApprovalRequest({
+        ruleId: rule.ruleId,
+        entityType: 'ENTRY',
+        entityId: entryId,
+        entityNumber: number,
+        requestedBy: user.id,
+        context: { ...context, items: input.items },
+      });
+      await writeAudit(c, { userId: user.id, action: 'ENTRY_CREATE_PENDING_APPROVAL', entity: 'entry', entityId: entryId, details: { number, requiresApproval: true }, ip });
+      return { id: entryId, number, status: 'BORRADOR', requiresApproval: true };
+    }
+
     if (confirm) await confirmEntryTx(c, entryId, user);
-    await writeAudit(c, {
-      userId: user.id, action: confirm ? 'ENTRY_CREATE_CONFIRM' : 'ENTRY_CREATE_DRAFT',
-      entity: 'entry', entityId: entryId, details: { number }, ip,
-    });
-    return { id: entryId, number };
+    else await writeAudit(c, { userId: user.id, action: 'ENTRY_CREATE_DRAFT', entity: 'entry', entityId: entryId, details: { number }, ip });
+    return { id: entryId, number, status: confirm ? 'CONFIRMADO' : 'BORRADOR', requiresApproval: false };
   });
 }
 
 async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
-  const e = await c.query<{ id: number; number: string; status: string; location_id: number }>(
-    'SELECT id, number, status, location_id FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
+  const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
+    'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
   );
   const entry = e.rows[0];
   if (!entry) throw ApiError.notFound('Entrada no encontrada');
   assertLocationAccess(user, entry.location_id);
   if (entry.status === 'CONFIRMADO') throw ApiError.conflict(`La entrada ${entry.number} ya fue confirmada`);
   if (entry.status === 'ANULADO') throw ApiError.conflict('La entrada esta anulada');
+
+  // Segregación: quien confirma NO debe ser quien creó
+  if (entry.created_by === user.id) {
+    throw ApiError.forbidden('No puedes confirmar una entrada que tú mismo creaste (segregación de funciones)');
+  }
+
+  // Evaluar reglas al confirmar
+  const itemsPreview = await c.query<{ product_id: number; quantity: string }>(
+    'SELECT product_id, quantity FROM stock_entry_items WHERE entry_id = $1', [id]
+  );
+  const qtySum = itemsPreview.rows.reduce((s, it) => s + Number(it.quantity), 0);
+  const context = { qty_sum: qtySum, location_id: entry.location_id, user_role: user.role };
+  const rules = await evaluateBusinessRules('ENTRY', 'BEFORE_CONFIRM', context);
+  const stillRequiresApproval = rules.some(r => r.action.require_approval);
+  if (stillRequiresApproval && user.role === 'EMPLEADO') {
+    throw ApiError.forbidden('Esta entrada requiere aprobador con rol ENCARGADO o superior');
+  }
 
   const items = await c.query<{ product_id: number; quantity: string; unit_cost: string | null }>(
     'SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]
@@ -98,7 +138,13 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
   }
 
   await c.query(
-    `UPDATE stock_entries SET status = 'CONFIRMADO', confirmed_by = $1, confirmed_at = now() WHERE id = $2`,
+    `UPDATE stock_entries SET status = 'CONFIRMADO', confirmed_by = $1, confirmed_at = now(), received_by = $2, received_at = now() WHERE id = $3`,
+    [user.id, user.id, id]
+  );
+
+  // Resolver aprobación si existía
+  await c.query(
+    `UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'ENTRY' AND entity_id = $2 AND status = 'PENDIENTE'`,
     [user.id, id]
   );
 }
@@ -111,15 +157,52 @@ export async function confirmEntry(user: AuthUser, ip: string | undefined, id: n
   });
 }
 
-export async function voidEntry(user: AuthUser, ip: string | undefined, id: number, reason: string) {
+/**
+ * Aprobar entrada en borrador (para flujo con aprobación)
+ */
+export async function approveEntry(user: AuthUser, ip: string | undefined, id: number) {
   return withTx(async (c) => {
-    const e = await c.query<{ status: string; number: string; location_id: number }>(
-      'SELECT status, number, location_id FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
+    const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
+      'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
+    );
+    if (!e.rows[0]) throw ApiError.notFound('Entrada no encontrada');
+    if (e.rows[0].status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar entradas en borrador');
+    if (e.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar tu propia entrada (segregación de funciones)');
+    assertLocationAccess(user, e.rows[0].location_id);
+    await confirmEntryTx(c, id, user);
+    return { ok: true };
+  });
+}
+
+/**
+ * Anulacion con DOBLE AUTORIZACION para entradas confirmadas
+ */
+export async function voidEntry(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
+  return withTx(async (c) => {
+    const e = await c.query<{ status: string; number: string; location_id: number; void_approved_by: number | null }>(
+      'SELECT status, number, location_id, void_approved_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
     );
     const entry = e.rows[0];
     if (!entry) throw ApiError.notFound('Entrada no encontrada');
     assertLocationAccess(user, entry.location_id);
     if (entry.status === 'ANULADO') throw ApiError.conflict('La entrada ya esta anulada');
+
+    const requiresDualAuth = entry.status === 'CONFIRMADO';
+    if (requiresDualAuth) {
+      if (!voidApprovedBy) throw ApiError.badRequest('Anulación de entrada confirmada requiere segundo autorizador (voidApprovedBy)');
+      if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
+      const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
+      if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
+        throw ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+      }
+    }
+
+    // Evaluar reglas
+    const rules = await evaluateBusinessRules('VOID', 'VOID', { entity_id: id, user_role: user.role });
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    if (requiresApproval && !voidApprovedBy) {
+      throw ApiError.badRequest('Esta anulación requiere aprobación según reglas de negocio');
+    }
 
     if (entry.status === 'CONFIRMADO') {
       const items = await c.query<{ product_id: number; quantity: string }>(
@@ -133,13 +216,30 @@ export async function voidEntry(user: AuthUser, ip: string | undefined, id: numb
         });
       }
     }
+
     await c.query(
-      `UPDATE stock_entries SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2 WHERE id = $3`,
-      [user.id, reason, id]
+      `UPDATE stock_entries SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`,
+      [user.id, reason, voidApprovedBy ?? null, id]
     );
+
     await writeAudit(c, {
-      userId: user.id, action: 'ENTRY_VOID', entity: 'entry', entityId: id, details: { reason }, ip,
+      userId: user.id, action: 'ENTRY_VOID', entity: 'entry', entityId: id,
+      details: { reason, voidApprovedBy, requiresDualAuth, wasConfirmed: requiresDualAuth }, ip,
     });
+
+    if (requiresDualAuth) {
+      await createAlert({
+        code: 'ENTRY_VOID_DUAL_AUTH',
+        severity: 'WARNING',
+        entityType: 'ENTRY',
+        entityId: id,
+        title: `Entrada anulada con doble autorización: ${entry.number}`,
+        message: `Anulada por ${user.fullName}, autorizada por usuario ${voidApprovedBy}. Motivo: ${reason}`,
+        data: { entryId: id, voidedBy: user.id, voidApprovedBy, reason },
+        targetRoles: ['ADMIN'],
+      });
+    }
+
     return { ok: true };
   });
 }
@@ -147,10 +247,15 @@ export async function voidEntry(user: AuthUser, ip: string | undefined, id: numb
 export async function getEntry(id: number) {
   return withTx(async (c) => {
     const head = await c.query(
-      `SELECT e.*, l.name AS location_name, cu.full_name AS created_by_name
+      `SELECT e.*, l.name AS location_name, cu.full_name AS created_by_name,
+              confu.full_name AS confirmed_by_name, recu.full_name AS received_by_name,
+              vau.full_name AS void_approved_by_name
        FROM stock_entries e
        JOIN locations l ON l.id = e.location_id
        JOIN users cu ON cu.id = e.created_by
+       LEFT JOIN users confu ON confu.id = e.confirmed_by
+       LEFT JOIN users recu ON recu.id = e.received_by
+       LEFT JOIN users vau ON vau.id = e.void_approved_by
        WHERE e.id = $1`, [id]
     );
     if (!head.rows[0]) return null;
@@ -172,7 +277,7 @@ export async function listEntries(opts: { status?: string; locationId?: number; 
   const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM stock_entries e ${whereSql}`, params);
   const rows = await query(
     `SELECT e.id, e.number, e.status, e.type, e.supplier, e.location_id, l.name AS location_name,
-            e.created_at, e.confirmed_at, cu.full_name AS created_by_name,
+            e.created_at, e.confirmed_at, e.received_at, cu.full_name AS created_by_name,
             (SELECT COUNT(*) FROM stock_entry_items WHERE entry_id = e.id) AS line_count
      FROM stock_entries e
      JOIN locations l ON l.id = e.location_id

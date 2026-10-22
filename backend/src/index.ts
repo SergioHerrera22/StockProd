@@ -8,6 +8,7 @@ async function main() {
   try {
     await pool.query('SELECT 1');
     logger.info('Conexion a PostgreSQL OK');
+    logger.info('DATABASE_URL usada: ' + config.databaseUrl.replace(/:[^:@]*@/, ':***@'));
   } catch (err) {
     logger.error('No se pudo conectar a PostgreSQL:', (err as Error).message);
     logger.error('Revisa DATABASE_URL en backend/.env');

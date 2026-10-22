@@ -24,7 +24,13 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+// SSL solo cuando el servidor lo pide (Supabase/produccion). El Postgres local
+// no soporta SSL y falla con "The server does not support SSL connections".
+const wantsSSL = /sslmode=require/i.test(DATABASE_URL);
+const pool = new pg.Pool({
+  connectionString: DATABASE_URL.replace('?sslmode=require&rejectUnauthorized=false', '').replace('?sslmode=require', ''),
+  ...(wantsSSL ? { ssl: { rejectUnauthorized: false } } : {}),
+});
 
 async function ensureTable() {
   await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (

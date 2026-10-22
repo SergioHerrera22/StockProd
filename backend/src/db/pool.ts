@@ -2,10 +2,13 @@ import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { config } from '../config/env';
 import { logger } from '../lib/logger';
 
+const isSupabase = config.databaseUrl.includes('supabase');
+
 export const pool = new Pool({
   connectionString: config.databaseUrl,
   max: 10,
   idleTimeoutMillis: 30000,
+  ...(isSupabase ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
 pool.on('error', (err) => logger.error('Error inesperado en el pool de PG', err.message));

@@ -50,13 +50,6 @@ async function main() {
   const pid = prod.json.id;
   ok(!!pid, 'Producto de prueba creado');
 
-  // Entrada de 100 al depósito
-  const entry = await api('POST', '/entries?confirm=true', {
-    token: T,
-    body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 100, unitCost: 500 }] },
-  });
-  ok(entry.status === 201, `Entrada ${entry.json?.number} confirmada (+100 en DEP)`);
-
   // Usuarios restringidos a SUC1
   await api('POST', '/users', { token: T, body: { username: `neg_emp_${stamp}`, fullName: 'Empleado Restrictivo', role: 'EMPLEADO', password: 'clave123', defaultLocationId: SUC1.id, restrictToLocation: true } });
   const emp = await api('POST', '/auth/login', { body: { username: `neg_emp_${stamp}`, password: 'clave123' } });
@@ -67,6 +60,22 @@ async function main() {
   const enc = await api('POST', '/auth/login', { body: { username: `neg_enc_${stamp}`, password: 'clave123' } });
   ok(enc.status === 200, 'Encargado restringido (SUC1) creado y logueado');
   const TC = enc.json.token;
+
+  // Segundo usuario SIN restricciones de ubicación. La segregación de funciones
+  // exige que quien confirma/aplica/anula un documento no sea quien lo creó.
+  const enc2 = await api('POST', '/auth/login', { body: { username: 'encargado_smoke', password: 'encargado123' } });
+  ok(enc2.status === 200, 'Encargado sin restricciones disponible para segregación');
+  const TX = enc2.json.token;
+
+  // Entrada de 100 al depósito. La confirma el encargado: la segregación de
+  // funciones impide que quien crea la entrada sea quien la confirma.
+  const entry = await api('POST', '/entries', {
+    token: T,
+    body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 100, unitCost: 500 }] },
+  });
+  const entryConfirm = await api('POST', `/entries/${entry.json?.id}/confirm`, { token: TX });
+  ok(entry.status === 201 && entryConfirm.status === 200,
+    `Entrada ${entry.json?.number} confirmada (+100 en DEP) [crea=${entry.status}, confirma=${entryConfirm.status} ${entryConfirm.json?.error ?? ''}]`);
 
   // ---------- [A] Fallo a mitad de una entrega multi-línea ----------
   console.log('\n[A] Caída a mitad de una entrega: NO debe descontar nada');
@@ -84,7 +93,7 @@ async function main() {
     body: { code: `NEG2-${stamp}`, name: `Sin stock ${stamp}`, unit: 'UNIDAD' },
   });
   const multi2 = await api('POST', '/deliveries?confirm=true', {
-    token: T,
+    token: TX,
     body: { locationId: DEP.id, items: [
       { productId: pid, quantity: 2 },      // línea 1: hay stock
       { productId: prod2.json.id, quantity: 5 }, // línea 2: sin stock → falla
@@ -101,8 +110,8 @@ async function main() {
     body: { locationId: DEP.id, items: [{ productId: pid, quantity: 1 }] },
   });
   const [c1, c2] = await Promise.allSettled([
-    api('POST', `/deliveries/${draft.json.id}/confirm`, { token: T }),
-    api('POST', `/deliveries/${draft.json.id}/confirm`, { token: T }),
+    api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TX }),
+    api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TX }),
   ]);
   const results = [c1, c2].map((r) => r.value);
   const success = results.filter((r) => r.status === 200).length;
@@ -113,24 +122,25 @@ async function main() {
 
   // ---------- [C] Anulación de entrega confirmada ----------
   console.log('\n[C] Anulación de entrega confirmada (movimientos compensatorios)');
-  const voided = await api('POST', `/deliveries/${draft.json.id}/void`, { token: T, body: { reason: 'Anulación de prueba controlada' } });
-  ok(voided.status === 200, 'Anulación aceptada');
+  const voided = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Anulación de prueba controlada', voidApprovedBy: admin.json.user.id } });
+  ok(voided.status === 200, `Anulación aceptada [${voided.status} ${voided.json?.error ?? ''}]`);
   const stC = await stockOf(T, pid);
   ok(stC[DEP.id] === 100, `Stock repuesto por la anulación (DEP=${stC[DEP.id]}, esperado 100)`);
-  const voidAgain = await api('POST', `/deliveries/${draft.json.id}/void`, { token: T, body: { reason: 'Segunda anulación' } });
+  const voidAgain = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Segunda anulación', voidApprovedBy: admin.json.user.id } });
   ok(voidAgain.status === 409, 'Segunda anulación bloqueada (409)');
 
   // ---------- [D] Anulación de entrada confirmada ----------
   console.log('\n[D] Anulación de entrada confirmada');
-  const entry2 = await api('POST', '/entries?confirm=true', {
+  const entry2 = await api('POST', '/entries', {
     token: T,
     body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 10 }] },
   });
-  const voidEntry = await api('POST', `/entries/${entry2.json.id}/void`, { token: T, body: { reason: 'Entrada cargada por error' } });
-  ok(voidEntry.status === 200, 'Anulación de entrada aceptada');
+  await api('POST', `/entries/${entry2.json.id}/confirm`, { token: TX });
+  const voidEntry = await api('POST', `/entries/${entry2.json.id}/void`, { token: TX, body: { reason: 'Entrada cargada por error', voidApprovedBy: admin.json.user.id } });
+  ok(voidEntry.status === 200, `Anulación de entrada aceptada [${voidEntry.status} ${voidEntry.json?.error ?? ''}]`);
   const stD = await stockOf(T, pid);
   ok(stD[DEP.id] === 100, `Stock revertido (DEP=${stD[DEP.id]}, esperado 100)`);
-  const confirmVoidedEntry = await api('POST', `/entries/${entry2.json.id}/confirm`, { token: T });
+  const confirmVoidedEntry = await api('POST', `/entries/${entry2.json.id}/confirm`, { token: TX });
   ok(confirmVoidedEntry.status === 409, 'Re-confirmar entrada anulada → 409');
 
   // ---------- [E] Transferencia y su anulación ----------
@@ -160,16 +170,16 @@ async function main() {
   });
   const tr2d = (await api('GET', `/transfers/${tr2.json.id}`, { token: T })).json.transfer;
   await api('POST', `/transfers/${tr2.json.id}/receive`, {
-    token: T,
+    token: TX,
     body: { items: [{ itemId: tr2d.items[0].id, quantityReceived: 5 }] },
   });
   const cnt = await api('POST', '/counts', { token: T, body: { locationId: SUC2.id, notes: 'Recuento negativo' } });
   const cntD = (await api('GET', `/counts/${cnt.json.id}`, { token: T })).json.count;
   const cntItem = cntD.items.find((i) => i.product_id === pid);
   await api('PUT', `/counts/${cnt.json.id}/items`, { token: T, body: { items: [{ itemId: cntItem.id, countedQuantity: 3 }] } });
-  const apply1 = await api('POST', `/counts/${cnt.json.id}/apply`, { token: T, body: { reason: 'Ajuste de recuento' } });
-  ok(apply1.status === 200 && apply1.json.adjustments === 1, 'Primer ajuste aplicado (5 → 3)');
-  const apply2 = await api('POST', `/counts/${cnt.json.id}/apply`, { token: T, body: { reason: 'Intento doble' } });
+  const apply1 = await api('POST', `/counts/${cnt.json.id}/apply`, { token: TX, body: { reason: 'Ajuste de recuento' } });
+  ok(apply1.status === 200 && apply1.json.adjustments === 1, `Primer ajuste aplicado (5 → 3) [${apply1.status} ${apply1.json?.error ?? ''}]`);
+  const apply2 = await api('POST', `/counts/${cnt.json.id}/apply`, { token: TX, body: { reason: 'Intento doble' } });
   ok(apply2.status === 409, 'Segundo apply del mismo inventario → 409');
   const stF = await stockOf(T, pid);
   ok(stF[SUC2.id] === 3, `Stock SUC2 quedó en lo contado (3) y no se re-aplicó [${stF[SUC2.id]}]`);
@@ -194,7 +204,8 @@ async function main() {
   const r5 = await api('POST', '/transfers', { token: TC, body: { originLocationId: SUC2.id, destinationLocationId: DEP.id, items: [{ productId: pid, quantity: 1 }] } });
   ok(r5.status === 403, 'Encargado restringido: transferencia que no involucra su ubicación → 403');
   // SUC1 necesita stock para poder despachar (la creación de la transferencia valida disponibilidad)
-  await api('POST', '/entries?confirm=true', { token: T, body: { locationId: SUC1.id, type: 'OTRO', items: [{ productId: pid, quantity: 5 }] } });
+  const suc1Entry = await api('POST', '/entries', { token: T, body: { locationId: SUC1.id, type: 'OTRO', items: [{ productId: pid, quantity: 5 }] } });
+  await api('POST', `/entries/${suc1Entry.json.id}/confirm`, { token: TX });
   const r6 = await api('POST', '/transfers', { token: TC, body: { originLocationId: SUC1.id, destinationLocationId: DEP.id, items: [{ productId: pid, quantity: 1 }] } });
   ok(r6.status === 201, 'Encargado restringido: transferencia desde SU ubicación → OK');
   const r7 = await api('POST', '/counts', { token: TC, body: { locationId: SUC2.id } });

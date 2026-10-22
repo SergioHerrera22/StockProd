@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
-import { pageParams, intParam, strParam } from '../../lib/pagination';
-import { createEntry, confirmEntry, voidEntry, getEntry, listEntries } from './entries.service';
+import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
+import { createEntry, confirmEntry, voidEntry, getEntry, listEntries, approveEntry } from './entries.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('entries.read'));
@@ -36,7 +36,7 @@ router.get(
 );
 
 router.get('/:id', asyncH(async (req, res) => {
-  const entry = await getEntry(parseInt(req.params.id, 10));
+  const entry = await getEntry(pathId(req.params.id));
   if (!entry) return res.status(404).json({ error: 'Entrada no encontrada' });
   res.json({ entry });
 }));
@@ -54,19 +54,31 @@ router.post(
 
 router.post(
   '/:id/confirm',
-  requirePerm('entries.write'),
+  requirePerm('entries.confirm'),
   asyncH(async (req, res) => {
-    await confirmEntry(req.user!, req.ip, parseInt(req.params.id, 10));
+    await confirmEntry(req.user!, req.ip, pathId(req.params.id));
     res.json({ ok: true });
   })
 );
 
 router.post(
-  '/:id/void',
-  requirePerm('entries.write'),
+  '/:id/approve',
+  requirePerm('entries.approve'),
   asyncH(async (req, res) => {
-    const { reason } = z.object({ reason: z.string().min(5).max(255) }).parse(req.body);
-    await voidEntry(req.user!, req.ip, parseInt(req.params.id, 10), reason);
+    const result = await approveEntry(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
+  })
+);
+
+router.post(
+  '/:id/void',
+  requirePerm('entries.void'),
+  asyncH(async (req, res) => {
+    const { reason, voidApprovedBy } = z.object({ 
+      reason: z.string().min(5).max(255),
+      voidApprovedBy: z.number().int().positive().optional()
+    }).parse(req.body);
+    await voidEntry(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
     res.json({ ok: true });
   })
 );

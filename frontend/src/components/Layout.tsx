@@ -16,6 +16,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: '📊', perm: 'dashboard.read' },
   { to: '/entregas', label: 'Entregas', icon: '📦', perm: 'deliveries.read' },
+  { to: '/reservas', label: 'Reservas / Retiros', icon: '📋', perm: 'deliveries.read' },
   { to: '/stock', label: 'Stock', icon: '🏷️', perm: 'stock.read' },
   { to: '/productos', label: 'Productos', icon: '🧴', perm: 'products.read' },
   { to: '/entradas', label: 'Entradas', icon: '📥', perm: 'entries.read' },

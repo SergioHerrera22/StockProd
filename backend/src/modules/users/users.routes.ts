@@ -6,6 +6,7 @@ import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { writeAudit } from '../../services/audit.service';
+import { pathId } from '../../lib/pagination';
 
 const router = Router();
 router.use(authRequired);
@@ -71,7 +72,7 @@ router.put(
   '/:id',
   requirePerm('users.manage'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const data = userSchema.partial().parse(req.body);
     if (data.password) throw ApiError.badRequest('Usa la opcion de restablecer contraseña');
 
@@ -115,7 +116,7 @@ router.post(
   '/:id/reset-password',
   requirePerm('users.manage'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const { password } = z.object({ password: z.string().min(6).max(100) }).parse(req.body);
     const hash = await bcrypt.hash(password, 10);
     const r = await query('UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING id', [hash, id]);

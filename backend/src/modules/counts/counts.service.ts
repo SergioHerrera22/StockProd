@@ -6,6 +6,10 @@ import { nextDocNumber } from '../../services/numbering';
 import { writeAudit } from '../../services/audit.service';
 import { assertLocationAccess } from '../../lib/locationGuard';
 import { AuthUser } from '../../middleware/auth';
+import { evaluateBusinessRules } from '../../services/businessRules.service';
+import { createApprovalRequest } from '../../services/approval.service';
+import { createAlert } from '../../services/alerts.service';
+import { createSnapshot } from '../../services/snapshot.service';
 
 /**
  * Crea un recuento por ubicacion. Toma una fotografia del stock del sistema
@@ -21,10 +25,12 @@ export async function createCount(
     const loc = await c.query('SELECT id, name FROM locations WHERE id = $1 AND is_active', [locationId]);
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion invalida');
 
+    // Crear snapshot PRE_COUNT para referencia
+    await createSnapshot(user, ip, locationId, 'PRE_COUNT', undefined, undefined);
+
     const number = await nextDocNumber(c, 'count');
     const r = await c.query<{ id: number }>(
-      `INSERT INTO stock_counts (number, location_id, notes, created_by)
-       VALUES ($1,$2,$3,$4) RETURNING id`,
+      `INSERT INTO stock_counts (number, location_id, notes, created_by) VALUES ($1,$2,$3,$4) RETURNING id`,
       [number, locationId, notes, user.id]
     );
     const countId = r.rows[0].id;
@@ -66,8 +72,7 @@ export async function saveCountItems(
         throw ApiError.badRequest('Las cantidades contadas deben ser cero o mayores');
       }
       const r = await c.query(
-        `UPDATE stock_count_items SET counted_quantity = $1
-         WHERE id = $2 AND count_id = $3`,
+        `UPDATE stock_count_items SET counted_quantity = $1 WHERE id = $2 AND count_id = $3`,
         [it.countedQuantity, it.itemId, id]
       );
       if (!r.rowCount) throw ApiError.badRequest('Item de inventario invalido');
@@ -83,11 +88,12 @@ export async function saveCountItems(
 /**
  * Aplica el inventario: genera los movimientos de ajuste necesarios para que
  * cada producto quede exactamente en la cantidad contada. Motivo obligatorio.
+ * Ahora con: evaluación de reglas, solicitud de aprobación si corresponde, segregación de funciones.
  */
 export async function applyCount(user: AuthUser, ip: string | undefined, id: number, reason: string) {
   return withTx(async (c) => {
-    const head = await c.query<{ status: string; number: string; location_id: number }>(
-      'SELECT status, number, location_id FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
+    const head = await c.query<{ status: string; number: string; location_id: number; created_by: number }>(
+      'SELECT status, number, location_id, created_by FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
     );
     const count = head.rows[0];
     if (!count) throw ApiError.notFound('Inventario no encontrado');
@@ -95,11 +101,47 @@ export async function applyCount(user: AuthUser, ip: string | undefined, id: num
     if (count.status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
     if (!reason || reason.trim().length < 5) throw ApiError.badRequest('El motivo del ajuste es obligatorio');
 
-    const items = await c.query<{ id: number; product_id: number; counted_quantity: string | null }>(
-      'SELECT id, product_id, counted_quantity FROM stock_count_items WHERE count_id = $1', [id]
+    // Segregación: quien aplica NO debe ser quien creó
+    if (count.created_by === user.id) {
+      throw ApiError.forbidden('No puedes aplicar un inventario que tú mismo creaste (segregación de funciones)');
+    }
+
+    const items = await c.query<{ id: number; product_id: number; counted_quantity: string | null; system_quantity: string }>(
+      'SELECT id, product_id, counted_quantity, system_quantity FROM stock_count_items WHERE count_id = $1', [id]
     );
 
-    let adjustments = 0;
+    const adjustments = items.rows.filter(it => it.counted_quantity !== null && Number(it.counted_quantity) !== Number(it.system_quantity));
+    const adjustmentsCount = adjustments.length;
+    const totalLines = items.rows.filter(it => it.counted_quantity !== null).length;
+    const context = { 
+      lines_count: totalLines, 
+      adjustments_count: adjustmentsCount,
+      location_id: count.location_id, 
+      user_role: user.role 
+    };
+
+    // Evaluar reglas ANTES de aplicar
+    const rules = await evaluateBusinessRules('COUNT', 'BEFORE_APPLY', context);
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    if (requiresApproval && user.role === 'EMPLEADO') {
+      throw ApiError.forbidden('Este inventario requiere aprobador con rol ENCARGADO o superior');
+    }
+
+    if (requiresApproval) {
+      const rule = rules.find(r => r.action.require_approval)!;
+      await createApprovalRequest({
+        ruleId: rule.ruleId,
+        entityType: 'COUNT',
+        entityId: id,
+        entityNumber: count.number,
+        requestedBy: user.id,
+        context: { ...context, reason, adjustments: adjustmentsCount },
+      });
+      await writeAudit(c, { userId: user.id, action: 'COUNT_APPLY_PENDING_APPROVAL', entity: 'count', entityId: id, details: { reason, adjustments: adjustmentsCount, requiresApproval: true }, ip });
+      return { ok: false, requiresApproval: true, adjustments: adjustmentsCount };
+    }
+
+    let appliedAdjustments = 0;
     for (const it of items.rows) {
       if (it.counted_quantity === null) continue; // no contado: no se ajusta
       const bal = await c.query<{ quantity: string }>(
@@ -130,34 +172,105 @@ export async function applyCount(user: AuthUser, ip: string | undefined, id: num
         reason: `Inventario ${count.number}: ${reason}`,
       });
       await c.query('UPDATE stock_count_items SET adjusted = true WHERE id = $1', [it.id]);
-      adjustments++;
+      appliedAdjustments++;
     }
+
+    // Crear snapshot POST_COUNT
+    await createSnapshot(user, ip, count.location_id, 'POST_COUNT', id, 'COUNT');
 
     await c.query(
       `UPDATE stock_counts SET status = 'APLICADO', approved_by = $1, applied_at = now() WHERE id = $2`,
       [user.id, id]
     );
+
     await writeAudit(c, {
       userId: user.id, action: 'COUNT_APPLY', entity: 'count', entityId: id,
-      details: { reason, adjustments }, ip,
+      details: { reason, adjustments: appliedAdjustments }, ip,
     });
-    return { ok: true, adjustments };
+
+    // Resolver aprobación si existía
+    await c.query(
+      `UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'COUNT' AND entity_id = $2 AND status = 'PENDIENTE'`,
+      [user.id, id]
+    );
+
+    return { ok: true, adjustments: appliedAdjustments };
   });
 }
 
-export async function voidCount(user: AuthUser, ip: string | undefined, id: number) {
+/**
+ * Aprobar inventario en ABIERTO (para flujo con aprobación)
+ */
+export async function approveCount(user: AuthUser, ip: string | undefined, id: number, reason: string) {
   return withTx(async (c) => {
-    const head = await c.query<{ status: string; location_id: number }>(
-      'SELECT status, location_id FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
+    const head = await c.query<{ status: string; location_id: number; created_by: number }>(
+      'SELECT status, location_id, created_by FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
+    );
+    if (!head.rows[0]) throw ApiError.notFound('Inventario no encontrado');
+    if (head.rows[0].status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
+    if (head.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar un inventario que tú mismo creaste (segregación de funciones)');
+    assertLocationAccess(user, head.rows[0].location_id);
+    return applyCount(user, ip, id, reason);
+  });
+}
+
+/**
+ * Anulacion de inventario ABIERTO (no aplicado)
+ * Si ya fue APLICADO, requiere DOBLE AUTORIZACION
+ */
+export async function voidCount(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
+  return withTx(async (c) => {
+    const head = await c.query<{ status: string; location_id: number; void_approved_by: number | null }>(
+      'SELECT status, location_id, void_approved_by FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
     );
     if (!head.rows[0]) throw ApiError.notFound('Inventario no encontrado');
     assertLocationAccess(user, head.rows[0].location_id);
-    if (head.rows[0].status !== 'ABIERTO') throw ApiError.conflict('Solo se pueden anular inventarios abiertos');
+    
+    const count = head.rows[0];
+    if (count.status === 'ANULADO') throw ApiError.conflict('El inventario ya esta anulado');
+
+    const requiresDualAuth = count.status === 'APLICADO';
+    if (requiresDualAuth) {
+      if (!voidApprovedBy) throw ApiError.badRequest('Anulación de inventario aplicado requiere segundo autorizador (voidApprovedBy)');
+      if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
+      const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
+      if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
+        throw ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+      }
+    } else if (count.status !== 'ABIERTO') {
+      throw ApiError.conflict('Solo se pueden anular inventarios abiertos o aplicados (con doble auth)');
+    }
+
+    // Evaluar reglas
+    const rules = await evaluateBusinessRules('VOID', 'VOID', { entity_id: id, user_role: user.role });
+    const requiresApproval = rules.some(r => r.action.require_approval);
+    if (requiresApproval && !voidApprovedBy) {
+      throw ApiError.badRequest('Esta anulación requiere aprobación según reglas de negocio');
+    }
+
     await c.query(
-      `UPDATE stock_counts SET status = 'ANULADO', voided_by = $1, voided_at = now() WHERE id = $2`,
-      [user.id, id]
+      `UPDATE stock_counts SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`,
+      [user.id, reason, voidApprovedBy ?? null, id]
     );
-    await writeAudit(c, { userId: user.id, action: 'COUNT_VOID', entity: 'count', entityId: id, ip });
+
+    await writeAudit(c, {
+      userId: user.id, action: 'COUNT_VOID', entity: 'count', entityId: id,
+      details: { reason, voidApprovedBy, requiresDualAuth, wasApplied: requiresDualAuth }, ip,
+    });
+
+    if (requiresDualAuth) {
+      await createAlert({
+        code: 'COUNT_VOID_DUAL_AUTH',
+        severity: 'WARNING',
+        entityType: 'COUNT',
+        entityId: id,
+        title: `Inventario anulado con doble autorización`,
+        message: `Anulado por ${user.fullName}, autorizado por usuario ${voidApprovedBy}. Motivo: ${reason}`,
+        data: { countId: id, voidedBy: user.id, voidApprovedBy, reason },
+        targetRoles: ['ADMIN'],
+      });
+    }
+
     return { ok: true };
   });
 }
@@ -165,11 +278,13 @@ export async function voidCount(user: AuthUser, ip: string | undefined, id: numb
 export async function getCount(id: number) {
   return withTx(async (c) => {
     const head = await c.query(
-      `SELECT sc.*, l.name AS location_name, cu.full_name AS created_by_name, au.full_name AS approved_by_name
+      `SELECT sc.*, l.name AS location_name, cu.full_name AS created_by_name, au.full_name AS approved_by_name,
+              vau.full_name AS void_approved_by_name
        FROM stock_counts sc
        JOIN locations l ON l.id = sc.location_id
        JOIN users cu ON cu.id = sc.created_by
        LEFT JOIN users au ON au.id = sc.approved_by
+       LEFT JOIN users vau ON vau.id = sc.void_approved_by
        WHERE sc.id = $1`, [id]
     );
     if (!head.rows[0]) return null;

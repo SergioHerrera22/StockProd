@@ -5,7 +5,7 @@ import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Delivery } from '../types';
 import { Badge, Button, Card, Field, Input, Modal, Spinner, useConfirm } from '../components/ui';
-import { DELIVERY_STATUS } from './Deliveries';
+import { deliveryStatusStyle } from './Deliveries';
 import { useToast } from '../components/Toast';
 
 export default function DeliveryDetail() {
@@ -73,7 +73,7 @@ export default function DeliveryDetail() {
     return <p className="py-16 text-center text-slate-400">Entrega no encontrada</p>;
   }
 
-  const status = DELIVERY_STATUS[delivery.status];
+  const status = deliveryStatusStyle(delivery.status);
   const totalUnits = delivery.items.reduce((acc, i) => acc + Number(i.quantity), 0);
 
   return (

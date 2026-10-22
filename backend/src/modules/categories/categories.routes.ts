@@ -4,6 +4,7 @@ import { query } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
+import { pathId } from '../../lib/pagination';
 
 const router = Router();
 router.use(authRequired);
@@ -38,7 +39,7 @@ router.delete(
   '/:id',
   requirePerm('categories.write'),
   asyncH(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
+    const id = pathId(req.params.id);
     const used = await query('SELECT id FROM products WHERE category_id = $1 LIMIT 1', [id]);
     if (used.rows[0]) throw ApiError.conflict('Hay productos usando esta categoria');
     await query('UPDATE categories SET is_active = false WHERE id = $1', [id]);

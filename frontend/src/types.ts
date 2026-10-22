@@ -70,7 +70,9 @@ export interface DeliveryItem {
 export interface Delivery {
   id: number;
   number: string;
-  status: 'BORRADOR' | 'CONFIRMADO' | 'ANULADO';
+  // PARCIAL: parte del stock se derivo a otra sucursal y quedo una orden de
+  // retiro abierta. El backend puede devolver este estado al confirmar.
+  status: 'BORRADOR' | 'CONFIRMADO' | 'PARCIAL' | 'ANULADO';
   location_id: number;
   location_name?: string;
   location_code?: string;
@@ -228,4 +230,141 @@ export interface Paged<T> {
   total: number;
   page: number;
   pageSize: number;
+}
+
+// ===== ENTREGAS PENDIENTES MULTI-SUCURSAL (retiros con código de barras) =====
+
+export type PendingDeliveryStatus =
+  | 'PENDIENTE'        // Creada, esperando retiro
+  | 'EN_PREPARACION'   // Escaneada en sucursal, preparando
+  | 'LISTO_RETIRO'     // Preparada, lista para entregar
+  | 'ENTREGADO'        // Confirmado retiro, stock descontado
+  | 'CANCELADO';       // Anulada
+
+export interface PendingDeliveryItem {
+  id?: number;
+  product_id: number;
+  product_code?: string;
+  product_name?: string;
+  unit?: string;
+  quantity_requested: number;   // Lo que pidió el cliente
+  quantity_reserved: number;    // Lo que se reservó realmente
+  quantity_delivered: number;   // Lo que ya se entregó
+  source_location_id: number;
+  source_location_code?: string;
+  source_location_name?: string;
+}
+
+export interface PendingDelivery {
+  id: number;
+  number: string;               // PD-000001
+  barcode: string;              // EAN-13 único
+  status: PendingDeliveryStatus;
+  sale_location_id: number;     // Donde se vendió
+  pickup_location_id: number;   // Donde retira el cliente
+  sale_location_code?: string;
+  sale_location_name?: string;
+  pickup_location_code?: string;
+  pickup_location_name?: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_document?: string | null;
+  notes?: string | null;
+  created_by_name?: string;
+  created_at: string;
+  prepared_at?: string | null;
+  delivered_at?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  items_count?: number;
+  total_qty_reserved?: number;
+  total_qty_delivered?: number;
+  items?: PendingDeliveryItem[];
+  reservations?: unknown[];
+}
+
+export interface PendingDeliveryListResponse {
+  data: PendingDelivery[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface ScanPendingDeliveryResult {
+  pending_delivery_id: number;
+  number: string;
+  status: PendingDeliveryStatus;
+  sale_location_code: string;
+  sale_location_name: string;
+  pickup_location_code: string;
+  pickup_location_name: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  customer_document: string | null;
+  items: PendingDeliveryItem[];
+  created_at: string;
+}
+
+export interface ConfirmPickupInput {
+  barcode: string;
+  items: { productId: number; quantityDelivered: number }[];
+}
+
+export interface MultiLocationAvailability {
+  productId: number;
+  productCode: string;
+  productName: string;
+  saleLocationQty: number;
+  otherLocations: {
+    locationId: number;
+    locationCode: string;
+    locationName: string;
+    availableQty: number;
+  }[];
+  totalAvailable: number;
+  canFulfill: boolean;
+}
+
+export interface StockAvailabilityRow {
+  productId: number;
+  productCode: string;
+  productName: string;
+  locationId: number;
+  locationCode: string;
+  locationName: string;
+  totalQuantity: number;
+  reservedQuantity: number;
+  availableQuantity: number;
+}
+
+export interface UserAlternativeChoice {
+  productId: number;
+  chosenLocationId: number;
+  quantity: number;
+}
+
+// ===== VERIFICACIÓN DE DISPONIBILIDAD DE ENTREGA (faltantes + derivación) =====
+
+export interface DeliveryAvailabilityItem {
+  productId: number;
+  productCode: string;
+  productName: string;
+  requestedQuantity: number;
+  availableAtMain: number;
+  shortfall: number;
+  alternativeLocations: {
+    locationId: number;
+    locationCode: string;
+    locationName: string;
+    availableQuantity: number;
+  }[];
+}
+
+export interface DeliveryAvailabilityResult {
+  items: DeliveryAvailabilityItem[];
+  canFullyDeliverLocally: boolean;
+  hasShortfalls: boolean;
 }
