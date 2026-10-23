@@ -13,7 +13,8 @@ import {
   confirmDeliveryWithAlternatives,
   checkDeliveryAvailability,
   approveDelivery,
-  getPendingDeliveryForDelivery
+  getPendingDeliveryForDelivery,
+  rederiveShortfalls
 } from './deliveries.service';
 
 const router = Router();
@@ -120,9 +121,20 @@ router.post(
 router.get(
   '/:id/pending-delivery',
   asyncH(async (req, res) => {
-    const pd = await getPendingDeliveryForDelivery(pathId(req.params.id));
-    if (!pd) return res.status(404).json({ error: 'No hay entrega pendiente asociada' });
-    res.json({ pendingDelivery: pd });
+    const list = await getPendingDeliveryForDelivery(pathId(req.params.id));
+    // Array: una entrada por sucursal de retiro (puede haber varias órdenes)
+    res.json({ pendingDeliveries: list });
+  })
+);
+
+// Re-derivar faltantes de una entrega ya confirmada (PARCIAL/CONFIRMADO).
+// Útil tras cancelar una orden de retiro o cuando llegó stock nuevo.
+router.post(
+  '/:id/rederive',
+  requirePerm('deliveries.confirm'),
+  asyncH(async (req, res) => {
+    const result = await rederiveShortfalls(req.user!, req.ip, pathId(req.params.id));
+    res.json(result);
   })
 );
 

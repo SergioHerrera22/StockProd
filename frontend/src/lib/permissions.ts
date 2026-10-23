@@ -6,7 +6,7 @@ export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO';
 export type Permission =
   | 'products.read' | 'products.write' | 'categories.write'
   | 'stock.read' | 'stock.adjust'
-  | 'deliveries.read' | 'deliveries.write' | 'deliveries.void'
+  | 'deliveries.read' | 'deliveries.write' | 'deliveries.confirm' | 'deliveries.void'
   | 'entries.read' | 'entries.write'
   | 'transfers.read' | 'transfers.write' | 'transfers.receive'
   | 'counts.read' | 'counts.write' | 'counts.apply'
@@ -17,7 +17,7 @@ export type Permission =
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write',
   'stock.read', 'stock.adjust',
-  'deliveries.read', 'deliveries.write', 'deliveries.void',
+  'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void',
   'entries.read', 'entries.write',
   'transfers.read', 'transfers.write', 'transfers.receive',
   'counts.read', 'counts.write', 'counts.apply',
@@ -28,7 +28,7 @@ const ENCARGADO: Permission[] = [
 const EMPLEADO: Permission[] = [
   'products.read',
   'stock.read',
-  'deliveries.read', 'deliveries.write',
+  'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
 ];

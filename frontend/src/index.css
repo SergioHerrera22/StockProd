@@ -23,6 +23,12 @@ body {
 /* Impresión de comprobantes */
 @media print {
   body { @apply bg-white; }
+  /* Los códigos de barras y el bloque de pendientes usan fondo/negro:
+     forzamos colores exactos para que sí salgan en el papel. */
+  .print-area, .print-area * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
   .no-print { display: none !important; }
   .print-area {
     position: fixed !important;

@@ -126,6 +126,7 @@ import type {
   MultiLocationAvailability,
   StockAvailabilityRow,
   UserAlternativeChoice,
+  DeliveryPendingOrder,
 } from '../types';
 
 /** Lista órdenes pendientes (retiros) con filtros y paginación */
@@ -157,6 +158,21 @@ export async function scanPendingDelivery(barcode: string): Promise<ScanPendingD
   return api<ScanPendingDeliveryResult>(
     `/pending-deliveries/scan/${encodeURIComponent(barcode)}`
   );
+}
+
+/** Órdenes pendientes (retiros) derivadas de una entrega, con ítems y barcode.
+ *  Pueden ser varias: una por sucursal de retiro. */
+export async function getDeliveryPendingDeliveries(
+  deliveryId: string | number
+): Promise<DeliveryPendingOrder[]> {
+  try {
+    const res = await api<{ pendingDeliveries: DeliveryPendingOrder[] }>(
+      `/deliveries/${deliveryId}/pending-delivery`
+    );
+    return res.pendingDeliveries ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /** Confirma el retiro en la sucursal destino (descuenta stock real) */
@@ -208,12 +224,28 @@ export async function checkDeliveryAvailability(deliveryId: number): Promise<Del
 export async function confirmDeliveryWithAlternatives(
   data: { choices: UserAlternativeChoice[] },
   deliveryId: number
-): Promise<{
+): Promise<DeliveryConfirmResponse> {
+  return api(`/deliveries/${deliveryId}/confirm-with-alternatives`, {
+    method: 'POST',
+    body: data,
+  });
+}
+
+/** Resultado de confirmar una entrega (directo o con alternativas) */
+export interface DeliveryConfirmResponse {
   success: boolean;
   deliveryId: number;
   deliveryNumber: string;
   fullyDelivered: { productId: number; quantity: number }[];
   shortfalls: unknown[];
+  /** Una orden de retiro por sucursal de retiro */
+  pendingDeliveries: {
+    id: number;
+    number: string;
+    barcode: string;
+    pickupLocationId: number;
+    pickupLocationName: string;
+  }[];
   pendingDelivery?: {
     id: number;
     number: string;
@@ -221,9 +253,13 @@ export async function confirmDeliveryWithAlternatives(
     pickupLocationId: number;
     pickupLocationName: string;
   };
-}> {
-  return api(`/deliveries/${deliveryId}/confirm-with-alternatives`, {
-    method: 'POST',
-    body: data,
-  });
+  /** Faltantes que quedaron sin stock en ninguna sucursal para derivar */
+  unresolvedShortfalls?: { productId: number; productName: string; quantity: number }[];
+}
+
+/** Re-deriva faltantes pendientes de una entrega ya confirmada */
+export async function rederiveDeliveryShortfalls(
+  deliveryId: number
+): Promise<{ ok: boolean; created: DeliveryConfirmResponse['pendingDeliveries']; message?: string }> {
+  return api(`/deliveries/${deliveryId}/rederive`, { method: 'POST' });
 }

@@ -42,6 +42,20 @@ export interface CreateAlertInput {
  * Crear alerta
  */
 export async function createAlert(input: CreateAlertInput) {
+  // Deduplicacion: si ya existe una alerta no resuelta para el mismo
+  // codigo+entidad, no re-crear (permite correr checks programados en cron
+  // sin llenar la tabla con duplicados).
+  if (input.code && input.entityType && input.entityId !== undefined && input.entityId !== null) {
+    const dupe = await query<{ id: string }>(
+      `SELECT id FROM alerts
+       WHERE code = $1 AND entity_type = $2 AND entity_id = $3
+         AND status IN ('PENDIENTE', 'VISTA')
+       LIMIT 1`,
+      [input.code, input.entityType, input.entityId]
+    );
+    if (dupe.rows[0]) return { alertId: Number(dupe.rows[0].id), deduplicated: true };
+  }
+
   const r = await query<{ id: number }>(
     `SELECT create_alert($1, $2::alert_severity, $3, $4, $5, $6, $7::jsonb, $8::varchar[], $9) AS id`,
     [

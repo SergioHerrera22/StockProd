@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { BrowserMultiFormatReader } from '@zxing/browser';
 import { api, qs } from '../lib/api';
 import { exportCSV, fmtMoney, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
@@ -182,6 +183,52 @@ export default function Products() {
   const [importInfo, setImportInfo] = useState<{ mapped: string; ignored: number; autoMode: boolean } | null>(null);
   const [importing, setImporting] = useState(false);
 
+  // Escaneo con cámara y generación automática del código de barras
+  const [scanOpen, setScanOpen] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
+  const scanVideoRef = useRef<HTMLVideoElement>(null);
+  const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
+
+  // Cámara: se abre/cierra con scanOpen y decodifica continuamente
+  useEffect(() => {
+    if (!scanOpen) return;
+    const reader = new BrowserMultiFormatReader();
+    let stopped = false;
+    let ctrl: { stop: () => void } | null = null;
+    reader
+      .decodeFromVideoDevice(undefined, scanVideoRef.current!, (result, _err, control) => {
+        ctrl = control as unknown as { stop: () => void };
+        if (!result || stopped) return;
+        const code = result.getText().trim();
+        const now = Date.now();
+        // Ignora disparos repetidos del mismo cuadro (mismo código < 1.5s)
+        if (code === lastScanRef.current.code && now - lastScanRef.current.time < 1500) return;
+        lastScanRef.current = { code, time: now };
+        stopped = true;
+        setForm((f) => ({ ...f, barcode: code }));
+        setScanOpen(false);
+        toast.success(`Código de barras leído: ${code}`);
+      })
+      .catch(() => toast.error('No se pudo abrir la cámara. Revisá los permisos del navegador.'));
+    return () => {
+      stopped = true;
+      try { ctrl?.stop(); } catch { /* noop */ }
+    };
+  }, [scanOpen]);
+
+  async function generateBarcode() {
+    setGenBusy(true);
+    try {
+      const res = await api<{ barcode: string }>('/products/barcode/new');
+      setForm((f) => ({ ...f, barcode: res.barcode }));
+      toast.success(`Código EAN-13 único generado: ${res.barcode}`);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setGenBusy(false);
+    }
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -220,6 +267,7 @@ export default function Products() {
   function openNew() {
     setForm(emptyForm);
     setDuplicates([]);
+    setScanOpen(false);
     setModalOpen(true);
   }
 
@@ -239,6 +287,7 @@ export default function Products() {
       isActive: p.is_active,
     });
     setDuplicates([]);
+    setScanOpen(false);
     setModalOpen(true);
   }
 
@@ -557,7 +606,7 @@ export default function Products() {
       {/* Modal alta/edición */}
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={() => { setScanOpen(false); setModalOpen(false); }}
         title={form.id ? `Editar producto ${form.code}` : 'Nuevo producto'}
         width="lg"
         footer={
@@ -580,7 +629,32 @@ export default function Products() {
             <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
           </Field>
           <Field label="Código de barras" hint="Opcional, para lector">
-            <Input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} />
+            <div className="flex gap-2">
+              <Input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} />
+              <Button
+                variant="secondary"
+                loading={genBusy}
+                onClick={generateBarcode}
+                title="Generar código de barras EAN-13 único"
+                type="button"
+              >
+                ✨
+              </Button>
+              <Button
+                variant={scanOpen ? 'danger' : 'secondary'}
+                onClick={() => { setScanOpen((v) => !v); }}
+                title={scanOpen ? 'Detener escaneo' : 'Escanear con cámara'}
+                type="button"
+              >
+                {scanOpen ? '⏹' : '📷'}
+              </Button>
+            </div>
+            {scanOpen && (
+              <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
+                <video ref={scanVideoRef} className="w-full" style={{ maxHeight: 240 }} muted playsInline />
+                <p className="p-2 text-center text-xs text-slate-400">Enfocá el código de barras del envase…</p>
+              </div>
+            )}
           </Field>
           <Field label="Nombre" required className="sm:col-span-2">
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />

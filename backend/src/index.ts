@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { config } from './config/env';
 import { logger } from './lib/logger';
 import { pool } from './db/pool';
+import { startScheduler } from './jobs/scheduler';
 
 async function main() {
   // Verifica la conexion a la base antes de arrancar
@@ -19,6 +20,10 @@ async function main() {
   app.listen(config.port, () => {
     logger.info(`API Robles Stock escuchando en http://localhost:${config.port} [${config.env}]`);
   });
+
+  // Jobs programados: limpieza de reservas vencidas, auto-cancelacion de
+  // retiros vencidos y alertas (ver src/jobs/scheduler.ts)
+  startScheduler();
 }
 
 main().catch((err) => {

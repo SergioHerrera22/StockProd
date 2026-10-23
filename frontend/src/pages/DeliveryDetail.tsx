@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api } from '../lib/api';
+import {
+  api, getDeliveryPendingDeliveries, checkDeliveryAvailability, confirmDeliveryWithAlternatives,
+  rederiveDeliveryShortfalls,
+} from '../lib/api';
 import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
-import type { Delivery } from '../types';
+import type { Delivery, DeliveryPendingOrder } from '../types';
 import { Badge, Button, Card, Field, Input, Modal, Spinner, useConfirm } from '../components/ui';
+import { DerivationModal } from '../components/DerivationModal';
 import { deliveryStatusStyle } from './Deliveries';
 import { useToast } from '../components/Toast';
+import Barcode from '../components/Barcode';
 
 export default function DeliveryDetail() {
   const { id } = useParams();
@@ -16,16 +21,21 @@ export default function DeliveryDetail() {
   const can = useAuth((s) => s.can);
 
   const [delivery, setDelivery] = useState<Delivery | null>(null);
+  const [pendingOrders, setPendingOrders] = useState<DeliveryPendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [voidOpen, setVoidOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deriving, setDeriving] = useState(false);
+  const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api<{ delivery: Delivery }>(`/deliveries/${id}`);
       setDelivery(res.delivery);
+      // Órdenes pendientes derivadas de esta entrega (una por sucursal de retiro)
+      setPendingOrders(await getDeliveryPendingDeliveries(id!));
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -36,12 +46,89 @@ export default function DeliveryDetail() {
 
   useEffect(() => { void load(); }, [load]);
 
+  /**
+   * Confirmación unificada (mismo flujo que Nueva entrega):
+   * 1. Verifica disponibilidad de la entrega en borrador.
+   * 2. Sin faltantes -> confirma directo.
+   *    Con faltantes -> modal para elegir sucursal de derivación por producto.
+   * Nunca deriva "solo" a la mejor sucursal sin preguntar (comportamiento anterior).
+   */
   async function confirmDraft() {
+    if (!delivery || !id) return;
+    setSaving(true);
+    try {
+      const avail = await checkDeliveryAvailability(delivery.id);
+      setSaving(false);
+      if (avail.hasShortfalls) {
+        // Pedir elección de sucursales antes de confirmar
+        setAvailabilityItems(avail.items);
+        setDeriving(true);
+        return;
+      }
+      await doConfirmDirect();
+    } catch (e) {
+      toast.error((e as Error).message);
+      setSaving(false);
+    }
+  }
+
+  async function doConfirmDirect() {
     if (!delivery) return;
     setSaving(true);
     try {
-      await api(`/deliveries/${delivery.id}/confirm`, { method: 'POST' });
-      toast.success('Entrega confirmada: stock descontado');
+      const res = await api<import('../lib/api').DeliveryConfirmResponse>(
+        `/deliveries/${delivery.id}/confirm`, { method: 'POST' }
+      );
+      if (res.pendingDeliveries.length > 0) {
+        toast.success(`Entrega ${res.deliveryNumber} confirmada parcialmente: ${res.pendingDeliveries.length} retiro(s) creado(s)`);
+      } else {
+        toast.success('Entrega confirmada: stock descontado');
+      }
+      void load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** Confirmación con las sucursales elegidas en el modal de derivación */
+  async function handleConfirmWithChoices(choices: import('../types').UserAlternativeChoice[]) {
+    if (!delivery) return;
+    setDeriving(false);
+    setSaving(true);
+    try {
+      const res = await confirmDeliveryWithAlternatives({ choices }, delivery.id);
+      if (res.pendingDeliveries.length > 0) {
+        toast.success(
+          `Entrega ${res.deliveryNumber} confirmada parcialmente. Retiro(s): ` +
+          res.pendingDeliveries.map(o => o.barcode).join(', ')
+        );
+      } else {
+        toast.success(`Entrega ${res.deliveryNumber} confirmada`);
+      }
+      if (res.unresolvedShortfalls?.length) {
+        toast.warn('Deuda sin derivar: ' + res.unresolvedShortfalls.map(u => `${u.productName} x${u.quantity}`).join(', '));
+      }
+      void load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** Re-derivación de faltantes pendientes (tras cancelar un retiro o llegar stock) */
+  async function rederiveOutstanding() {
+    if (!delivery || !id) return;
+    setSaving(true);
+    try {
+      const res = await rederiveDeliveryShortfalls(delivery.id);
+      if (res.created.length > 0) {
+        toast.success(`Re-derivados: ${res.created.length} retiro(s) creado(s)`);
+      } else {
+        toast.info(res.message ?? 'No hay faltantes con stock disponible en otras sucursales');
+      }
       void load();
     } catch (e) {
       toast.error((e as Error).message);
@@ -74,7 +161,42 @@ export default function DeliveryDetail() {
   }
 
   const status = deliveryStatusStyle(delivery.status);
-  const totalUnits = delivery.items.reduce((acc, i) => acc + Number(i.quantity), 0);
+  const d = delivery; // captura para usar dentro de funciones (evita narrowing roto en closures)
+  const totalUnits = delivery.items.reduce((acc, i) => acc + Number(i.quantity_delivered ?? i.quantity), 0);
+
+  /** Lo efectivamente entregado de un ítem: al confirmarse la entrega se
+   *  registra quantity_delivered; en borrador se muestra lo cargado. */
+  function deliveredQtyOf(it: Delivery['items'][number]): number {
+    if (d.status !== 'BORRADOR' && it.quantity_delivered != null) {
+      return Number(it.quantity_delivered);
+    }
+    return Number(it.quantity);
+  }
+
+  // Deuda sin derivar: objetivo (cargado vs facturado) - entregado - lo que
+  // sigue prometido vía órdenes de retiro. Solo aplica a entregas confirmadas.
+  const underived = (() => {
+    if (delivery.status === 'BORRADOR' || delivery.status === 'ANULADO') return [] as { name: string; qty: number }[];
+    const owedThroughOrders = new Map<number, number>();
+    for (const order of pendingOrders) {
+      for (const it of order.items) {
+        const prev = owedThroughOrders.get(it.product_id) ?? 0;
+        owedThroughOrders.set(
+          it.product_id,
+          prev + Number(it.quantity_requested) - Number(it.quantity_delivered)
+        );
+      }
+    }
+    const rows: { name: string; qty: number }[] = [];
+    for (const it of delivery.items) {
+      const billed = it.requested_quantity == null ? null : Number(it.requested_quantity);
+      const target = Math.max(Number(it.quantity), billed ?? 0);
+      const delivered = deliveredQtyOf(it);
+      const owed = target - delivered - (owedThroughOrders.get(it.product_id) ?? 0);
+      if (owed > 0) rows.push({ name: it.name ?? it.code ?? `Producto #${it.product_id}`, qty: owed });
+    }
+    return rows;
+  })();
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -82,8 +204,13 @@ export default function DeliveryDetail() {
         <Button variant="secondary" onClick={() => navigate('/entregas')}>← Volver</Button>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => window.print()}>🖨 Imprimir comprobante</Button>
-          {delivery.status === 'BORRADOR' && (
+          {delivery.status === 'BORRADOR' && can('deliveries.confirm') && (
             <Button variant="success" loading={saving} onClick={confirmDraft}>✅ Confirmar entrega</Button>
+          )}
+          {(delivery.status === 'PARCIAL' || delivery.status === 'CONFIRMADO') && can('deliveries.confirm') && (
+            <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock en otras sucursales para los faltantes que quedaron sin derivar">
+              🔄 Re-derivar faltantes
+            </Button>
           )}
           {delivery.status !== 'ANULADO' && can('deliveries.void') && (
             <Button variant="danger" onClick={() => setVoidOpen(true)}>Anular</Button>
@@ -103,9 +230,12 @@ export default function DeliveryDetail() {
               </div>
             </div>
           </div>
-          <div className="text-right">
+          <div className="flex flex-col items-end text-right">
             <div className="font-mono text-lg font-bold text-brand-700">{delivery.number}</div>
             <Badge color={status.color}>{status.label}</Badge>
+            <div className="mt-1 print:mt-2">
+              <Barcode value={delivery.number} height={40} width={1.3} />
+            </div>
           </div>
         </div>
 
@@ -135,7 +265,7 @@ export default function DeliveryDetail() {
                 <td className="py-2 font-mono text-xs">{it.code}</td>
                 <td className="py-2 font-medium text-slate-700">{it.name}</td>
                 <td className="py-2 text-center text-slate-400">{it.requested_quantity != null ? fmtQty(it.requested_quantity) : '—'}</td>
-                <td className="py-2 text-right font-semibold">{fmtQty(it.quantity)} {(it.unit ?? '').toLowerCase()}</td>
+                <td className="py-2 text-right font-semibold">{fmtQty(deliveredQtyOf(it))} {(it.unit ?? '').toLowerCase()}</td>
               </tr>
             ))}
           </tbody>
@@ -150,6 +280,72 @@ export default function DeliveryDetail() {
         {delivery.status === 'ANULADO' && (
           <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
             Entrega anulada. Los ajustes correspondientes quedaron registrados en el historial.
+          </div>
+        )}
+
+        {/* Pendientes de entrega: una orden de retiro por sucursal de retiro */}
+        {pendingOrders.length > 0 && (
+          <div className="mt-6 rounded-lg border border-dashed border-amber-400 bg-amber-50 p-4">
+            <div className="mb-1 text-sm font-bold uppercase tracking-wide text-amber-800">
+              ⏳ Pendientes de entrega
+            </div>
+            {pendingOrders.map((order) => {
+              const rows = order.items
+                .map((it) => ({ ...it, pendingQty: Number(it.quantity_reserved) - Number(it.quantity_delivered) }))
+                .filter((it) => it.pendingQty > 0);
+              if (rows.length === 0) return null;
+              return (
+                <div key={order.id} className="mb-4 last:mb-0">
+                  <p className="mb-2 text-xs text-amber-700">
+                    Se derivaron a <strong>{order.pickupLocationName ?? 'otra sucursal'}</strong>. El cliente
+                    presenta este código para retirarlos:
+                  </p>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-amber-300 text-left text-xs uppercase tracking-wide text-amber-700">
+                        <th className="py-1">Producto</th>
+                        <th className="py-1 text-right">Cantidad pendiente</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((it) => (
+                        <tr key={`${order.id}-${it.product_id}-${it.source_location_id}`} className="border-b border-amber-200/60">
+                          <td className="py-1.5 text-slate-700">
+                            <span className="font-mono text-xs text-slate-400">{it.product_code}</span> · {it.product_name}
+                          </td>
+                          <td className="py-1.5 text-right font-semibold text-slate-800">
+                            {fmtQty(it.pendingQty)} {(it.unit ?? '').toLowerCase()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="mt-3 flex flex-col items-center gap-1 rounded-lg bg-white p-3">
+                    <Barcode value={order.barcode} format="EAN13" height={44} />
+                    <div className="text-xs text-slate-500">
+                      Orden de retiro <strong>{order.number}</strong>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {/* Deuda sin derivar que convive con órdenes de retiro */}
+            {underived.length > 0 && (
+              <div className="mt-3 border-t border-amber-300 pt-2 text-xs text-amber-800">
+                <strong>Sin derivar:</strong> estos montos no pudieron derivarse por falta de stock general.{' '}
+                {underived.map((u) => `${u.name} x${fmtQty(u.qty)}`).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Deuda sin derivar sin órdenes de retiro (entrega confirmada con deuda) */}
+        {pendingOrders.length === 0 && underived.length > 0 && (
+          <div className="mt-6 rounded-lg border border-dashed border-amber-400 bg-amber-50 p-4 text-sm text-amber-800">
+            <div className="mb-1 font-bold uppercase tracking-wide">⏳ Pendiente sin derivar</div>
+            Estos montos no pudieron derivarse por falta de stock en ninguna sucursal:{' '}
+            <strong>{underived.map((u) => `${u.name} x${fmtQty(u.qty)}`).join(' · ')}</strong>.
+            Usá «🔄 Re-derivar faltantes» cuando llegue mercadería.
           </div>
         )}
 
@@ -181,6 +377,14 @@ export default function DeliveryDetail() {
           <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: error de carga, devolución total…" />
         </Field>
       </Modal>
+
+      {/* Modal de derivación (mismo componente que Nueva entrega) */}
+      <DerivationModal
+        open={deriving}
+        onClose={() => setDeriving(false)}
+        items={availabilityItems}
+        onConfirm={handleConfirmWithChoices}
+      />
     </div>
   );
 }

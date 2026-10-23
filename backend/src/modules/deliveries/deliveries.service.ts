@@ -36,13 +36,19 @@ export interface DeliveryConfirmResult {
   deliveryNumber: string;
   fullyDelivered: { productId: number; quantity: number }[];
   shortfalls: DeliveryShortfall[];
-  pendingDelivery?: {
-    id: number;
-    number: string;
-    barcode: string;
-    pickupLocationId: number;
-    pickupLocationName: string;
-  };
+  pendingDeliveries: DeliveryPendingOrderRef[];
+  /** Compat: la primera orden creada (para consumo existente en frontend) */
+  pendingDelivery?: DeliveryPendingOrderRef;
+  /** Faltantes que quedaron sin destinar a ninguna sucursal (sin stock en ninguna parte) */
+  unresolvedShortfalls?: { productId: number; productName: string; quantity: number }[];
+}
+
+export interface DeliveryPendingOrderRef {
+  id: number;
+  number: string;
+  barcode: string;
+  pickupLocationId: number;
+  pickupLocationName: string;
 }
 
 export interface DeliveryShortfall {
@@ -58,6 +64,104 @@ export interface DeliveryShortfall {
     locationName: string;
     availableQuantity: number;
   }[];
+}
+
+interface PendingItemInput {
+  productId: number;
+  quantityRequested: number;
+  sourceLocationId: number;
+  quantityReserved: number;
+}
+
+/**
+ * Crea las órdenes de retiro pendientes para un conjunto de faltantes,
+ * agrupando los ítems por sucursal de retiro: una orden (con su propio
+ * código de barras) por sucursal. Antes se creaba UNA sola orden con
+ * pickup = la sucursal del primer ítem, aunque hubiera ítems derivados
+ * desde sucursales distintas (el cliente veía mal dónde retirar).
+ */
+async function createPendingOrdersForShortfalls(
+  c: PoolClient,
+  user: AuthUser,
+  saleLocationId: number,
+  deliveryId: number,
+  notesPrefix: string,
+  items: PendingItemInput[]
+): Promise<DeliveryPendingOrderRef[]> {
+  // Agrupar por sucursal de retiro
+  const groups = new Map<number, PendingItemInput[]>();
+  for (const it of items) {
+    const list = groups.get(it.sourceLocationId) ?? [];
+    list.push(it);
+    groups.set(it.sourceLocationId, list);
+  }
+
+  const orders: DeliveryPendingOrderRef[] = [];
+  for (const [pickupLocationId, groupItems] of groups) {
+    const pd = await createPendingDelivery(user, undefined, {
+      saleLocationId,
+      pickupLocationId,
+      customerName: undefined,
+      customerPhone: undefined,
+      customerDocument: undefined,
+      notes: `${notesPrefix} - retiro en esta sucursal`,
+      deliveryId,
+      items: groupItems,
+    }, c);
+
+    const pickupName = await c.query<{ name: string }>(
+      'SELECT name FROM locations WHERE id = $1',
+      [pickupLocationId]
+    );
+    orders.push({
+      id: pd.id,
+      number: pd.number,
+      barcode: pd.barcode,
+      pickupLocationId,
+      pickupLocationName: pickupName.rows[0]?.name ?? '',
+    });
+  }
+  return orders;
+}
+
+/**
+ * De cada faltante elige la sucursal alternativa con más stock disponible
+ * (modo automático, sin intervención del usuario). Si en la mejor sucursal
+ * no alcanza para todo el faltante, el sobrante queda reportado en
+ * `unresolved` (deuda de mercadería sin destino posible).
+ */
+function autoAssignShortfalls(shortfalls: DeliveryShortfall[]): {
+  pendingItems: PendingItemInput[];
+  unresolved: { productId: number; productName: string; quantity: number }[];
+} {
+  const pendingItems: PendingItemInput[] = [];
+  const unresolved: { productId: number; productName: string; quantity: number }[] = [];
+
+  for (const sf of shortfalls) {
+    if (sf.alternativeLocations.length === 0) continue; // se maneja como unresolved por el llamador
+
+    const best = sf.alternativeLocations.reduce((bestLoc, cur) =>
+      cur.availableQuantity > bestLoc.availableQuantity ? cur : bestLoc
+    );
+    const reservedQty = Math.min(sf.shortfallQuantity, best.availableQuantity);
+    if (reservedQty <= 0) continue; // nada reservable: queda en unresolved
+
+    pendingItems.push({
+      productId: sf.productId,
+      quantityRequested: sf.shortfallQuantity,
+      sourceLocationId: best.locationId,
+      quantityReserved: reservedQty,
+    });
+    if (reservedQty < sf.shortfallQuantity) {
+      unresolved.push({
+        productId: sf.productId,
+        productName: sf.productName,
+        quantity: sf.shortfallQuantity - reservedQty,
+      });
+    }
+  }
+
+  return { pendingItems, unresolved };
 }
 
 async function validateItems(c: PoolClient, items: DeliveryItemInput[]) {
@@ -104,7 +208,7 @@ async function loadDelivery(client: PoolClient, id: number) {
   );
   if (!head.rows[0]) return null;
   const items = await client.query(
-    `SELECT di.id, di.product_id, di.quantity, di.requested_quantity,
+    `SELECT di.id, di.product_id, di.quantity, di.quantity_delivered, di.requested_quantity,
             p.code, p.name, p.unit, p.brand, p.min_stock,
             COALESCE(sb.quantity, 0) AS stock_now
      FROM delivery_items di
@@ -245,10 +349,9 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
     throw ApiError.conflict(`Sin stock disponible para "${p.name}" (${p.code}) en ninguna ubicación`);
   }
 
-  // Segregación de funciones: quien confirma NO debe ser quien creó el borrador.
-  if (delivery.created_by === user.id) {
-    throw ApiError.forbidden('No puedes confirmar una entrega que tú mismo creaste (segregación de funciones)');
-  }
+  // Regla de negocio: cualquier vendedor de la sucursal puede confirmar la
+  // entrega, incluido el que cargo el borrador (todos los vendedores que
+  // entreguen pueden aceptar la entrega).
 
   // Evaluar reglas al confirmar
   const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
@@ -265,6 +368,11 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
   
   const shortfalls: DeliveryShortfall[] = [];
   const fullyDelivered: { productId: number; quantity: number }[] = [];
+  // Lo que queda debiéndose sin destino posible (sin stock en ninguna parte
+  // para derivar). Se registra como alerta tras el commit para seguimiento.
+  const unresolved: { productId: number; productName: string; quantity: number }[] = [];
+  // Lo efectivamente entregado por ítem (para quantity_delivered)
+  const deliverNowMap = new Map<number, number>();
   const reservationInputs: Array<{
     referenceType: 'DELIVERY';
     referenceId: number;
@@ -292,6 +400,7 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
     const shortfallQty = Math.max(0, target - availableAtMain);
     // Faltante duro: lo que el operador pidió entregar ahora y no hay stock
     const hardShortfall = Math.max(0, qty - availableAtMain);
+    deliverNowMap.set(it.product_id, deliverNow);
 
     if (deliverNow > 0) {
       fullyDelivered.push({ productId: it.product_id, quantity: deliverNow });
@@ -318,16 +427,19 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
 
       if (alternatives.length === 0) {
         // Sin dónde derivar. Si además no se pudo entregar lo que se pidió
-        // ahora, la entrega no se puede cumplir -> 409. Si lo pedido se
-        // entregó completo y solo falta lo facturado de más, se entrega igual
-        // (no hay mercadería que derivar).
+        // ahora, la entrega no se puede cumplir -> 409 (el borrador es editable:
+        // el operador quita o reduce el ítem). Si lo pedido se entregó completo
+        // y solo falta lo facturado de más, se entrega igual y queda la deuda
+        // documentada (alerta + comprobante) sin ninguna orden de retiro.
         if (hardShortfall > 0) {
           throw ApiError.conflict(
             `Stock insuficiente para "${it.name}" (${it.code}): ` +
             `disponible ${availableAtMain} en sucursal principal, ` +
-            `requerido ${qty}, y no hay stock en otras sucursales`
+            `requerido ${qty}, y no hay stock en otras sucursales. ` +
+            `Modificá el borrador para ajustar la cantidad a entregar.`
           );
         }
+        unresolved.push({ productId: it.product_id, productName: it.name, quantity: shortfallQty });
         continue;
       }
 
@@ -362,48 +474,34 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
     }
   }
 
-  // Si hay faltantes, crear entrega pendiente
-  let pendingDelivery: DeliveryConfirmResult['pendingDelivery'] = undefined;
-  
-  if (shortfalls.length > 0) {
-    const pendingItems: Array<{
-      productId: number;
-      quantityRequested: number;
-      sourceLocationId: number;
-      quantityReserved: number;
-    }> = shortfalls.map(sf => {
-      const bestAlternative = sf.alternativeLocations.reduce((best, current) => 
-        current.availableQuantity > best.availableQuantity ? current : best
-      );
-      return {
-        productId: sf.productId,
-        quantityRequested: sf.shortfallQuantity,
-        sourceLocationId: bestAlternative.locationId,
-        quantityReserved: Math.min(sf.shortfallQuantity, bestAlternative.availableQuantity),
-      };
-    });
+  // Si hay faltantes, crear las órdenes de retiro (UNA POR SUCURSAL de retiro)
+  let pendingOrders: DeliveryPendingOrderRef[] = [];
 
-    const pd = await createPendingDelivery(user, undefined, {
-      saleLocationId: delivery.location_id,
-      pickupLocationId: pendingItems[0].sourceLocationId,
-      customerName: undefined,
-      customerPhone: undefined,
-      customerDocument: undefined,
-      notes: `Faltante de entrega ${delivery.number}`,
-      deliveryId: delivery.id,
-      items: pendingItems,
-    }, c);
-    
-    pendingDelivery = {
-      id: pd.id,
-      number: pd.number,
-      barcode: pd.barcode,
-      pickupLocationId: pendingItems[0].sourceLocationId,
-      pickupLocationName: shortfalls[0].alternativeLocations.find(a => a.locationId === pendingItems[0].sourceLocationId)?.locationName || '',
-    };
+  if (shortfalls.length > 0) {
+    const { pendingItems, unresolved: partialUnresolved } = autoAssignShortfalls(shortfalls);
+    if (pendingItems.length > 0) {
+      pendingOrders = await createPendingOrdersForShortfalls(
+        c, user, delivery.location_id, delivery.id,
+        `Faltante de entrega ${delivery.number}`, pendingItems
+      );
+    }
+    // El sobrante que no se pudo reservar en ninguna sucursal: deuda documentada
+    unresolved.push(...partialUnresolved);
   }
 
-  const finalStatus = shortfalls.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
+  // Registrar lo EFECTIVAMENTE entregado en cada item. El comprobante imprime
+  // este campo como "Entregado" y la reposicion por anulacion devuelta se
+  // calcula con el (si quedara la cantidad cargada original, anular una entrega
+  // parcial devolveria al stock unidades que nunca salieron).
+  for (const it of items.rows) {
+    const delivered = deliverNowMap.get(it.product_id) ?? 0;
+    await c.query(
+      `UPDATE delivery_items SET quantity_delivered = $1 WHERE delivery_id = $2 AND product_id = $3`,
+      [delivered, id, it.product_id]
+    );
+  }
+
+  const finalStatus = shortfalls.length > 0 || unresolved.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
   await c.query(
     `UPDATE deliveries SET status = $1, confirmed_by = $2, confirmed_at = now(), packed_by = $3, packed_at = now() WHERE id = $4`,
     [finalStatus, user.id, user.id, id]
@@ -415,7 +513,9 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
     deliveryNumber: delivery.number,
     fullyDelivered,
     shortfalls,
-    pendingDelivery,
+    pendingDeliveries: pendingOrders,
+    pendingDelivery: pendingOrders[0],
+    unresolvedShortfalls: unresolved.length > 0 ? unresolved : undefined,
   };
 }
 
@@ -431,7 +531,7 @@ export async function confirmDeliveryWithAlternatives(
   id: number, 
   choices: UserAlternativeChoice[]
 ) {
-  return withTx(async (c) => {
+  const result = await withTx(async (c) => {
     const delivery = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
       'SELECT id, number, status, location_id, created_by FROM deliveries WHERE id = $1 FOR UPDATE',
       [id]
@@ -439,7 +539,8 @@ export async function confirmDeliveryWithAlternatives(
     if (!delivery.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     const del = delivery.rows[0];
     if (del.status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden confirmar entregas en borrador');
-    if (del.created_by === user.id) throw ApiError.forbidden('No puedes confirmar una entrega que tú mismo creaste (segregación de funciones)');
+    // Regla de negocio: el propio vendedor puede confirmar el borrador que
+    // cargo (todos los vendedores que entreguen pueden aceptar la entrega).
     assertLocationAccess(user, del.location_id);
 
     const items = await c.query<{ product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string }>(
@@ -455,6 +556,8 @@ export async function confirmDeliveryWithAlternatives(
 
     const shortfalls: DeliveryShortfall[] = [];
     const fullyDelivered: { productId: number; quantity: number }[] = [];
+    const unresolved: { productId: number; productName: string; quantity: number }[] = [];
+    const deliverNowMap = new Map<number, number>();
     const reservationInputs: Array<{
       referenceType: 'DELIVERY';
       referenceId: number;
@@ -477,6 +580,7 @@ export async function confirmDeliveryWithAlternatives(
       const deliverNow = Math.min(qty, availableAtMain);
       const shortfallQty = Math.max(0, target - availableAtMain);
       const hardShortfall = Math.max(0, qty - availableAtMain);
+      deliverNowMap.set(it.product_id, deliverNow);
 
       if (deliverNow > 0) {
         fullyDelivered.push({ productId: it.product_id, quantity: deliverNow });
@@ -497,8 +601,13 @@ export async function confirmDeliveryWithAlternatives(
 
         if (alternatives.length === 0) {
           if (hardShortfall > 0) {
-            throw ApiError.conflict(`Sin stock alternativo para ${it.name}`);
+            throw ApiError.conflict(
+              `Stock insuficiente para "${it.name}" (${it.code}): disponible ` +
+              `${availableAtMain} en sucursal de salida y no hay stock en otras ` +
+              `sucursales. Modificá el borrador para ajustar la cantidad.`
+            );
           }
+          unresolved.push({ productId: it.product_id, productName: it.name, quantity: shortfallQty });
           continue;
         }
 
@@ -523,43 +632,27 @@ export async function confirmDeliveryWithAlternatives(
       });
     }
 
-    let pendingDelivery: DeliveryConfirmResult['pendingDelivery'] = undefined;
-    
+    let pendingOrders: DeliveryPendingOrderRef[] = [];
+
     if (shortfalls.length > 0) {
       const choicesMap = new Map(choices.map(ch => [ch.productId, ch]));
-      
-      const pendingItems: Array<{
-        productId: number;
-        quantityRequested: number;
-        sourceLocationId: number;
-        quantityReserved: number;
-      }> = [];
+
+      const pendingItems: PendingItemInput[] = [];
 
       for (const sf of shortfalls) {
         const choice = choicesMap.get(sf.productId);
         if (!choice) {
           throw ApiError.badRequest(`Falta elección de ubicación alternativa para ${sf.productName}`);
         }
-        
+
         const alt = sf.alternativeLocations.find(a => a.locationId === choice.chosenLocationId);
         if (!alt) {
           throw ApiError.badRequest(`Ubicación elegida no válida para ${sf.productName}`);
         }
-        
+
         const qtyToTake = Math.min(choice.quantity, alt.availableQuantity, sf.shortfallQuantity);
         if (qtyToTake <= 0) {
           throw ApiError.badRequest(`Cantidad inválida para ${sf.productName}`);
-        }
-
-        // Bloquear la fila para que nadie tome el stock entre este chequeo y
-        // la insercion de la reserva (misma transaccion que createPendingDelivery).
-        const stock = await c.query<{ quantity: string }>(
-          `SELECT quantity FROM stock_balances WHERE product_id = $1 AND location_id = $2 FOR UPDATE`,
-          [sf.productId, choice.chosenLocationId]
-        );
-        const realStock = Number(stock.rows[0]?.quantity || 0);
-        if (realStock < qtyToTake) {
-          throw ApiError.conflict(`Stock insuficiente en ubicación elegida para ${sf.productName}`);
         }
 
         pendingItems.push({
@@ -568,36 +661,33 @@ export async function confirmDeliveryWithAlternatives(
           sourceLocationId: choice.chosenLocationId,
           quantityReserved: qtyToTake,
         });
+        if (qtyToTake < sf.shortfallQuantity) {
+          // La unidad elegida no alcanzó para todo el faltante
+          unresolved.push({
+            productId: sf.productId, productName: sf.productName,
+            quantity: sf.shortfallQuantity - qtyToTake,
+          });
+        }
       }
-
-      const pickupLocationId = pendingItems[0]?.sourceLocationId || del.location_id;
-      
-      // createPendingDelivery inserta la reserva con pending_delivery_id (lo que
-      // busca confirmPickup). Se le pasa la transaccion exterior para que todo
-      // quede atomico y no se produzca un deadlock entre conexiones.
-      const pd = await createPendingDelivery(user, undefined, {
-        saleLocationId: del.location_id,
-        pickupLocationId,
-        customerName: undefined,
-        customerPhone: undefined,
-        customerDocument: undefined,
-        notes: `Faltante de entrega ${del.number} - elegido por usuario`,
-        deliveryId: del.id,
-        items: pendingItems,
-      }, c);
-
-      const chosenLocation = shortfalls
-        .flatMap(sf => sf.alternativeLocations)
-        .find(a => a.locationId === pickupLocationId);
-
-      pendingDelivery = {
-        id: pd.id, number: pd.number, barcode: pd.barcode,
-        pickupLocationId,
-        pickupLocationName: chosenLocation?.locationName || '',
-      };
+      // createPendingDelivery valida y bloquea el stock REAL disponible
+      // (quantity - reserved_quantity) de cada sucursal elegida dentro de esta
+      // misma transaccion.
+      pendingOrders = await createPendingOrdersForShortfalls(
+        c, user, del.location_id, del.id,
+        `Faltante de entrega ${del.number} - elegido por usuario`, pendingItems
+      );
     }
 
-    const finalStatus = shortfalls.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
+    // Registrar lo EFECTIVAMENTE entregado (comprobante + reposición por anulación)
+    for (const it of items.rows) {
+      const delivered = deliverNowMap.get(it.product_id) ?? 0;
+      await c.query(
+        `UPDATE delivery_items SET quantity_delivered = $1 WHERE delivery_id = $2 AND product_id = $3`,
+        [delivered, id, it.product_id]
+      );
+    }
+
+    const finalStatus = shortfalls.length > 0 || unresolved.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
     await c.query(
       `UPDATE deliveries SET status = $1, confirmed_by = $2, confirmed_at = now(), packed_by = $3, packed_at = now() WHERE id = $4`,
       [finalStatus, user.id, user.id, del.id]
@@ -612,12 +702,15 @@ export async function confirmDeliveryWithAlternatives(
         ...sf,
         userChosenLocation: choices.find(c => c.productId === sf.productId)?.chosenLocationId,
       })),
-      pendingDelivery,
+      pendingDeliveries: pendingOrders,
+      pendingDelivery: pendingOrders[0],
+      unresolvedShortfalls: unresolved.length > 0 ? unresolved : undefined,
     };
 
     await writeAudit(c, {
       userId: user.id, action: 'DELIVERY_CONFIRM_WITH_ALTS', entity: 'delivery', entityId: id,
-      details: { choices, pendingDelivery: pendingDelivery?.number }, ip,
+      details: { choices, pendingDeliveries: result.pendingDeliveries.map(o => o.number), unresolved },
+      ip,
     });
 
     // Resolver aprobación si existía
@@ -628,24 +721,160 @@ export async function confirmDeliveryWithAlternatives(
 
     return result;
   });
+  await notifyUnresolvedShortfalls(user, ip, result);
+  return result;
+}
+
+/**
+ * Re-derivar faltantes de una entrega ya confirmada (PARCIAL o CONFIRMADO
+ * con deuda facturada). Calcula cuánto queda debiendo por producto
+ * (objetivo − entregado − ya prometido en órdenes de retiro vivas) y, si hay
+ * stock en otras sucursales, crea las órdenes de retiro agrupadas por sucursal.
+ * Así se cierra el loop después de cancelar una orden de retiro o de que
+ * llegue mercadería nueva para faltantes que quedaron sin derivar.
+ */
+export async function rederiveShortfalls(user: AuthUser, ip: string | undefined, id: number) {
+  const result = await withTx(async (c) => {
+    const d = await c.query<{ id: number; number: string; status: string; location_id: number }>(
+      'SELECT id, number, status, location_id FROM deliveries WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
+    const del = d.rows[0];
+    if (del.status !== 'PARCIAL' && del.status !== 'CONFIRMADO') {
+      throw ApiError.conflict('Solo se pueden re-derivar faltantes de entregas confirmadas (PARCIAL o CONFIRMADO)');
+    }
+    assertLocationAccess(user, del.location_id);
+
+    const items = await c.query<{ product_id: number; quantity: string; quantity_delivered: string; requested_quantity: string | null; name: string; code: string }>(
+      `SELECT di.product_id, di.quantity, di.quantity_delivered, di.requested_quantity, p.name, p.code
+       FROM delivery_items di JOIN products p ON p.id = di.product_id
+       WHERE di.delivery_id = $1`,
+      [id]
+    );
+
+    // Ya prometido por órdenes de retiro vivas de esta entrega (lo pedido
+    // menos lo ya retirado de esas órdenes)
+    const promised = await c.query<{ product_id: number; promised: string }>(
+      `SELECT pdi.product_id, SUM(pdi.quantity_requested - pdi.quantity_delivered) AS promised
+       FROM pending_delivery_items pdi
+       JOIN pending_deliveries pd ON pd.id = pdi.pending_delivery_id
+       WHERE pd.delivery_id = $1 AND pd.status NOT IN ('CANCELADO')
+       GROUP BY pdi.product_id`,
+      [id]
+    );
+    const promisedMap = new Map(promised.rows.map(r => [r.product_id, Number(r.promised)]));
+
+    // Disponibilidad actual en todas las sucursales (respetando reservas)
+    const productIds = items.rows.map(it => it.product_id);
+    const requested = items.rows.map(it => 0); // solo se consulta disponibilidad
+    const availability = await checkMultiLocationAvailability(c, productIds, del.location_id, requested);
+
+    // Construir faltantes reales
+    const newShortfalls: DeliveryShortfall[] = [];
+    for (const it of items.rows) {
+      const delivered = Number(it.quantity_delivered ?? it.quantity);
+      const billed = it.requested_quantity === null ? null : Number(it.requested_quantity);
+      // Objetivo: lo máximo entre la cantidad cargada y lo facturado.
+      // (di.quantity conserva la intención original; quantity_delivered lo real)
+      const target = Math.max(Number(it.quantity), billed ?? 0);
+      const stillPromised = promisedMap.get(it.product_id) ?? 0;
+      const owed = Math.max(0, target - delivered - stillPromised);
+      if (owed <= 0) continue;
+
+      const avail = availability.find(a => a.productId === it.product_id);
+      const alternatives = (avail?.otherLocations || [])
+        .filter((loc: any) => Number(loc.availableQty) > 0)
+        .map((loc: any) => ({
+          locationId: loc.locationId,
+          locationCode: loc.locationCode,
+          locationName: loc.locationName,
+          availableQuantity: Number(loc.availableQty),
+        }));
+      if (alternatives.length === 0) continue; // nada nuevo para derivar
+
+      newShortfalls.push({
+        productId: it.product_id,
+        productCode: it.code,
+        productName: it.name,
+        requestedQuantity: target,
+        availableAtMainLocation: Number(avail?.saleLocationQty || 0),
+        shortfallQuantity: owed,
+        alternativeLocations: alternatives,
+      });
+    }
+
+    if (newShortfalls.length === 0) {
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+    }
+
+    const { pendingItems } = autoAssignShortfalls(newShortfalls);
+    if (pendingItems.length === 0) {
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+    }
+
+    const pendingOrders = await createPendingOrdersForShortfalls(
+      c, user, del.location_id, del.id,
+      `Re-derivación de faltantes de entrega ${del.number}`, pendingItems
+    );
+
+    await writeAudit(c, {
+      userId: user.id, action: 'DELIVERY_REDERIVE_SHORTFALLS', entity: 'delivery', entityId: id,
+      details: { pendingDeliveries: pendingOrders.map(o => o.number), shortfalls: newShortfalls }, ip,
+    });
+
+    return { ok: true, created: pendingOrders };
+  });
+  return result;
+}
+
+/**
+ * Deuda de mercadería sin destino posible: queda registrada como alerta
+ * para que ADMIN/ENCARGADO la siga (se deduplica por entidad en alerts.service).
+ * Se llama DESPUÉS del commit; un fallo de alerta no revierte la entrega.
+ */
+async function notifyUnresolvedShortfalls(
+  user: AuthUser, ip: string | undefined, result: DeliveryConfirmResult
+) {
+  if (!result.unresolvedShortfalls?.length) return;
+  try {
+    await createAlert({
+      code: 'DELIVERY_UNRESOLVED_SHORTFALL',
+      severity: 'WARNING',
+      entityType: 'DELIVERY',
+      entityId: result.deliveryId,
+      title: `Deuda de mercadería sin derivar: ${result.deliveryNumber}`,
+      message: result.unresolvedShortfalls
+        .map(u => `${u.productName}: ${u.quantity} u. pendiente sin stock en ninguna sucursal`)
+        .join(' · '),
+      data: { deliveryId: result.deliveryId, deliveryNumber: result.deliveryNumber, items: result.unresolvedShortfalls },
+      targetRoles: ['ADMIN', 'ENCARGADO'],
+      targetLocationId: undefined,
+    });
+  } catch {
+    // la alerta no puede bloquear la confirmación
+  }
 }
 
 export async function confirmDelivery(user: AuthUser, ip: string | undefined, id: number) {
-  return withTx(async (c) => {
+  const result = await withTx(async (c) => {
     const result = await confirmDeliveryTx(c, id, user);
     await writeAudit(c, {
-      userId: user.id, action: 'DELIVERY_CONFIRM', entity: 'delivery', entityId: id, 
-      details: { 
+      userId: user.id, action: 'DELIVERY_CONFIRM', entity: 'delivery', entityId: id,
+      details: {
         fullyDelivered: result.fullyDelivered.length,
         shortfalls: result.shortfalls.length,
-        pendingDelivery: result.pendingDelivery?.number,
+        pendingDeliveries: result.pendingDeliveries.map(o => o.number),
         pendingDeliveryBarcode: result.pendingDelivery?.barcode,
-        pendingDeliveryPickupLocation: result.pendingDelivery?.pickupLocationName
-      }, 
+        pendingDeliveryPickupLocation: result.pendingDelivery?.pickupLocationName,
+        unresolvedShortfalls: result.unresolvedShortfalls,
+      },
       ip,
     });
     return result;
   });
+  await notifyUnresolvedShortfalls(user, ip, result);
+  return result;
 }
 
 /**
@@ -666,21 +895,69 @@ export async function approveDelivery(user: AuthUser, ip: string | undefined, id
 
 export async function getPendingDeliveryForDelivery(deliveryId: number) {
   return withTx(async (c) => {
-    const pd = await c.query<{ id: number; number: string; barcode: string; status: string; pickup_location_id: number }>(
-      `SELECT id, number, barcode, status, pickup_location_id 
-       FROM pending_deliveries 
-       WHERE notes LIKE $1 
-       ORDER BY created_at DESC LIMIT 1`,
-      [`%entrega ${(await c.query('SELECT number FROM deliveries WHERE id = $1', [deliveryId])).rows[0]?.number}%`]
+    const deliveryNum = (
+      await c.query('SELECT number FROM deliveries WHERE id = $1', [deliveryId])
+    ).rows[0]?.number as string | undefined;
+    if (!deliveryNum) throw ApiError.notFound('Entrega no encontrada');
+
+    // TODAS las órdenes de retiro vivas de la entrega (pueden ser varias si
+    // los faltantes se derivaron a más de una sucursal). El vínculo explícito
+    // delivery_id es el primario; el LIKE por notas queda de respaldo legacy.
+    const orders = await c.query<{ id: number; number: string; barcode: string; status: string; pickup_location_id: number; notes: string | null }>(
+      `SELECT id, number, barcode, status, pickup_location_id, notes
+       FROM pending_deliveries
+       WHERE (delivery_id = $1 OR notes LIKE $2) AND status NOT IN ('CANCELADO')
+       ORDER BY created_at`,
+      [deliveryId, `%entrega ${deliveryNum}%`]
     );
-    if (!pd.rows[0]) return null;
-    
-    const pickupLoc = await c.query('SELECT name, code FROM locations WHERE id = $1', [pd.rows[0].pickup_location_id]);
-    return {
-      ...pd.rows[0],
-      pickupLocationName: pickupLoc.rows[0]?.name,
-      pickupLocationCode: pickupLoc.rows[0]?.code,
-    };
+    if (orders.rows.length === 0) return [];
+
+    const orderIds = orders.rows.map(o => o.id);
+    const items = await c.query<{
+      pending_delivery_id: number; product_id: number; product_code: string; product_name: string; unit: string | null;
+      quantity_requested: string; quantity_reserved: string; quantity_delivered: string;
+      source_location_id: number; source_location_name: string | null;
+    }>(
+      `SELECT pdi.pending_delivery_id, pdi.product_id, p.code AS product_code, p.name AS product_name, p.unit,
+              pdi.quantity_requested, pdi.quantity_reserved, pdi.quantity_delivered,
+              pdi.source_location_id, sl.name AS source_location_name
+       FROM pending_delivery_items pdi
+       JOIN products p ON p.id = pdi.product_id
+       LEFT JOIN locations sl ON sl.id = pdi.source_location_id
+       WHERE pdi.pending_delivery_id = ANY($1)
+       ORDER BY p.name`,
+      [orderIds]
+    );
+
+    const itemGroups = new Map<number, typeof items.rows>();
+    for (const row of items.rows) {
+      const list = itemGroups.get(row.pending_delivery_id) ?? [];
+      list.push(row);
+      itemGroups.set(row.pending_delivery_id, list);
+    }
+
+    const pickupLocs = await c.query<{ id: number; name: string; code: string }>(
+      'SELECT id, name, code FROM locations WHERE id = ANY($1)',
+      [orders.rows.map(o => o.pickup_location_id)]
+    );
+    const locName = new Map(pickupLocs.rows.map(l => [l.id, l]));
+
+    return orders.rows.map((o) => ({
+      ...o,
+      pickupLocationName: locName.get(o.pickup_location_id)?.name,
+      pickupLocationCode: locName.get(o.pickup_location_id)?.code,
+      items: (itemGroups.get(o.id) ?? []).map((it) => ({
+        product_id: it.product_id,
+        product_code: it.product_code,
+        product_name: it.product_name,
+        unit: it.unit,
+        quantity_requested: Number(it.quantity_requested),
+        quantity_reserved: Number(it.quantity_reserved),
+        quantity_delivered: Number(it.quantity_delivered),
+        source_location_id: it.source_location_id,
+        source_location_name: it.source_location_name,
+      })),
+    }));
   });
 }
 
@@ -729,20 +1006,29 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
       await cancelPendingDelivery(
         user, ip, od.id,
         `Anulación de entrega ${delivery.number}: ${reason}`,
-        c
+        c,
+        // El acceso a la entrega padre ya fue validado; no exigir también
+        // acceso a la ubicación de retiro de cada orden derivada.
+        { skipLocationCheck: true }
       );
     }
 
     if (delivery.status === 'CONFIRMADO' || delivery.status === 'PARCIAL') {
-      const items = await c.query<{ product_id: number; quantity: string }>(
-        'SELECT product_id, quantity FROM delivery_items WHERE delivery_id = $1',
+      const items = await c.query<{ product_id: number; quantity: string; quantity_delivered: string }>(
+        'SELECT product_id, quantity, quantity_delivered FROM delivery_items WHERE delivery_id = $1',
         [id]
       );
       for (const it of items.rows) {
+        // Restituir SOLO lo que realmente salio (quantity_delivered registra
+        // lo entregado al confirmar; la cantidad cargada puede ser mayor si
+        // la entrega quedó PARCIAL). Entregas previas a la columna usan
+        // quantity como referencia (backfill de la migracion 012).
+        const restitute = Number(it.quantity_delivered ?? it.quantity);
+        if (restitute <= 0) continue;
         await applyStockChange(c, {
           productId: it.product_id,
           locationId: delivery.location_id,
-          delta: Number(it.quantity),
+          delta: restitute,
           type: 'ENTRADA',
           referenceType: 'DELIVERY',
           referenceId: id,

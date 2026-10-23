@@ -27,9 +27,9 @@ router.get(
     if (q) { params.push(`%${q}%`); having.push(`(p.name ILIKE $${params.length} OR p.code ILIKE $${params.length} OR p.barcode ILIKE $${params.length} OR p.brand ILIKE $${params.length})`); }
 
     let stockFilter = '';
-    if (filter === 'low') stockFilter = 'WHERE total_qty > 0 AND total_qty <= p.min_stock';
-    if (filter === 'out') stockFilter = 'WHERE total_qty = 0';
-    if (filter === 'lowzero') stockFilter = 'WHERE total_qty <= p.min_stock';
+    if (filter === 'low') stockFilter = 'WHERE t.total_qty > 0 AND t.total_qty <= t.min_stock';
+    if (filter === 'out') stockFilter = 'WHERE t.total_qty = 0';
+    if (filter === 'lowzero') stockFilter = 'WHERE t.total_qty <= t.min_stock';
 
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
 

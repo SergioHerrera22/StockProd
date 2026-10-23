@@ -76,6 +76,28 @@ export async function checkDuplicates(input: Partial<ProductInput>) {
   return withTx((c) => findDuplicates(c, input));
 }
 
+/**
+ * Genera un EAN-13 unico reutilizando generate_ean13_barcode() de la BD
+ * (prefijo 779800, Argentina + interno). La funcion solo verifica unicidad
+ * contra pending_deliveries, por lo que aqui se re-verifica contra products.
+ */
+export async function generateBarcode(): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const r = await query<{ barcode: string }>('SELECT generate_ean13_barcode() AS barcode');
+    const barcode = r.rows[0]?.barcode;
+    if (!barcode) continue;
+    const dup = await query(
+      `SELECT 1 FROM products WHERE barcode = $1
+       UNION ALL
+       SELECT 1 FROM pending_deliveries WHERE barcode = $1
+       LIMIT 1`,
+      [barcode]
+    );
+    if (!dup.rows[0]) return barcode;
+  }
+  throw ApiError.badRequest('No se pudo generar un codigo de barras unico, intenta de nuevo');
+}
+
 export async function updateProduct(user: AuthUser, ip: string | undefined, id: number, input: Partial<ProductInput>) {
   if (input.unit) assertUnit(input.unit);
   return withTx(async (c) => {

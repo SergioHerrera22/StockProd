@@ -58,6 +58,8 @@ export interface DeliveryItem {
   id?: number;
   product_id: number;
   quantity: number;
+  /** Lo efectivamente entregado al confirmar (la reposición por anulación usa este valor) */
+  quantity_delivered?: number | null;
   requested_quantity?: number | null;
   code?: string;
   name?: string;
@@ -238,6 +240,7 @@ export type PendingDeliveryStatus =
   | 'PENDIENTE'        // Creada, esperando retiro
   | 'EN_PREPARACION'   // Escaneada en sucursal, preparando
   | 'LISTO_RETIRO'     // Preparada, lista para entregar
+  | 'PARCIAL'          // Parte retirada, queda mercaderia por entregar
   | 'ENTREGADO'        // Confirmado retiro, stock descontado
   | 'CANCELADO';       // Anulada
 
@@ -291,6 +294,30 @@ export interface PendingDeliveryListResponse {
     total: number;
     totalPages: number;
   };
+}
+
+/** Orden pendiente derivada de una entrega (vista reducida, con sus ítems)
+ *  la devuelve GET /deliveries/:id/pending-delivery */
+export interface DeliveryPendingOrder {
+  id: number;
+  number: string;
+  barcode: string;
+  status: string;
+  pickup_location_id: number;
+  pickupLocationName?: string | null;
+  pickupLocationCode?: string | null;
+  notes?: string | null;
+  items: {
+    product_id: number;
+    product_code: string;
+    product_name: string;
+    unit: string | null;
+    quantity_requested: number;
+    quantity_reserved: number;
+    quantity_delivered: number;
+    source_location_id: number;
+    source_location_name: string | null;
+  }[];
 }
 
 export interface ScanPendingDeliveryResult {

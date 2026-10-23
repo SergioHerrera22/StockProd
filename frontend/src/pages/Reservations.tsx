@@ -12,6 +12,8 @@ const STATUS_LABELS: Record<PendingDeliveryStatus, string> = {
   PENDIENTE: 'Pendiente retiro',
   EN_PREPARACION: 'En preparación',
   LISTO_RETIRO: 'Listo para retiro',
+  // PARCIAL: el cliente ya retiró parte; queda mercadería por entregar
+  PARCIAL: 'Retiro parcial',
   ENTREGADO: 'Entregado',
   CANCELADO: 'Cancelado',
 };
@@ -20,11 +22,12 @@ const STATUS_COLORS: Record<PendingDeliveryStatus, string> = {
   PENDIENTE: 'bg-amber-100 text-amber-800',
   EN_PREPARACION: 'bg-blue-100 text-blue-800',
   LISTO_RETIRO: 'bg-sky-100 text-sky-800',
+  PARCIAL: 'bg-orange-100 text-orange-800',
   ENTREGADO: 'bg-emerald-100 text-emerald-800',
   CANCELADO: 'bg-slate-100 text-slate-600',
 };
 
-const ACTIVE_STATUSES: PendingDeliveryStatus[] = ['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO'];
+const ACTIVE_STATUSES: PendingDeliveryStatus[] = ['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL'];
 
 export default function ReservationsPage() {
   const { user } = useAuth();
@@ -266,6 +269,7 @@ export default function ReservationsPage() {
           <option value="PENDIENTE">Pendiente retiro</option>
           <option value="EN_PREPARACION">En preparación</option>
           <option value="LISTO_RETIRO">Listo para retiro</option>
+          <option value="PARCIAL">Retiro parcial</option>
           <option value="ENTREGADO">Entregado</option>
           <option value="CANCELADO">Cancelado</option>
         </select>

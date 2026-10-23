@@ -2,6 +2,7 @@ import { PoolClient } from 'pg';
 import { query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../services/audit.service';
+import { assertLocationAccess } from '../../lib/locationGuard';
 import { AuthUser } from '../../middleware/auth';
 import { 
   reserveStockBatch, 
@@ -17,7 +18,7 @@ export interface PendingDeliveryItemInput {
   productId: number;
   quantityRequested: number;      // Lo que pidió el cliente
   sourceLocationId: number;       // De qué sucursal/depósito sale
-  quantityReserved: number;       // Lo que se puede reservar realmente (<= disponible)
+  quantityReserved: number;       // Lo que se puede reservar realmente (<= disponible). 0 = deuda sin reserva aún
 }
 
 export interface PendingDeliveryCreateInput {
@@ -113,15 +114,31 @@ export async function createPendingDelivery(
       if (!l || !l.is_active) throw ApiError.badRequest(`Ubicación inválida o inactiva (id ${locId})`);
     }
 
-    // Verificar stock disponible en cada ubicación origen
-    for (const it of input.items) {
-      const available = await c.query<{ available: string }>(
+    // Verificar stock disponible en cada ubicación origen.
+    // OJO: se bloquea la fila del saldo con FOR UPDATE (en orden determinista
+    // por product_id/ubicación para evitar deadlocks entre transacciones
+    // simultáneas). Sin el lock, dos confirmaciones del mismo producto podían
+    // pasar ambas la validación y sobre-reservar (abortando tarde, por la
+    // constraint reserved_not_exceed_total).
+    const itemsLocked = [...input.items].sort(
+      (a, b) => a.productId - b.productId || a.sourceLocationId - b.sourceLocationId
+    );
+    const availableMap = new Map<string, number>();
+    for (const it of itemsLocked) {
+      const locked = await c.query<{ available: string | null }>(
         `SELECT (quantity - reserved_quantity) AS available
          FROM stock_balances
-         WHERE product_id = $1 AND location_id = $2`,
+         WHERE product_id = $1 AND location_id = $2
+         FOR UPDATE`,
         [it.productId, it.sourceLocationId]
       );
-      const avail = Number(available.rows[0]?.available ?? 0);
+      const key = `${it.productId}:${it.sourceLocationId}`;
+      if (!availableMap.has(key)) {
+        availableMap.set(key, Number(locked.rows[0]?.available ?? 0));
+      }
+    }
+    for (const it of input.items) {
+      const avail = availableMap.get(`${it.productId}:${it.sourceLocationId}`) ?? 0;
       if (avail < it.quantityReserved) {
         throw ApiError.conflict(
           `Stock insuficiente en ubicación origen para producto ${it.productId}: ` +
@@ -166,18 +183,22 @@ export async function createPendingDelivery(
         [pendingDeliveryId, it.productId, it.quantityRequested, it.quantityReserved, it.sourceLocationId]
       );
 
-      // Reserva en stock_reservations (con expiración 48h)
-      const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
-      await c.query(
-        `INSERT INTO stock_reservations (
-          number, reference_type, reference_id, pending_delivery_id, product_id, source_location_id,
-          quantity_reserved, reserved_by, expires_at, status
-        ) VALUES (
-          'RES-' || lpad(nextval('seq_reservation_number')::text, 6, '0'),
-          'PENDING_DELIVERY', $1, $2, $3, $4, $5, $6, $7, 'ACTIVA'
-        )`,
-        [pendingDeliveryId, pendingDeliveryId, it.productId, it.sourceLocationId, it.quantityReserved, user.id, expiresAt]
-      );
+      // Reserva en stock_reservations (con expiración 48h).
+      // quantityReserved = 0 => ítem "deuda" sin reserva: se registra en la
+      // orden para su seguimiento pero no bloquea stock (no hay stock).
+      if (it.quantityReserved > 0) {
+        const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+        await c.query(
+          `INSERT INTO stock_reservations (
+            number, reference_type, reference_id, pending_delivery_id, product_id, source_location_id,
+            quantity_reserved, reserved_by, expires_at, status
+          ) VALUES (
+            'RES-' || lpad(nextval('seq_reservation_number')::text, 6, '0'),
+            'PENDING_DELIVERY', $1, $2, $3, $4, $5, $6, $7, 'ACTIVA'
+          )`,
+          [pendingDeliveryId, pendingDeliveryId, it.productId, it.sourceLocationId, it.quantityReserved, user.id, expiresAt]
+        );
+      }
     }
 
     await writeAudit(c, {
@@ -222,11 +243,13 @@ export async function confirmPickup(
     if (!pd.rows[0]) throw ApiError.notFound('Orden no encontrada');
     const delivery = pd.rows[0];
 
-    if (!['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO'].includes(delivery.status)) {
+    if (!['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL'].includes(delivery.status)) {
       throw ApiError.conflict(`Orden en estado inválido para entrega: ${delivery.status}`);
     }
 
-    // TODO: Verificar que user.default_location_id === delivery.pickup_location_id si restrict_to_location
+    // Quien entrega debe poder operar en la sucursal de retiro
+    // (la orden puede estar derivada a otra sucursal y el cliente se presenta ahí)
+    assertLocationAccess(user, delivery.pickup_location_id);
 
     // Procesar cada item entregado
     for (const item of input.items) {
@@ -294,14 +317,17 @@ export async function confirmPickup(
       );
     }
 
-    // Verificar si toda la orden se entregó
-    const pendingItems = await c.query<{ count: string }>(
-      `SELECT COUNT(*) FROM pending_delivery_items 
+    // Verificar si todavía queda mercadería sin entregar de la reservada.
+    // El resultado puede ser: ENTREGADO (todo) o PARCIAL (falta retirar más).
+    // Antes ambos casos marcaban ENTREGADO y la orden quedaba cerrada con
+    // reservas activas bloqueando stock sin forma de retirarse.
+    const undeliveredItems = await c.query<{ count: string }>(
+      `SELECT COUNT(*) FROM pending_delivery_items
        WHERE pending_delivery_id = $1 AND quantity_delivered < quantity_reserved`,
       [delivery.id]
     );
 
-    const newStatus = Number(pendingItems.rows[0].count) === 0 ? 'ENTREGADO' : 'ENTREGADO'; // O 'PARCIAL'
+    const newStatus = Number(undeliveredItems.rows[0].count) === 0 ? 'ENTREGADO' : 'PARCIAL';
     
     await c.query(
       `UPDATE pending_deliveries 
@@ -330,15 +356,22 @@ export async function cancelPendingDelivery(
   // Cliente de una transaccion exterior (p. ej. anulacion de la entrega que
   // origino la orden). Evita abrir una segunda transaccion mientras la
   // exterior retiene locks.
-  client?: PoolClient
+  client?: PoolClient,
+  // Cuando la anulacion la origina otra operacion (void de la entrega padre)
+  // ya se valido el acceso del usuario a la ubicacion de la entrega; no
+  // exigimos tambien acceso a la ubicacion de retiro (puede ser otra sucursal).
+  opts?: { skipLocationCheck?: boolean }
 ) {
   const run = async (c: PoolClient) => {
-    const pd = await c.query<{ id: number; status: string; number: string }>(
-      'SELECT id, status, number FROM pending_deliveries WHERE id = $1 FOR UPDATE',
+    const pd = await c.query<{ id: number; status: string; number: string; pickup_location_id: number }>(
+      'SELECT id, status, number, pickup_location_id FROM pending_deliveries WHERE id = $1 FOR UPDATE',
       [id]
     );
     if (!pd.rows[0]) throw ApiError.notFound('Orden no encontrada');
     const delivery = pd.rows[0];
+    if (!opts?.skipLocationCheck) {
+      assertLocationAccess(user, delivery.pickup_location_id);
+    }
 
     if (delivery.status === 'ENTREGADO' || delivery.status === 'CANCELADO') {
       throw ApiError.conflict(`No se puede cancelar orden en estado ${delivery.status}`);

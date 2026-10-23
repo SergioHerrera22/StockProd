@@ -5,7 +5,7 @@ import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
-import { createProduct, checkDuplicates, updateProduct, importProducts, ProductInput } from './products.service';
+import { createProduct, checkDuplicates, generateBarcode, updateProduct, importProducts, ProductInput } from './products.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('products.read'));
@@ -86,6 +86,19 @@ router.get(
     };
     const dup = await checkDuplicates(input);
     res.json(dup);
+  })
+);
+
+/**
+ * Genera un codigo de barras EAN-13 unico (nunca usado por otro producto ni orden).
+ * GET /api/products/barcode/new → { barcode: "7798001234567" }
+ */
+router.get(
+  '/barcode/new',
+  requirePerm('products.write'),
+  asyncH(async (_req, res) => {
+    const barcode = await generateBarcode();
+    res.json({ barcode });
   })
 );
 

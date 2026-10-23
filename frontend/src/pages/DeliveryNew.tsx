@@ -7,9 +7,11 @@ import type { Delivery, Location, StockRow, DeliveryAvailabilityItem, UserAltern
 import {
   Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select, Textarea,
 } from '../components/ui';
+import { DerivationModal } from '../components/DerivationModal';
 import { ScanInput } from '../components/ScanInput';
 import { ProductPicker } from '../components/ProductPicker';
 import { useToast } from '../components/Toast';
+import { hasPermission } from '../lib/permissions';
 
 interface Line {
   productId: number;
@@ -23,130 +25,6 @@ interface Line {
 }
 
 const emptyLine: Omit<Line, 'productId' | 'code' | 'name' | 'unit'> = { stock: 0, minStock: 0, quantity: 1 };
-
-/** Modal para elegir ubicaciones alternativas cuando hay faltantes */
-function AlternativeLocationModal({
-  open,
-  onClose,
-  items,
-  onConfirm,
-}: {
-  open: boolean;
-  onClose: () => void;
-  items: DeliveryAvailabilityItem[];
-  onConfirm: (choices: UserAlternativeChoice[]) => void;
-}) {
-  const [choices, setChoices] = useState<Map<number, { locationId: number; quantity: number }>>(new Map());
-
-  if (!open) return null;
-
-  // Solo items con faltantes
-  const shortfallItems = items.filter(i => i.shortfall > 0);
-
-  const handleLocationChange = (productId: number, locationId: number) => {
-    const item = shortfallItems.find(i => i.productId === productId);
-    const maxQty = item ? Math.min(item.shortfall, 
-      item.alternativeLocations.find(a => a.locationId === locationId)?.availableQuantity || 0) : 0;
-    setChoices(prev => {
-      const next = new Map(prev);
-      next.set(productId, { locationId, quantity: maxQty });
-      return next;
-    });
-  };
-
-  const handleQtyChange = (productId: number, qty: number) => {
-    setChoices(prev => {
-      const next = new Map(prev);
-      const current = next.get(productId);
-      if (current) next.set(productId, { ...current, quantity: qty });
-      return next;
-    });
-  };
-
-  const allSelected = shortfallItems.every(item => {
-    const choice = choices.get(item.productId);
-    return choice && choice.locationId > 0 && choice.quantity > 0;
-  });
-
-  return (
-    <Modal open={open} onClose={onClose} title="Derivar faltantes a otra sucursal" width="lg">
-      <p className="mb-4 text-sm text-slate-600">
-        Los siguientes productos tienen stock insuficiente en la sucursal de salida. 
-        Seleccioná la sucursal de destino y la cantidad para cada uno. 
-        Se creará un <strong>comprobante de retiro</strong> para que el cliente retire en esa sucursal.
-      </p>
-      
-      <div className="max-h-96 overflow-y-auto space-y-4">
-        {shortfallItems.map(item => {
-          const choice = choices.get(item.productId);
-          return (
-            <div key={item.productId} className="border border-slate-200 rounded-lg p-4 bg-white">
-              <div className="mb-3">
-                <div className="font-medium text-slate-800">{item.productName}</div>
-                <div className="text-xs text-slate-500">{item.productCode} · Pedido: {fmtQty(item.requestedQuantity)} · Disponible acá: {fmtQty(item.availableAtMain)} · <strong className="text-red-600">Faltan: {fmtQty(item.shortfall)}</strong></div>
-              </div>
-              
-              {item.alternativeLocations.length === 0 ? (
-                <div className="text-red-600 text-sm p-3 bg-red-50 rounded">No hay stock en otras sucursales</div>
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">Sucursal destino *</label>
-                    <select
-                      className="input w-full"
-                      value={choice?.locationId || ''}
-                      onChange={e => handleLocationChange(item.productId, parseInt(e.target.value))}
-                      required
-                    >
-                      <option value="">Seleccionar sucursal...</option>
-                      {item.alternativeLocations.map(loc => (
-                        <option key={loc.locationId} value={loc.locationId}>
-                          {loc.locationName} ({loc.locationCode}) — Disponible: {fmtQty(loc.availableQuantity)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">Cantidad a derivar *</label>
-                    <input
-                      type="number"
-                      min="0.001"
-                      step="0.001"
-                      max={choice ? Math.min(item.shortfall, 
-                        item.alternativeLocations.find(a => a.locationId === choice.locationId)?.availableQuantity || 0) : item.shortfall}
-                      value={choice?.quantity || ''}
-                      onChange={e => handleQtyChange(item.productId, parseFloat(e.target.value) || 0)}
-                      className="input w-full"
-                      required
-                    />
-                  </div>
-                  <div className="sm:col-span-3 text-xs text-slate-500">
-                    Se reservará el stock en la sucursal elegida. El cliente presenta el código QR para retirar.
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-4 flex justify-end gap-3">
-        <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-        <Button variant="primary" onClick={() => {
-          const choicesArray: UserAlternativeChoice[] = [];
-          choices.forEach((v, productId) => {
-            if (v.locationId && v.quantity > 0) {
-              choicesArray.push({ productId, chosenLocationId: v.locationId, quantity: v.quantity });
-            }
-          });
-          onConfirm(choicesArray);
-        }} disabled={!allSelected}>
-          Confirmar y crear retiros
-        </Button>
-      </div>
-    </Modal>
-  );
-}
 
 export default function DeliveryNew() {
   const toast = useToast();
@@ -339,11 +217,20 @@ export default function DeliveryNew() {
     setSaving(true);
     try {
       const res = await confirmDeliveryWithAlternatives({ choices }, draftDeliveryId);
-      
-      if (res.pendingDelivery) {
-        toast.success(`Entrega ${res.deliveryNumber} confirmada parcialmente. Se creó retiro: ${res.pendingDelivery.barcode}`);
+
+      if (res.pendingDeliveries.length > 0) {
+        toast.success(
+          `Entrega ${res.deliveryNumber} confirmada parcialmente. Se crearon ${res.pendingDeliveries.length} retiro(s): ` +
+          res.pendingDeliveries.map(o => o.barcode).join(', ')
+        );
       } else {
         toast.success(`Entrega ${res.deliveryNumber} confirmada`);
+      }
+      if (res.unresolvedShortfalls?.length) {
+        toast.warn(
+          `Quedó deuda sin derivar: ` +
+          res.unresolvedShortfalls.map(u => `${u.productName} x${u.quantity}`).join(', ')
+        );
       }
       navigate(`/entregas/${res.deliveryId}`);
     } catch (e: any) {
@@ -480,7 +367,8 @@ export default function DeliveryNew() {
             variant="success"
             size="lg"
             onClick={checkAvailabilityAndProceed}
-            disabled={!lines.length || saving || checkingAvailability}
+            disabled={!lines.length || saving || checkingAvailability || !hasPermission(user?.role, 'deliveries.confirm')}
+            title={!hasPermission(user?.role, 'deliveries.confirm') ? 'No tenés permiso para confirmar entregas' : undefined}
           >
             {checkingAvailability ? '⏳ Verificando stock...' : '✅ Confirmar entrega'}
           </Button>
@@ -489,8 +377,8 @@ export default function DeliveryNew() {
 
       {/* Toast is provided by ToastProvider in App.tsx */}
 
-      {/* Modal Derivar Faltantes */}
-      <AlternativeLocationModal
+      {/* Modal Derivar Faltantes (componente compartido con el detalle) */}
+      <DerivationModal
         open={altModalOpen}
         onClose={() => setAltModalOpen(false)}
         items={availabilityItems}
