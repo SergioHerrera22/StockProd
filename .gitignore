@@ -17,6 +17,7 @@ public/
 # Paquetes de despliegue (se regeneran con create_zip_hostinger.ps1)
 *.zip
 *.rar
+README_DEPLOY.txt
 
 # Logs de desarrollo (se escriben con redireccion en consola)
 backend/server.err
