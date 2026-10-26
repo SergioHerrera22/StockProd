@@ -117,7 +117,7 @@ BEGIN
     SELECT pd.id, pd.number,
            COALESCE((SELECT SUM(pdi.quantity_delivered) FROM pending_delivery_items pdi WHERE pdi.pending_delivery_id = pd.id), 0) AS delivered_qty
     FROM pending_deliveries pd
-    WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO')
+    WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL')
       AND pd.created_at < now() - interval '48 hours'
       -- No quedan reservas vigentes (sin expirar) para esta orden
       AND NOT EXISTS (
@@ -134,7 +134,7 @@ BEGIN
         cancel_reason = COALESCE(cancel_reason, 'Expiracion automatica (48hs sin retiro)'),
         updated_at = now()
     WHERE id = v_row.id
-      AND status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO');
+      AND status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL');
 
     IF FOUND THEN
       v_count := v_count + 1;

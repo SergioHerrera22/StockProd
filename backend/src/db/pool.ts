@@ -1,13 +1,20 @@
-import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { Pool, PoolClient, ClientBase, QueryResult, QueryResultRow } from 'pg';
 import { config } from '../config/env';
 import { logger } from '../lib/logger';
 
 const isSupabase = config.databaseUrl.includes('supabase');
 
+// Zona horaria fija de la empresa en TODAS las sesiones del pool: sin esto,
+// "hoy" cierra a las 21:00 cuando el Postgres corre en UTC y confunde
+// conteos por día, entregas del día y reportes.
+// Se usa la OPCION onConnect (no el evento pool.on('connect')): pg-pool
+// ESPERA esta promesa antes de despachar la primer query del cliente, así
+// el SET TIME ZONE nunca pisa/compite con una consulta de usuario.
 export const pool = new Pool({
   connectionString: config.databaseUrl,
   max: 10,
   idleTimeoutMillis: 30000,
+  onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'") as unknown as Promise<void>,
   ...(isSupabase ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
