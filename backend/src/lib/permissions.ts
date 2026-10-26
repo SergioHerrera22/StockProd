@@ -39,6 +39,8 @@ export type Permission =
   | 'users.read'
   | 'users.manage'
   | 'audit.read'
+  /** Configuración global (reglas de aprobación, reglas de negocio, umbrales) */
+  | 'settings.write'
   | 'approvals.read'
   | 'approvals.approve'
   | 'alerts.read'
@@ -70,7 +72,7 @@ const EMPLEADO: Permission[] = [
 export const PERMISSIONS: Record<Role, Permission[]> = {
   ADMIN: [
     ...ENCARGADO,
-    'locations.manage', 'users.manage', 'users.read', 'audit.read',
+    'locations.manage', 'users.manage', 'users.read', 'audit.read', 'settings.write',
   ],
   ENCARGADO,
   EMPLEADO,

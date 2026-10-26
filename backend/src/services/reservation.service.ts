@@ -55,15 +55,23 @@ export async function reserveStock(
 }
 
 /**
- * Reservar stock en batch (múltiples items)
+ * Reservar stock en batch (múltiples items).
+ * LOCKEO DETERMINISTA: se lockean los saldos en orden (product, ubicacion)
+ * aunque los resultados se devuelven en el orden original de los inputs.
+ * Sin esto, dos operaciones concurrentes con items en orden opuesto
+ * (A→B vs B→A) podian bloquearse mutuamente (deadlock 40P01) en operación
+ * de rutina.
  */
 export async function reserveStockBatch(
   client: PoolClient,
   inputs: ReserveStockInput[]
 ): Promise<ReserveStockResult[]> {
-  const results: ReserveStockResult[] = [];
-  for (const input of inputs) {
-    results.push(await reserveStock(client, input));
+  const order = inputs
+    .map((input, idx) => ({ input, idx }))
+    .sort((a, b) => a.input.productId - b.input.productId || a.input.sourceLocationId - b.input.sourceLocationId);
+  const results: ReserveStockResult[] = new Array(inputs.length);
+  for (const { input, idx } of order) {
+    results[idx] = await reserveStock(client, input);
   }
   return results;
 }

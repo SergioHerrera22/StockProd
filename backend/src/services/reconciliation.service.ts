@@ -1,4 +1,4 @@
-import { query, withTx } from '../db/pool';
+import { query, withTx, pool } from '../db/pool';
 import { writeAudit } from './audit.service';
 import { AuthUser } from '../middleware/auth';
 import { createAlert } from './alerts.service';
@@ -130,7 +130,7 @@ export async function reconcileStalePendingDeliveries() {
             pl.name AS pickup_name
      FROM pending_deliveries pd
      JOIN locations pl ON pl.id = pd.pickup_location_id
-     WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO')
+     WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL')
        AND pd.created_at < now() - interval '48 hours'`
   );
 
@@ -237,15 +237,17 @@ export async function runFullReconciliation(user: AuthUser, ip: string | undefin
   allResults.push(...r1, ...r2, ...r3, ...r4, ...r5);
 
   // Log en reconciliation_logs
+  // location_id es FK: los checks globales usan 0 como marcador de "GLOBAL"
+  // en la respuesta, pero en la tabla debe guardarse NULL.
   for (const r of allResults) {
     await query(
       `INSERT INTO reconciliation_logs (location_id, check_type, status, expected_value, actual_value, difference, details)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [r.locationId, r.checkType, r.status, r.expectedValue, r.actualValue, r.difference, JSON.stringify(r.details)]
+      [r.locationId || null, r.checkType, r.status, r.expectedValue, r.actualValue, r.difference, JSON.stringify(r.details)]
     );
   }
 
-  await writeAudit({} as any, { userId: user.id, action: 'RECONCILIATION_RUN', entity: 'reconciliation', details: { locationId, checksRun: 5, issuesFound: allResults.filter(x => x.status !== 'OK').length }, ip });
+  await writeAudit(pool, { userId: user.id, action: 'RECONCILIATION_RUN', entity: 'reconciliation', entityId: null, details: { locationId, checksRun: 5, issuesFound: allResults.filter(x => x.status !== 'OK').length }, ip });
 
   return {
     locationId,

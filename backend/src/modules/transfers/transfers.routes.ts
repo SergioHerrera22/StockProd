@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
+import { idempotent } from '../../middleware/idempotency';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
 import { 
@@ -46,11 +47,11 @@ router.get('/:id', asyncH(async (req, res) => {
 router.post(
   '/',
   requirePerm('transfers.write'),
-  asyncH(async (req, res) => {
+  idempotent(asyncH(async (req, res) => {
     const input = draftSchema.parse(req.body);
     const result = await createTransfer(req.user!, req.ip, input);
     res.status(201).json(result);
-  })
+  }))
 );
 
 router.post(
@@ -75,7 +76,7 @@ router.post(
 router.post(
   '/:id/receive',
   requirePerm('transfers.receive'),
-  asyncH(async (req, res) => {
+  idempotent(asyncH(async (req, res) => {
     const id = pathId(req.params.id);
     const { items } = z
       .object({
@@ -86,7 +87,7 @@ router.post(
       .parse(req.body);
     const result = await receiveTransfer(req.user!, req.ip, id, items);
     res.json(result);
-  })
+  }))
 );
 
 router.post(
@@ -101,14 +102,14 @@ router.post(
 router.post(
   '/:id/void',
   requirePerm('transfers.void'),
-  asyncH(async (req, res) => {
-    const { reason, voidApprovedBy } = z.object({ 
+  idempotent(asyncH(async (req, res) => {
+    const { reason, voidApprovedBy } = z.object({
       reason: z.string().min(5).max(255),
       voidApprovedBy: z.number().int().positive().optional()
     }).parse(req.body);
     await voidTransfer(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
     res.json({ ok: true });
-  })
+  }))
 );
 
 export default router;

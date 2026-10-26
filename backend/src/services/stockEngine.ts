@@ -46,20 +46,34 @@ export async function applyStockChange(client: PoolClient, p: StockChangeParams)
     [p.productId, p.locationId]
   );
 
-  const locked = await client.query<{ quantity: string }>(
-    `SELECT quantity FROM stock_balances
+  const locked = await client.query<{ quantity: string; reserved_quantity: string | null }>(
+    `SELECT quantity, reserved_quantity FROM stock_balances
      WHERE product_id = $1 AND location_id = $2
      FOR UPDATE`,
     [p.productId, p.locationId]
   );
 
   const before = Number(locked.rows[0].quantity);
+  const reserved = Number(locked.rows[0].reserved_quantity ?? 0);
   const after = Math.round((before + p.delta) * 1000) / 1000;
 
   if (after < 0) {
+    const disponible = Math.round((before - reserved) * 1000) / 1000;
     throw ApiError.conflict(
-      `Stock insuficiente: disponible ${before}, requerido ${Math.abs(p.delta)}`,
-      { productId: p.productId, locationId: p.locationId, disponible: before, requerido: Math.abs(p.delta) }
+      `Stock insuficiente: disponible ${disponible}, requerido ${Math.abs(p.delta)}`,
+      { productId: p.productId, locationId: p.locationId, disponible, requerido: Math.abs(p.delta) }
+    );
+  }
+
+  // Invariantes del sistema: quantity >= 0 y quantity >= reserved_quantity.
+  // Sin esta segunda validacion, anular/ajustar podria dejar saldos respaldando
+  // reservas activas cuyo stock fisico ya no existe (CHECK de BD revienta
+  // despues con un 500 opaco, o el stock reservado queda "fantasma").
+  if (after < reserved) {
+    throw ApiError.conflict(
+      `La operacion dejaria el saldo (${after}) por debajo de lo reservado (${reserved}). ` +
+      `Libera o consume las reservas activas antes de volver a intentar.`,
+      { productId: p.productId, locationId: p.locationId, saldoFinal: after, reservado: reserved }
     );
   }
 

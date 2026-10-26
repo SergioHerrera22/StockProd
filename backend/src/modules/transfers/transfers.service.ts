@@ -275,18 +275,27 @@ export async function receiveTransfer(
     let anyReceived = false;
     const updates: { itemId: number; qty: number }[] = [];
 
+    // Si el cuerpo repite un itemId, las cantidades se SUMAN: duplicar el
+    // elemento con la mitad de las unidades era admitir una segreccion que
+    // validaba por item y acababa contabilizando el doble en destino.
+    const receivedByItem = new Map<number, number>();
     for (const it of items) {
       const dbItem = byId.get(it.itemId);
       if (!dbItem) throw ApiError.badRequest('Item de transferencia invalido');
       if (!Number.isFinite(it.quantityReceived) || it.quantityReceived < 0) {
         throw ApiError.badRequest('Cantidades recibidas invalidas');
       }
-      if (it.quantityReceived > Number(dbItem.quantity_sent)) {
+      receivedByItem.set(it.itemId, (receivedByItem.get(it.itemId) ?? 0) + it.quantityReceived);
+    }
+
+    for (const [itemId, qty] of receivedByItem) {
+      const dbItem = byId.get(itemId)!;
+      if (qty > Number(dbItem.quantity_sent)) {
         throw ApiError.conflict(`No se puede recibir mas de lo enviado (${dbItem.quantity_sent})`);
       }
-      if (it.quantityReceived > 0) anyReceived = true;
-      if (it.quantityReceived !== Number(dbItem.quantity_sent)) allComplete = false;
-      updates.push({ itemId: it.itemId, qty: it.quantityReceived });
+      if (qty > 0) anyReceived = true;
+      if (qty !== Number(dbItem.quantity_sent)) allComplete = false;
+      updates.push({ itemId, qty });
     }
 
     for (const dbItem of dbItems.rows) {
@@ -298,7 +307,10 @@ export async function receiveTransfer(
 
     if (!anyReceived) throw ApiError.badRequest('Debes indicar cantidades recibidas para al menos un producto');
 
-    for (const u of updates) {
+    // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
+    const sortedUpdates = [...updates].sort((a, b) =>
+      (byId.get(a.itemId)!.product_id - byId.get(b.itemId)!.product_id));
+    for (const u of sortedUpdates) {
       if (u.qty <= 0) continue;
       const dbItem = byId.get(u.itemId)!;
       await applyStockChange(c, {
@@ -363,15 +375,17 @@ export async function verifyTransferReceipt(user: AuthUser, ip: string | undefin
  */
 export async function voidTransfer(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
   return withTx(async (c) => {
-    const t = await c.query<{ status: string; number: string; origin_location_id: number; void_approved_by: number | null }>(
-      'SELECT status, number, origin_location_id, void_approved_by FROM transfers WHERE id = $1 FOR UPDATE', [id]
+    const t = await c.query<{ status: string; number: string; origin_location_id: number; destination_location_id: number; void_approved_by: number | null }>(
+      'SELECT status, number, origin_location_id, destination_location_id, void_approved_by FROM transfers WHERE id = $1 FOR UPDATE', [id]
     );
     const transfer = t.rows[0];
     if (!transfer) throw ApiError.notFound('Transferencia no encontrada');
     assertLocationAccess(user, transfer.origin_location_id);
 
-    // Si ya estaba confirmada/recibida, requiere doble autorización
-    const requiresDualAuth = ['CONFIRMADO', 'RECIBIDO', 'RECIBIDO_CON_DIF'].includes(transfer.status);
+    // Si ya estaba recibida, requiere doble autorización. 'CONFIRMADO' no es un
+    // estado de transferencia (estados: BORRADOR/EN_TRANSITO/RECIBIDO/
+    // RECIBIDO_CON_DIF/ANULADO) y figuraba en la lista por error.
+    const requiresDualAuth = ['RECIBIDO', 'RECIBIDO_CON_DIF'].includes(transfer.status);
     if (requiresDualAuth) {
       if (!voidApprovedBy) throw ApiError.badRequest('Anulación de transferencia procesada requiere segundo autorizador (voidApprovedBy)');
       if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
@@ -394,7 +408,10 @@ export async function voidTransfer(user: AuthUser, ip: string | undefined, id: n
     // Liberar reservas de la transferencia
     await releaseAllReservationsForReference(c, 'TRANSFER', id, user.id, `Anulación: ${reason}`);
 
-    // Si hay stock en tránsito devuelto, crear movimientos de entrada en origen
+    // Anular una transferencia RECIBIDA debe revertir TODO el movimiento:
+    // lo no recibido vuelve a origin, y lo ya recibido sale de destino y
+    // vuelve a origin (antes el stock recibido quedaba en destino amparado
+    // por un documento ANULADO, sin rastro).
     if (['EN_TRANSITO', 'RECIBIDO', 'RECIBIDO_CON_DIF'].includes(transfer.status)) {
       const items = await c.query<{ product_id: number; quantity_sent: string; quantity_received: string | null }>(
         'SELECT product_id, quantity_sent, quantity_received FROM transfer_items WHERE transfer_id = $1', [id]
@@ -402,11 +419,21 @@ export async function voidTransfer(user: AuthUser, ip: string | undefined, id: n
       for (const it of items.rows) {
         const sent = Number(it.quantity_sent);
         const received = it.quantity_received ? Number(it.quantity_received) : 0;
-        const toReturn = sent - received;  // Lo que no llegó se devuelve a origen
-        if (toReturn > 0) {
+        if (received > 0) {
+          // Revertir lo ya recibido en destino
+          await applyStockChange(c, {
+            productId: it.product_id, locationId: transfer.destination_location_id,
+            delta: -received,
+            type: 'TRANS_SALIDA', referenceType: 'TRANSFER', referenceId: id,
+            referenceNumber: transfer.number, userId: user.id,
+            reason: `Anulacion de transferencia ${transfer.number}: retiro de lo recibido`,
+          });
+        }
+        if (sent > 0) {
+          // Recuperar el total enviado en origen
           await applyStockChange(c, {
             productId: it.product_id, locationId: transfer.origin_location_id,
-            delta: toReturn,
+            delta: sent,
             type: 'TRANS_ENTRADA', referenceType: 'TRANSFER', referenceId: id,
             referenceNumber: transfer.number, userId: user.id,
             reason: `Anulacion de transferencia ${transfer.number}: ${reason}`,
@@ -418,6 +445,12 @@ export async function voidTransfer(user: AuthUser, ip: string | undefined, id: n
     await c.query(
       `UPDATE transfers SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`,
       [user.id, reason, voidApprovedBy ?? null, id]
+    );
+
+    // Resolver solicitudes de aprobacion pendientes del documento anulado
+    await c.query(
+      `UPDATE approval_requests SET status = 'RECHAZADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'TRANSFER' AND entity_id = $2 AND status = 'PENDIENTE'`,
+      [user.id, id]
     );
 
     await writeAudit(c, {

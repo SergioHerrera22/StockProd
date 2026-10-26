@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
+import { idempotent } from '../../middleware/idempotency';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
 import { createEntry, confirmEntry, voidEntry, getEntry, listEntries, approveEntry } from './entries.service';
@@ -44,21 +45,21 @@ router.get('/:id', asyncH(async (req, res) => {
 router.post(
   '/',
   requirePerm('entries.write'),
-  asyncH(async (req, res) => {
+  idempotent(asyncH(async (req, res) => {
     const input = draftSchema.parse(req.body);
     const confirm = req.query.confirm === 'true';
     const result = await createEntry(req.user!, req.ip, input, confirm);
     res.status(201).json(result);
-  })
+  }))
 );
 
 router.post(
   '/:id/confirm',
   requirePerm('entries.confirm'),
-  asyncH(async (req, res) => {
+  idempotent(asyncH(async (req, res) => {
     await confirmEntry(req.user!, req.ip, pathId(req.params.id));
     res.json({ ok: true });
-  })
+  }))
 );
 
 router.post(
@@ -73,14 +74,14 @@ router.post(
 router.post(
   '/:id/void',
   requirePerm('entries.void'),
-  asyncH(async (req, res) => {
-    const { reason, voidApprovedBy } = z.object({ 
+  idempotent(asyncH(async (req, res) => {
+    const { reason, voidApprovedBy } = z.object({
       reason: z.string().min(5).max(255),
       voidApprovedBy: z.number().int().positive().optional()
     }).parse(req.body);
     await voidEntry(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
     res.json({ ok: true });
-  })
+  }))
 );
 
 export default router;

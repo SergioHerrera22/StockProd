@@ -9,6 +9,7 @@ import { AuthUser } from '../../middleware/auth';
 import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
+import { notifyStockArrivalForEntryId } from '../../services/arrivalAlerts.service';
 
 export interface EntryDraftInput {
   locationId: number;
@@ -81,13 +82,20 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
       return { id: entryId, number, status: 'BORRADOR', requiresApproval: true };
     }
 
-    if (confirm) await confirmEntryTx(c, entryId, user);
-    else await writeAudit(c, { userId: user.id, action: 'ENTRY_CREATE_DRAFT', entity: 'entry', entityId: entryId, details: { number }, ip });
+    if (confirm) {
+      await confirmEntryTx(c, entryId, user, { skipSegregation: true });
+    } else {
+      await writeAudit(c, { userId: user.id, action: 'ENTRY_CREATE_DRAFT', entity: 'entry', entityId: entryId, details: { number }, ip });
+    }
     return { id: entryId, number, status: confirm ? 'CONFIRMADO' : 'BORRADOR', requiresApproval: false };
+  }).then(async (r) => {
+    // Mejora 9: el ?confirm=true también mete stock real: misma alerta de llegada.
+    if (r.status === 'CONFIRMADO') void notifyStockArrivalForEntryId(r.id);
+    return r;
   });
 }
 
-async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
+async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: { skipSegregation?: boolean }) {
   const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
     'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
   );
@@ -97,8 +105,11 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
   if (entry.status === 'CONFIRMADO') throw ApiError.conflict(`La entrada ${entry.number} ya fue confirmada`);
   if (entry.status === 'ANULADO') throw ApiError.conflict('La entrada esta anulada');
 
-  // Segregación: quien confirma NO debe ser quien creó
-  if (entry.created_by === user.id) {
+  // Segregación: quien confirma NO debe ser quien creó. Se omite SOLO cuando
+  // la confirmacion sucede dentro del propio alta (?confirm=true): exigirla
+  // ahi bloqueaba el flujo para siempre (el creador no puede confirmar su
+  // propia creacion). Para POST /:id/confirm sigue aplicando.
+  if (!opts?.skipSegregation && entry.created_by === user.id) {
     throw ApiError.forbidden('No puedes confirmar una entrada que tú mismo creaste (segregación de funciones)');
   }
 
@@ -119,7 +130,9 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
   );
   if (!items.rows.length) throw ApiError.badRequest('La entrada no tiene productos');
 
-  for (const it of items.rows) {
+  // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
+  const sortedItems = [...items.rows].sort((a, b) => a.product_id - b.product_id);
+  for (const it of sortedItems) {
     await applyStockChange(c, {
       productId: it.product_id,
       locationId: entry.location_id,
@@ -150,18 +163,22 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser) {
 }
 
 export async function confirmEntry(user: AuthUser, ip: string | undefined, id: number) {
-  return withTx(async (c) => {
+  const result = await withTx(async (c) => {
     await confirmEntryTx(c, id, user);
     await writeAudit(c, { userId: user.id, action: 'ENTRY_CONFIRM', entity: 'entry', entityId: id, ip });
     return { ok: true };
   });
+  // Mejora 9: llegada de mercadería que cubre deuda sin derivar -> alerta con
+  // clic directo. POST-COMMIT y no bloquea: si falla queda solo en el log.
+  void notifyStockArrivalForEntryId(id);
+  return result;
 }
 
 /**
  * Aprobar entrada en borrador (para flujo con aprobación)
  */
 export async function approveEntry(user: AuthUser, ip: string | undefined, id: number) {
-  return withTx(async (c) => {
+  const result = await withTx(async (c) => {
     const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
       'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
     );
@@ -172,6 +189,9 @@ export async function approveEntry(user: AuthUser, ip: string | undefined, id: n
     await confirmEntryTx(c, id, user);
     return { ok: true };
   });
+  // Mejora 9: igual que confirmEntry, la entrada aprobada también llega a stock.
+  void notifyStockArrivalForEntryId(id);
+  return result;
 }
 
 /**
@@ -208,7 +228,9 @@ export async function voidEntry(user: AuthUser, ip: string | undefined, id: numb
       const items = await c.query<{ product_id: number; quantity: string }>(
         'SELECT product_id, quantity FROM stock_entry_items WHERE entry_id = $1', [id]
       );
-      for (const it of items.rows) {
+      // Orden determinista de lockeo
+      const sorted = [...items.rows].sort((a, b) => a.product_id - b.product_id);
+      for (const it of sorted) {
         await applyStockChange(c, {
           productId: it.product_id, locationId: entry.location_id, delta: -Number(it.quantity),
           type: 'SALIDA', referenceType: 'ENTRY', referenceId: id, referenceNumber: entry.number,
@@ -220,6 +242,14 @@ export async function voidEntry(user: AuthUser, ip: string | undefined, id: numb
     await c.query(
       `UPDATE stock_entries SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`,
       [user.id, reason, voidApprovedBy ?? null, id]
+    );
+
+    // Si el borrador tenia una solicitud de aprobacion pendiente (se genero al
+    // crear bajo reglas), dejarla PENDIENTE para siempre ensuciaba el modulo
+    // de aprobaciones: se marca rechazada al anular el documento.
+    await c.query(
+      `UPDATE approval_requests SET status = 'RECHAZADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'ENTRY' AND entity_id = $2 AND status = 'PENDIENTE'`,
+      [user.id, id]
     );
 
     await writeAudit(c, {

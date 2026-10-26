@@ -227,4 +227,91 @@ router.get(
   })
 );
 
+/**
+ * Rotación de productos (mejora 13): qué productos se mueven, por sucursal,
+ * en un período. Salidas por venta (SALIDA: entregas y retiros) y trasvasos
+ * (TRANS_SALIDA entre sucursales). Los AJUSTE_NEG quedan excluidos a
+ * propósito: son mermas/inventariado, no rotación de mercadería.
+ */
+router.get(
+  '/rotation',
+  asyncH(async (req, res) => {
+    const from = strParam(req.query.from);
+    const to = strParam(req.query.to);
+    const locationId = intParam(req.query.locationId);
+    const days = Math.min(365, Math.max(1, parseInt(String(req.query.days ?? '30'), 10) || 30));
+    const fromDate = from ? `${from} 00:00:00` : new Date(Date.now() - days * 86400000).toISOString();
+    const toDate = to ? `${to} 23:59:59.999` : '2999-01-01';
+    const locFilter = locationId ? `AND l.id = ${locationId}` : '';
+
+    const rows = await query(
+      `SELECT t.product_id, t.code, t.name, t.unit,
+              COALESCE(SUM(t.units), 0) AS total,
+              COALESCE(SUM(t.salidas_venta), 0) AS salidas_venta,
+              COALESCE(SUM(t.transferido), 0) AS transferido,
+              COALESCE(jsonb_agg(jsonb_build_object('loc', t.loc, 'units', t.units) ORDER BY t.loc), '[]'::jsonb) AS by_location
+       FROM (
+         SELECT m.product_id, p.code, p.name, p.unit, l.code AS loc,
+                SUM(m.quantity) FILTER (WHERE m.type = 'SALIDA') AS salidas_venta,
+                SUM(m.quantity) FILTER (WHERE m.type = 'TRANS_SALIDA') AS transferido,
+                SUM(m.quantity) AS units
+         FROM stock_movements m
+         JOIN products p ON p.id = m.product_id
+         JOIN locations l ON l.id = m.location_id
+         WHERE m.created_at >= $1::timestamptz AND m.created_at <= $2::timestamptz
+           AND m.type IN ('SALIDA', 'TRANS_SALIDA')
+           ${locFilter}
+         GROUP BY m.product_id, p.code, p.name, p.unit, l.code
+       ) t
+       GROUP BY t.product_id, t.code, t.name, t.unit
+       ORDER BY total DESC
+       LIMIT 100`,
+      [fromDate, toDate]
+    );
+
+    res.json({
+      rows: rows.rows.map((r: Record<string, unknown>) => ({
+        ...r,
+        total: Number(r.total),
+        salidas_venta: Number(r.salidas_venta),
+        transferido: Number(r.transferido),
+        by_location: (r.by_location as Array<{ loc: string; units: string }>).map((x) => ({
+          loc: x.loc, units: Number(x.units),
+        })),
+      })),
+      period: { from: fromDate, to: toDate === '2999-01-01' ? 'hoy' : toDate, days },
+    });
+  })
+);
+
+/**
+ * Deudas por cliente (mejora 11): qué le está debiendo la operación,
+ * agrupado por cliente según las órdenes de retiro activas.
+ */
+router.get(
+  '/debts-customers',
+  asyncH(async (_req, res) => {
+    const rows = await query(
+      `SELECT COALESCE(NULLIF(TRIM(pd.customer_name), ''), '(sin dato de cliente)') AS customer,
+                MAX(pd.customer_phone) AS customer_phone,
+                COUNT(DISTINCT pd.id) AS orders,
+                COALESCE(SUM(pdi.quantity_reserved - pdi.quantity_delivered), 0) AS units_pending,
+                MIN(pd.created_at) AS oldest_created_at
+         FROM pending_deliveries pd
+         LEFT JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
+         WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL')
+         GROUP BY COALESCE(NULLIF(TRIM(pd.customer_name), ''), '(sin dato de cliente)')
+         ORDER BY units_pending DESC, oldest_created_at ASC`
+    );
+
+    res.json({
+      rows: rows.rows.map((r: Record<string, unknown>) => ({
+        ...r,
+        orders: Number(r.orders),
+        units_pending: Number(r.units_pending),
+      })),
+    });
+  })
+);
+
 export default router;

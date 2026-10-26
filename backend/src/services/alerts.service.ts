@@ -43,15 +43,18 @@ export interface CreateAlertInput {
  */
 export async function createAlert(input: CreateAlertInput) {
   // Deduplicacion: si ya existe una alerta no resuelta para el mismo
-  // codigo+entidad, no re-crear (permite correr checks programados en cron
-  // sin llenar la tabla con duplicados).
+  // codigo+entidad+ubicacion, no re-crear (permite correr checks programados
+  // en cron sin llenar la tabla con duplicados). La ubicacion entra en la
+  // clave: sin ella, "stock bajo" en DOS sucursales del mismo producto
+  // generaba un solo alerta y la segunda sucursal quedaba invisible.
   if (input.code && input.entityType && input.entityId !== undefined && input.entityId !== null) {
     const dupe = await query<{ id: string }>(
       `SELECT id FROM alerts
        WHERE code = $1 AND entity_type = $2 AND entity_id = $3
+         AND COALESCE(target_location_id, 0) = COALESCE($4, 0)
          AND status IN ('PENDIENTE', 'VISTA')
        LIMIT 1`,
-      [input.code, input.entityType, input.entityId]
+      [input.code, input.entityType, input.entityId, input.targetLocationId ?? null]
     );
     if (dupe.rows[0]) return { alertId: Number(dupe.rows[0].id), deduplicated: true };
   }
@@ -251,7 +254,7 @@ export async function checkExpiringPendingDeliveries() {
             EXTRACT(EPOCH FROM (now() - pd.created_at))/3600 AS hours_pending
      FROM pending_deliveries pd
      JOIN locations pl ON pl.id = pd.pickup_location_id
-     WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO')
+     WHERE pd.status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL')
        AND pd.created_at < now() - interval '40 hours'`
   );
 

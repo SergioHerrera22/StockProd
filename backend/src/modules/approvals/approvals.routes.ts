@@ -30,7 +30,9 @@ router.get(
 
 router.post(
   '/rules',
-  requirePerm('approvals.read'), // En realidad necesitaría un perm específico 'approvals.manage'
+  // Mutación de configuración: solo ADMIN (settings.write). Antes solo exigía
+  // approvals.read: un EMPLEADO podía crear reglas de aprobación vía API.
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const input = z.object({
       name: z.string().min(3).max(100),
@@ -47,7 +49,8 @@ router.post(
 
 router.patch(
   '/rules/:id',
-  requirePerm('approvals.read'),
+  // Mutación de configuración: solo ADMIN (settings.write)
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const input = z.object({
       name: z.string().min(3).max(100).optional(),

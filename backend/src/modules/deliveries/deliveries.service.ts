@@ -237,10 +237,11 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
     let status: 'BORRADOR' | 'CONFIRMADO' | 'PARCIAL' = 'BORRADOR';
 
     const number = await nextDocNumber(c, 'delivery');
+    const barcode = (await c.query('SELECT generate_ean13_barcode() AS barcode')).rows[0].barcode;
     const r = await c.query<{ id: number }>(
-      `INSERT INTO deliveries (number, location_id, invoice_number, notes, created_by, status)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [number, input.locationId, input.invoiceNumber?.trim() || null, input.notes?.trim() || null, user.id, status]
+      `INSERT INTO deliveries (number, location_id, invoice_number, notes, barcode, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [number, input.locationId, input.invoiceNumber?.trim() || null, input.notes?.trim() || null, barcode, user.id, status]
     );
     const deliveryId = r.rows[0].id;
 
@@ -307,9 +308,11 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
 }
 
 /** Confirmacion transaccional con manejo de faltantes multi-sucursal. */
-async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Promise<DeliveryConfirmResult> {
-  const d = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
-    'SELECT id, number, status, location_id, created_by FROM deliveries WHERE id = $1 FOR UPDATE',
+async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pickMap?: Map<number, number>): Promise<DeliveryConfirmResult> {
+  const d = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; location_name: string; location_code: string }>(
+    `SELECT d.id, d.number, d.status, d.location_id, d.created_by, l.name AS location_name, l.code AS location_code
+     FROM deliveries d JOIN locations l ON l.id = d.location_id
+     WHERE d.id = $1 FOR UPDATE`,
     [id]
   );
   const delivery = d.rows[0];
@@ -393,13 +396,21 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
     const target = Math.max(qty, billed ?? 0);
     const avail = availability.find(a => a.productId === it.product_id);
     const availableAtMain = Number(avail?.saleLocationQty || 0);
+    // Checklist de picking: lo que el operador realmente recibió de este producto.
+    // undefined = sin checklist -> comportamiento histórico.
+    const pickedQty = pickMap?.get(it.product_id);
 
     // Lo que efectivamente sale de esta sucursal
-    const deliverNow = Math.min(qty, availableAtMain);
-    // Faltante total a derivar para completar lo facturado / lo pedido
-    const shortfallQty = Math.max(0, target - availableAtMain);
-    // Faltante duro: lo que el operador pidió entregar ahora y no hay stock
-    const hardShortfall = Math.max(0, qty - availableAtMain);
+    const deliverNow = Math.min(qty, availableAtMain, pickedQty !== undefined ? Math.max(0, pickedQty) : Infinity);
+    // Faltante total a derivar para completar lo facturado / lo pedido.
+    // Con checklist el resto del objetivo queda debiéndose aunque haya stock
+    // local sin agarrar (queda como derivación posible, ver abajo).
+    const shortfallQty = pickedQty !== undefined
+      ? Math.max(0, target - deliverNow)
+      : Math.max(0, target - availableAtMain);
+    // HardShortfall solo es bloqueante en modo histórico: si el picker decidió
+    // recibir menos, eso NO puede romper la confirmación.
+    const hardShortfall = pickedQty !== undefined ? 0 : Math.max(0, qty - availableAtMain);
     deliverNowMap.set(it.product_id, deliverNow);
 
     if (deliverNow > 0) {
@@ -424,6 +435,21 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser): Pro
           locationName: loc.locationName,
           availableQuantity: Number(loc.availableQty),
         }));
+
+      // En modo picking el stock SOBRANTE de la propia sucursal también puede
+      // cubrir lo que no se agarró (queda en la misma tienda y va como
+      // derivación a retiro posterior). Se lista primero.
+      if (pickedQty !== undefined) {
+        const mainLeft = availableAtMain - deliverNow;
+        if (mainLeft > 0) {
+          alternatives.unshift({
+            locationId: delivery.location_id,
+            locationCode: delivery.location_code,
+            locationName: delivery.location_name,
+            availableQuantity: mainLeft,
+          });
+        }
+      }
 
       if (alternatives.length === 0) {
         // Sin dónde derivar. Si además no se pudo entregar lo que se pidió
@@ -624,12 +650,18 @@ export async function confirmDeliveryWithAlternatives(
       reservations = await reserveStockBatch(c, reservationInputs);
     }
     for (let i = 0; i < fullyDelivered.length; i++) {
-      await consumeReservation(c, {
+      const consumeResult = await consumeReservation(c, {
         reservationId: reservations[i].reservationId,
         quantity: fullyDelivered[i].quantity,
         consumedBy: user.id, movementType: 'SALIDA',
         reason: `Entrega de mercaderia ${del.number}`,
       });
+      // consume_reservation devuelve success=false en vez de lanzar (stock
+      // real quizas cambio por otro.Documento). Si no se valida, la entrega
+      // se confirmaba SIN descontar stock y con la reserva viva bloqueando.
+      if (!consumeResult.success) {
+        throw ApiError.conflict(`Error al descontar stock: ${consumeResult.message}`);
+      }
     }
 
     let pendingOrders: DeliveryPendingOrderRef[] = [];
@@ -856,12 +888,31 @@ async function notifyUnresolvedShortfalls(
   }
 }
 
-export async function confirmDelivery(user: AuthUser, ip: string | undefined, id: number) {
+export interface DeliveryPickItem {
+  productId: number;
+  /** Lo que el picker recibió / va a despachar AHORA (≤ cantidad del borrador). */
+  quantity: number;
+}
+
+export async function confirmDelivery(user: AuthUser, ip: string | undefined, id: number, pick?: DeliveryPickItem[]) {
+  // Checklist de picking (mejora 10): el operador marca producto por producto
+  // con lo que efectivamente recibió. pick = undefined  ->  comportamiento
+  // histórico (entregar todo el stock disponible de la sucursal principal).
+  const pickMap = new Map<number, number>();
+  if (pick) {
+    for (const p of pick) {
+      if (Number(p.quantity) > 0 && pickMap.has(p.productId) === false) {
+        pickMap.set(Number(p.productId), Number(p.quantity));
+      }
+    }
+  }
   const result = await withTx(async (c) => {
-    const result = await confirmDeliveryTx(c, id, user);
+    const result = await confirmDeliveryTx(c, id, user, pickMap);
     await writeAudit(c, {
       userId: user.id, action: 'DELIVERY_CONFIRM', entity: 'delivery', entityId: id,
       details: {
+        pickedOnly: pick !== undefined,
+        pick: pick ?? null,
         fullyDelivered: result.fullyDelivered.length,
         shortfalls: result.shortfalls.length,
         pendingDeliveries: result.pendingDeliveries.map(o => o.number),
@@ -887,9 +938,70 @@ export async function approveDelivery(user: AuthUser, ip: string | undefined, id
     );
     if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     if (d.rows[0].status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar entregas en borrador');
-    if (d.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar tu propia entrega (segregación de funciones)');
+    // Regla de negocio decidida por operación: el MISMO usuario que creo la
+    // orden puede aceptarla/aprobarla (no hay segregación de funciones aquí;
+    // el permiso deliveries.approve sigue protegiendo quién puede llamar).
     assertLocationAccess(user, d.rows[0].location_id);
     return confirmDeliveryTx(c, id, user);
+  });
+}
+
+/**
+ * Escanea el código de barras (EAN-13) de la ORDEN DE ENTREGA y devuelve la
+ * entrega completa con toda la mercadería solicitada. El vendedor la usa para
+ * el control: si está todo correcto acepta (confirm) directo desde el resultado;
+ * si faltan unidades, el frontend sigue el flujo existente (borrador editable,
+ * derivación a otra sucursal, o confirmar parcial y derivar faltantes).
+ * Devuelve el contenido sin importar el estado; quien escanea muestra el
+ * estado y define qué puede hacerse (BORRADOR confirmable, PARCIAL/CONFIRMADO solo consulta).
+ */
+export async function scanDeliveryBarcode(barcode: string) {
+  return withTx(async (c) => {
+    const d = await c.query<{
+      id: number; number: string; status: string; location_id: number; barcode: string;
+      invoice_number: string | null; notes: string | null; created_at: Date; confirmed_at: Date | null;
+      location_name: string; location_code: string; created_by_name: string;
+    }>(
+      `SELECT d.id, d.number, d.status, d.location_id, d.barcode, d.invoice_number, d.notes,
+              d.created_at, d.confirmed_at, l.name AS location_name, l.code AS location_code,
+              cu.full_name AS created_by_name
+       FROM deliveries d
+       JOIN locations l ON l.id = d.location_id
+       JOIN users cu ON cu.id = d.created_by
+       WHERE d.barcode = $1`,
+      [barcode]
+    );
+    if (!d.rows[0]) throw ApiError.notFound('No existe ninguna entrega de mercadería con ese código');
+    const delivery = d.rows[0];
+
+    const items = await c.query<{
+      product_id: number; quantity: string; quantity_delivered: string | null; requested_quantity: string | null;
+      code: string; name: string; unit: string; stock_avail: string | null;
+    }>(
+      `SELECT di.product_id, di.quantity, di.quantity_delivered, di.requested_quantity,
+              p.code, p.name, p.unit,
+              COALESCE(sb.quantity, 0) - COALESCE(sb.reserved_quantity, 0) AS stock_avail
+       FROM delivery_items di
+       JOIN products p ON p.id = di.product_id
+       LEFT JOIN stock_balances sb ON sb.product_id = p.id AND sb.location_id = $2
+       WHERE di.delivery_id = $1
+       ORDER BY di.id`,
+      [delivery.id, delivery.location_id]
+    );
+
+    return {
+      ...delivery,
+      items: items.rows.map((it) => ({
+        productId: it.product_id,
+        code: it.code,
+        name: it.name,
+        unit: it.unit,
+        quantity: Number(it.quantity),
+        quantityDelivered: it.quantity_delivered === null ? null : Number(it.quantity_delivered),
+        requestedQuantity: it.requested_quantity === null ? null : Number(it.requested_quantity),
+        stockAvailable: Number(it.stock_avail ?? 0),
+      })),
+    };
   });
 }
 
@@ -997,17 +1109,37 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
     // Si la entrega quedó PARCIAL, existen órdenes de retiro derivadas a otra
     // sucursal. Se cancelan para que no se pueda retirar mercadería de una
     // entrega anulada (y se liberan sus reservas en la sucursal de retiro).
+    // INCLUDING: vínculo por notas (órdenes previas a la columna delivery_id):
+    // sin este caso, esas órdenes quedaban vivas y se podia escanear su
+    // codigo y retirar stock de una entrega anulada.
+    const deliveryNum = delivery.number;
     const derivedOrders = await c.query<{ id: number; number: string; status: string }>(
       `SELECT id, number, status FROM pending_deliveries
-       WHERE delivery_id = $1 AND status NOT IN ('ENTREGADO', 'CANCELADO')`,
-      [id]
+       WHERE (delivery_id = $1 OR notes LIKE $2) AND status NOT IN ('ENTREGADO', 'CANCELADO')`,
+      [id, `%entrega ${deliveryNum}%`]
     );
+
+    // Lo ya RETIRADO fisicamente de las ordenes derivadas salio por CONSUMO de
+    // reserva en la sucursal derivada (movimiento SALIDA con su source).
+    // Al anular la entrega hay que devolverlo a su ubicacion de origen, si no
+    // esas unidades desaparecian del sistema sin rastro.
+    const derivedOut = await c.query<{ product_id: number; source_location_id: number; withdrawn: string }>(
+      `SELECT pdi.product_id, pdi.source_location_id, SUM(pdi.quantity_delivered) AS withdrawn
+       FROM pending_delivery_items pdi
+       JOIN pending_deliveries pd ON pd.id = pdi.pending_delivery_id
+       WHERE (pd.delivery_id = $1 OR pd.notes LIKE $2)
+         AND pdi.quantity_delivered > 0
+         AND pd.status IN ('ENTREGADO', 'PARCIAL')
+       GROUP BY pdi.product_id, pdi.source_location_id`,
+      [id, `%entrega ${deliveryNum}%`]
+    );
+
     for (const od of derivedOrders.rows) {
       await cancelPendingDelivery(
         user, ip, od.id,
         `Anulación de entrega ${delivery.number}: ${reason}`,
         c,
-        // El acceso a la entrega padre ya fue validado; no exigir también
+        // El acceso a la entrega padre ya fue validado; no exigir tambien
         // acceso a la ubicación de retiro de cada orden derivada.
         { skipLocationCheck: true }
       );
@@ -1035,6 +1167,22 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
           referenceNumber: delivery.number,
           userId: user.id,
           reason: `Anulacion de entrega ${delivery.number}: ${reason}`,
+        });
+      }
+
+      // Reponer lo retirado fisicamente en las ordenes de retiro derivadas
+      // (vuelven a la sucursal de donde salieron, no a la principal).
+      for (const w of derivedOut.rows) {
+        await applyStockChange(c, {
+          productId: w.product_id,
+          locationId: w.source_location_id,
+          delta: Number(w.withdrawn),
+          type: 'ENTRADA',
+          referenceType: 'DELIVERY',
+          referenceId: id,
+          referenceNumber: delivery.number,
+          userId: user.id,
+          reason: `Anulacion de entrega ${delivery.number}: reposición por retiro derivado`,
         });
       }
     }
@@ -1087,17 +1235,54 @@ export async function listDeliveries(opts: {
   const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM deliveries d ${whereSql}`, params);
   const rows = await query(
     `SELECT d.id, d.number, d.status, d.invoice_number, d.location_id, l.name AS location_name,
-           d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
-           (SELECT COALESCE(SUM(quantity),0) FROM delivery_items WHERE delivery_id = d.id) AS total_items,
-           (SELECT COUNT(*) FROM delivery_items WHERE delivery_id = d.id) AS line_count
-    FROM deliveries d
-    JOIN locations l ON l.id = d.location_id
-    JOIN users cu ON cu.id = d.created_by
-    ${whereSql}
-    ORDER BY d.created_at DESC
-    LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
+            d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
+            (SELECT COALESCE(SUM(quantity),0) FROM delivery_items WHERE delivery_id = d.id) AS total_items,
+            (SELECT COUNT(*) FROM delivery_items WHERE delivery_id = d.id) AS line_count
+     FROM deliveries d
+     JOIN locations l ON l.id = d.location_id
+     JOIN users cu ON cu.id = d.created_by
+     ${whereSql}
+     ORDER BY d.created_at DESC
+     LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params
   );
+
+  // Faltantes por entrega (solo significativos en CONFIRMADO/PARCIAL): por
+  // item, objetivo = max(cargado, facturado) y quedó por entregar = objetivo -
+  // entregado - lo ya retirado via órdenes de retiro derivadas (mínimo 0).
+  const ids = rows.rows.map(r => r.id);
+  if (ids.length > 0) {
+    const agg = await query<{ delivery_id: number; shortfall_lines: string; shortfall_units: string }>(
+      `SELECT oi.delivery_id,
+              COUNT(*) FILTER (WHERE owed > COALESCE(wd.withdrawn, 0)) AS shortfall_lines,
+              COALESCE(SUM(GREATEST(owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
+       FROM (
+         SELECT di.delivery_id, di.product_id,
+                GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
+                  - COALESCE(di.quantity_delivered, 0) AS owed
+         FROM delivery_items di
+         WHERE di.delivery_id = ANY($1)
+       ) oi
+       LEFT JOIN (
+         SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
+         FROM pending_deliveries pd
+         JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
+         WHERE pd.delivery_id = ANY($1) AND pdi.quantity_delivered > 0
+           AND pd.status NOT IN ('CANCELADO')
+         GROUP BY pd.delivery_id, pdi.product_id
+       ) wd ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
+       JOIN deliveries d2 ON d2.id = oi.delivery_id
+       WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
+       GROUP BY oi.delivery_id`,
+      [ids]
+    );
+    const byDelivery = new Map(agg.rows.map(r => [r.delivery_id, r]));
+    for (const r of rows.rows) {
+      const a = byDelivery.get(r.id);
+      r.shortfall_lines = a ? Number(a.shortfall_lines) : 0;
+      r.shortfall_units = a ? Number(a.shortfall_units) : 0;
+    }
+  }
   return { deliveries: rows.rows, total: Number(count.rows[0].total) };
 }
 

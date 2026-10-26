@@ -137,12 +137,28 @@ export async function createPendingDelivery(
         availableMap.set(key, Number(locked.rows[0]?.available ?? 0));
       }
     }
+
+    // Demandas agregadas por (producto, origen): dos lineas del mismo par
+    // comparadas por separado pasaban la validacion con la suma por encima
+    // del disponible y reventaban a medias con el CHECK de la BD (500 opaco).
     for (const it of input.items) {
-      const avail = availableMap.get(`${it.productId}:${it.sourceLocationId}`) ?? 0;
-      if (avail < it.quantityReserved) {
+      if (it.quantityReserved < 0) throw ApiError.badRequest('Cantidad reservada inválida');
+      if (it.quantityReserved > it.quantityRequested) {
+        throw ApiError.badRequest(`No se puede reservar más de lo pedido (producto ${it.productId})`);
+      }
+    }
+    const reservedDemand = new Map<string, number>();
+    for (const it of input.items) {
+      const key = `${it.productId}:${it.sourceLocationId}`;
+      reservedDemand.set(key, (reservedDemand.get(key) ?? 0) + it.quantityReserved);
+    }
+    for (const [key, demand] of reservedDemand) {
+      const avail = availableMap.get(key) ?? 0;
+      if (avail < demand) {
+        const [productId, locationId] = key.split(':');
         throw ApiError.conflict(
-          `Stock insuficiente en ubicación origen para producto ${it.productId}: ` +
-          `disponible ${avail}, intentando reservar ${it.quantityReserved}`
+          `Stock insuficiente en ubicación origen para producto ${productId}: ` +
+          `disponible ${avail}, intentando reservar ${demand}`
         );
       }
     }
@@ -235,14 +251,18 @@ export async function confirmPickup(
   input: PendingDeliveryConfirmPickupInput
 ) {
   return withTx(async (c) => {
-    // Verificar que el usuario puede operar en la sucursal de retiro
+    // Verificar que el usuario puede operar en la sucursal de retiro.
+    // FOR UPDATE: sin lock, dos escaneos concurrentes de la misma orden
+    // concluian ambos y el segundo UPDATE de estado pisaba al primero.
     const pd = await c.query<{ id: number; pickup_location_id: number; status: string; number: string }>(
-      'SELECT id, pickup_location_id, status, number FROM pending_deliveries WHERE barcode = $1',
+      'SELECT id, pickup_location_id, status, number FROM pending_deliveries WHERE barcode = $1 FOR UPDATE',
       [input.barcode]
     );
     if (!pd.rows[0]) throw ApiError.notFound('Orden no encontrada');
     const delivery = pd.rows[0];
 
+    // Re-verificación tras el lock (el estado pudo cambiar entre el SELECT y
+    // el lock, o por una entrega/cancelación concurrente ya commiteada).
     if (!['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL'].includes(delivery.status)) {
       throw ApiError.conflict(`Orden en estado inválido para entrega: ${delivery.status}`);
     }
@@ -256,15 +276,16 @@ export async function confirmPickup(
       if (item.quantityDelivered <= 0) continue;
 
       // Buscar reserva activa para este producto en la orden
-      const reservation = await c.query<{ 
-        id: number; 
-        product_id: number; 
-        source_location_id: number; 
-        quantity_reserved: number; 
+      const reservation = await c.query<{
+        id: number;
+        product_id: number;
+        source_location_id: number;
+        quantity_reserved: number;
         quantity_consumed: number;
         status: string;
+        expires_at: Date | null;
       }>(
-        `SELECT id, product_id, source_location_id, quantity_reserved, quantity_consumed, status
+        `SELECT id, product_id, source_location_id, quantity_reserved, quantity_consumed, status, expires_at
          FROM stock_reservations
          WHERE pending_delivery_id = $1 AND product_id = $2 AND status IN ('ACTIVA', 'PARCIAL')
          ORDER BY created_at LIMIT 1 FOR UPDATE`,
@@ -277,7 +298,17 @@ export async function confirmPickup(
 
       const res = reservation.rows[0];
       const pendingQty = res.quantity_reserved - res.quantity_consumed;
-      
+
+      // Ventana entre el vencimiento logico (48h) y el ciclo del scheduler
+      // (hasta 15 min): la reserva sigue ACTIVA en la tabla pero ya vencida.
+      // Sin este chequeo se podia retirar mercaderia de una orden pasada de hora.
+      if (res.expires_at && new Date(res.expires_at).getTime() <= Date.now()) {
+        throw ApiError.conflict(
+          `La reserva de este producto expiró (${new Date(res.expires_at).toLocaleString()}). ` +
+          `La orden debe re-generarse o extenderse.`
+        );
+      }
+
       if (item.quantityDelivered > pendingQty) {
         throw ApiError.conflict(
           `Cantidad entregada (${item.quantityDelivered}) supera lo reservado pendiente (${pendingQty})`
@@ -328,13 +359,19 @@ export async function confirmPickup(
     );
 
     const newStatus = Number(undeliveredItems.rows[0].count) === 0 ? 'ENTREGADO' : 'PARCIAL';
-    
-    await c.query(
-      `UPDATE pending_deliveries 
+
+    // Guard de estado: una cancelacion/proceso concurrente (ya commiteada tras
+    // nuestro lock) no debe ser sobrescrita por la confirmacion.
+    const updated = await c.query<{ id: number }>(
+      `UPDATE pending_deliveries
        SET status = $1, delivered_by = $2, delivered_at = now(), updated_at = now()
-       WHERE id = $3`,
+       WHERE id = $3 AND status IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL')
+       RETURNING id`,
       [newStatus, user.id, delivery.id]
     );
+    if (!updated.rows[0]) {
+      throw ApiError.conflict(`La orden cambió de estado durante la operación (${delivery.status}). Reintenta.`);
+    }
 
     await writeAudit(c, {
       userId: user.id, action: 'PENDING_DELIVERY_PICKUP', entity: 'pending_delivery', entityId: delivery.id,
@@ -399,6 +436,66 @@ export async function cancelPendingDelivery(
 }
 
 /**
+ * Extiende el plazo de retiro de una orden activa.
+ *
+ * El auto-cancel (migration 014) anula la orden cuando pasa su plazo (48h)
+ * y NO tiene ninguna reserva activa no vencida. Por eso extender las
+ * reservas de la orden es suficiente para "ganar tiempo": no hace falta
+ * tocar pending_deliveries.created_at.
+ */
+export async function extendPendingDelivery(
+  user: AuthUser,
+  ip: string | undefined,
+  id: number,
+  days: number,
+  note?: string | null
+) {
+  return withTx(async (c) => {
+    const pd = await c.query<{ id: number; status: string; number: string; pickup_location_id: number }>(
+      'SELECT id, status, number, pickup_location_id FROM pending_deliveries WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    if (!pd.rows[0]) throw ApiError.notFound('Orden no encontrada');
+    const order = pd.rows[0];
+    assertLocationAccess(user, order.pickup_location_id);
+
+    if (!['PENDIENTE', 'EN_PREPARACION', 'LISTO_RETIRO', 'PARCIAL'].includes(order.status)) {
+      throw ApiError.conflict(`No se puede extender una orden en estado ${order.status}`);
+    }
+
+    const before = await c.query<{ current_min: string | null }>(
+      `SELECT MIN(expires_at)::text AS current_min
+       FROM stock_reservations
+       WHERE reference_type = 'PENDING_DELIVERY' AND reference_id = $1 AND status IN ('ACTIVA', 'PARCIAL')`,
+      [id]
+    );
+
+    const upd = await c.query<{ id: number; expires_at: string }>(
+      `UPDATE stock_reservations
+          SET expires_at = GREATEST(COALESCE(expires_at, now()), now()) + ($2::text || ' days')::interval
+        WHERE reference_type = 'PENDING_DELIVERY' AND reference_id = $1 AND status IN ('ACTIVA', 'PARCIAL')
+        RETURNING id, expires_at::text`,
+      [id, String(days)]
+    );
+    if (upd.rows.length === 0) {
+      throw ApiError.conflict('La orden no tiene reservas activas para extender');
+    }
+    const newMin = upd.rows.map((r) => r.expires_at).sort()[0];
+
+    await writeAudit(c, {
+      userId: user.id, action: 'PENDING_DELIVERY_EXTEND', entity: 'pending_delivery', entityId: id,
+      details: {
+        number: order.number, days,
+        previousExpiry: before.rows[0]?.current_min ?? null, newExpiry: newMin,
+        reservationsExtended: upd.rows.length, note: note ?? null,
+      }, ip,
+    });
+
+    return { ok: true, number: order.number, extendedReservations: upd.rows.length, newExpiresAt: newMin };
+  });
+}
+
+/**
  * Lista órdenes pendientes con filtros
  */
 export async function listPendingDeliveries(opts: {
@@ -435,7 +532,10 @@ export async function listPendingDeliveries(opts: {
             cu.full_name AS created_by_name,
             (SELECT COUNT(*) FROM pending_delivery_items WHERE pending_delivery_id = pd.id) AS items_count,
             (SELECT SUM(quantity_reserved) FROM pending_delivery_items WHERE pending_delivery_id = pd.id) AS total_qty_reserved,
-            (SELECT SUM(quantity_delivered) FROM pending_delivery_items WHERE pending_delivery_id = pd.id) AS total_qty_delivered
+            (SELECT SUM(quantity_delivered) FROM pending_delivery_items WHERE pending_delivery_id = pd.id) AS total_qty_delivered,
+            (SELECT MIN(sr.expires_at) FROM stock_reservations sr
+              WHERE sr.reference_type = 'PENDING_DELIVERY' AND sr.reference_id = pd.id
+                AND sr.status IN ('ACTIVA', 'PARCIAL')) AS expires_at
      FROM pending_deliveries pd
      JOIN locations sl ON sl.id = pd.sale_location_id
      JOIN locations pl ON pl.id = pd.pickup_location_id

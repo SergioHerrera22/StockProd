@@ -26,6 +26,11 @@ router.get(
       recent,
       byLocation,
       series,
+      debtPickupsCount,
+      debtPickupsOverdue,
+      debtPickupList,
+      debtUnderivedList,
+      debtUnderivedCount,
     ] = await Promise.all([
       query<{ total: string }>(`SELECT COUNT(*) total FROM products WHERE is_active`),
       query<{ value: string | null }>(
@@ -93,6 +98,91 @@ router.get(
          GROUP BY d ORDER BY d`,
         [days]
       ),
+      // ===== Deudas con clientes =====
+      // Retiros activos (incluye PARCIAL: sigue debiendo saldo)
+      query<{ total: string }>(
+        `SELECT COUNT(*) total FROM pending_deliveries
+         WHERE status IN ('PENDIENTE','EN_PREPARACION','LISTO_RETIRO','PARCIAL')`
+      ),
+      // Vencidos: activos con mas de 48h SIN ninguna reserva vigente
+      // (misma condicion que usa el auto-cancel de la migration 014)
+      query<{ total: string }>(
+        `SELECT COUNT(*) total FROM pending_deliveries pd
+         WHERE pd.status IN ('PENDIENTE','EN_PREPARACION','LISTO_RETIRO','PARCIAL')
+           AND pd.created_at < now() - interval '48 hours'
+           AND NOT EXISTS (
+             SELECT 1 FROM stock_reservations sr
+             WHERE sr.reference_type = 'PENDING_DELIVERY' AND sr.reference_id = pd.id
+               AND sr.status IN ('ACTIVA','PARCIAL')
+               AND (sr.expires_at IS NULL OR sr.expires_at > now())
+           )`
+      ),
+      // Ordenes de retiro pendientes, mas viejas primero, con unidades debidas
+      query(
+        `SELECT pd.id, pd.number, pd.status, pd.created_at,
+                pl.name AS pickup_location_name, pl.code AS pickup_location_code,
+                pd.customer_name, pd.customer_phone,
+                COALESCE((SELECT SUM(pdi.quantity_reserved - pdi.quantity_delivered)
+                          FROM pending_delivery_items pdi
+                          WHERE pdi.pending_delivery_id = pd.id), 0) AS pending_units
+         FROM pending_deliveries pd
+         JOIN locations pl ON pl.id = pd.pickup_location_id
+         WHERE pd.status IN ('PENDIENTE','EN_PREPARACION','LISTO_RETIRO','PARCIAL')
+         ORDER BY pd.created_at ASC
+         LIMIT 6`
+      ),
+      // Entregas CONFIRMADO/PARCIAL con faltante sin derivar (misma formula
+      // que listDeliveries: objetivo - entregado - ya retirado via ordenes de retiro)
+      query(
+        `SELECT d.id, d.number, d.status, d.created_at, x.shortfall_lines, x.shortfall_units
+         FROM deliveries d
+         JOIN (
+           SELECT oi.delivery_id,
+                  COUNT(*) FILTER (WHERE owed > COALESCE(wd.withdrawn, 0)) AS shortfall_lines,
+                  COALESCE(SUM(GREATEST(owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
+           FROM (
+             SELECT di.delivery_id, di.product_id,
+                    GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
+                      - COALESCE(di.quantity_delivered, 0) AS owed
+             FROM delivery_items di
+             JOIN deliveries d2 ON d2.id = di.delivery_id
+             WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
+           ) oi
+           LEFT JOIN (
+             SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
+             FROM pending_deliveries pd
+             JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
+             WHERE pdi.quantity_delivered > 0 AND pd.status NOT IN ('CANCELADO')
+             GROUP BY pd.delivery_id, pdi.product_id
+           ) wd ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
+           GROUP BY oi.delivery_id
+         ) x ON x.delivery_id = d.id
+         WHERE x.shortfall_units > 0
+         ORDER BY d.created_at DESC
+         LIMIT 6`
+      ),
+      query<{ total: string }>(
+        `SELECT COUNT(*) total FROM (
+           SELECT oi.delivery_id,
+                  COALESCE(SUM(GREATEST(owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
+           FROM (
+             SELECT di.delivery_id, di.product_id,
+                    GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
+                      - COALESCE(di.quantity_delivered, 0) AS owed
+             FROM delivery_items di
+             JOIN deliveries d2 ON d2.id = di.delivery_id
+             WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
+           ) oi
+           LEFT JOIN (
+             SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
+             FROM pending_deliveries pd
+             JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
+             WHERE pdi.quantity_delivered > 0 AND pd.status NOT IN ('CANCELADO')
+             GROUP BY pd.delivery_id, pdi.product_id
+           ) wd ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
+           GROUP BY oi.delivery_id
+         ) y WHERE y.shortfall_units > 0`
+      ),
     ]);
 
     res.json({
@@ -111,6 +201,17 @@ router.get(
       series: series.rows.map((r: Record<string, unknown>) => ({
         day: r.day, entradas: Number(r.entradas), salidas: Number(r.salidas),
       })),
+      debts: {
+        pickupsPending: Number(debtPickupsCount.rows[0].total),
+        pickupsOverdue: Number(debtPickupsOverdue.rows[0].total),
+        pickupOrders: debtPickupList.rows.map((r: Record<string, unknown>) => ({
+          ...r, pending_units: Number(r.pending_units),
+        })),
+        underivedDeliveries: debtUnderivedList.rows.map((r: Record<string, unknown>) => ({
+          ...r, shortfall_lines: Number(r.shortfall_lines), shortfall_units: Number(r.shortfall_units),
+        })),
+        underivedCount: Number(debtUnderivedCount.rows[0].total),
+      },
     });
   })
 );

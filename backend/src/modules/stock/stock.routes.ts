@@ -34,20 +34,24 @@ router.get(
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
 
     const rows = await query(
-      `SELECT * FROM (
-         SELECT p.id, p.code, p.name, p.brand, p.unit, p.min_stock, p.cost,
-                c.name AS category_name,
-                COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty,
-                COALESCE(jsonb_object_agg(l.code, COALESCE(sb.quantity, 0))
-                         FILTER (WHERE l.id IS NOT NULL), '{}'::jsonb) AS by_location
-         FROM products p
-         LEFT JOIN categories c ON c.id = p.category_id
-         LEFT JOIN stock_balances sb ON sb.product_id = p.id
-         LEFT JOIN locations l ON l.id = sb.location_id AND l.is_active
-         ${having.length ? `WHERE ${having.join(' AND ')}` : ''}
-         GROUP BY p.id, c.name
-       ) t
-       ${stockFilter}
+      `SELECT t.*,
+              (t.total_qty - t.total_reserved) AS available
+       FROM (
+          SELECT p.id, p.code, p.name, p.brand, p.unit, p.min_stock, p.cost,
+                 c.name AS category_name,
+                 COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty,
+                 COALESCE(SUM(sb.reserved_quantity) FILTER (WHERE true ${locFilter}), 0) AS total_reserved,
+                 COALESCE(jsonb_object_agg(l.code, COALESCE(sb.quantity, 0))
+                          FILTER (WHERE l.id IS NOT NULL), '{}'::jsonb) AS by_location,
+                 COALESCE(jsonb_object_agg(l.code, COALESCE(sb.reserved_quantity, 0))
+                          FILTER (WHERE l.id IS NOT NULL), '{}'::jsonb) AS by_reserved
+          FROM products p
+          LEFT JOIN categories c ON c.id = p.category_id
+          LEFT JOIN stock_balances sb ON sb.product_id = p.id
+          LEFT JOIN locations l ON l.id = sb.location_id AND l.is_active
+          ${having.length ? `WHERE ${having.join(' AND ')}` : ''}
+          GROUP BY p.id, c.name
+       ) t ${stockFilter}
        ORDER BY t.name
        LIMIT ${limit}`,
       params
@@ -59,7 +63,12 @@ router.get(
 
     res.json({
       locations: locations.rows,
-      products: rows.rows.map((r: Record<string, unknown>) => ({ ...r, total_qty: Number(r.total_qty ?? 0) })),
+      products: rows.rows.map((r: Record<string, unknown>) => ({
+        ...r,
+        total_qty: Number(r.total_qty ?? 0),
+        total_reserved: Number(r.total_reserved ?? 0),
+        available: Number(r.available ?? 0),
+      })),
     });
   })
 );

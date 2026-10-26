@@ -47,34 +47,50 @@ export async function createSnapshot(
   referenceId?: number,
   referenceType?: string
 ) {
-  return withTx(async (c) => {
-    // Verificar ubicacion activa
-    const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active = true', [locationId]);
-    if (!loc.rows[0]) throw ApiError.notFound('Ubicación no encontrada o inactiva');
+  return withTx((c) => createSnapshotInTx(c, user, ip, locationId, snapshotType, referenceId, referenceType));
+}
 
-    // Usar funcion BD para crear snapshot atomico
-    const r = await c.query<{ id: number }>(
-      `SELECT create_stock_snapshot($1, $2, $3, $4, $5) AS id`,
-      [locationId, snapshotType, referenceId ?? null, referenceType ?? null, user?.id ?? null]
-    );
+/**
+ * Crear snapshot usando el cliente de una transaccion EXISTENTE.
+ * Antes abria su propia withTx: invocada dentro de la tx de un conteo,
+ * el snapshot quedaba commiteado aunque el conteo se revertiera (o al
+ * revés). Compartir el cliente garantiza atomicidad con el conteo.
+ */
+export async function createSnapshotInTx(
+  c: any,
+  user: AuthUser | null,
+  ip: string | undefined,
+  locationId: number,
+  snapshotType: SnapshotType,
+  referenceId?: number,
+  referenceType?: string
+) {
+  // Verificar ubicacion activa
+  const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active = true', [locationId]);
+  if (!loc.rows[0]) throw ApiError.notFound('Ubicación no encontrada o inactiva');
 
-    const snapshotId = r.rows[0].id;
+  // Usar funcion BD para crear snapshot atomico
+  const r = await c.query<{ id: number }>(
+    `SELECT create_stock_snapshot($1, $2, $3, $4, $5) AS id`,
+    [locationId, snapshotType, referenceId ?? null, referenceType ?? null, user?.id ?? null]
+  );
 
-    // Obtener detalle para respuesta (usar el mismo cliente de transaccion para ver datos no confirmados)
-    const snap = await getSnapshotInTx(c, snapshotId);
-    if (!snap) throw ApiError.badRequest('Error creando snapshot');
+  const snapshotId = r.rows[0].id;
 
-    await writeAudit(c, {
-      userId: user?.id ?? null,
-      action: 'STOCK_SNAPSHOT_CREATE',
-      entity: 'stock_snapshot',
-      entityId: snapshotId,
-      details: { locationId, snapshotType, referenceId, referenceType, totalProducts: snap.totalProducts, totalQuantity: String(snap.totalQuantity) },
-      ip,
-    });
+  // Obtener detalle para respuesta (usar el mismo cliente de transaccion para ver datos no confirmados)
+  const snap = await getSnapshotInTx(c, snapshotId);
+  if (!snap) throw ApiError.badRequest('Error creando snapshot');
 
-    return snap;
+  await writeAudit(c, {
+    userId: user?.id ?? null,
+    action: 'STOCK_SNAPSHOT_CREATE',
+    entity: 'stock_snapshot',
+    entityId: snapshotId,
+    details: { locationId, snapshotType, referenceId, referenceType, totalProducts: snap.totalProducts, totalQuantity: String(snap.totalQuantity) },
+    ip,
   });
+
+  return snap;
 }
 
 /**
@@ -245,23 +261,37 @@ export async function compareSnapshots(snapshotId1: number, snapshotId2: number)
 }
 
 /**
- * Verificar integridad de snapshot (hash)
+ * Verificar integridad de snapshot (hash).
+ * El hash canonico se recalcula en SQL con la MISMA expresion que usa
+ * create_stock_snapshot al crear (jsonb_build_object productId/quantity/
+ * unitCost + digest sha256): antes el calculo en JSON.stringify de rows
+ * snake_case nunca podia coincidir con la funcion de BD y toda verificacion
+ * daba "manipulado" por desformato, no por tampering.
  */
 export async function verifySnapshotIntegrity(snapshotId: number) {
   const snap = await getSnapshot(snapshotId);
   if (!snap) throw ApiError.notFound('Snapshot no encontrado');
 
-  // Recalcular hash de los items actuales
-  const items = await query(
-    `SELECT product_id, quantity, unit_cost FROM stock_snapshot_items WHERE snapshot_id = $1 ORDER BY product_id`,
+  const r = await query<{ computed_hash: string | null; item_count: string }>(
+    `SELECT encode(digest(
+        (SELECT jsonb_agg(jsonb_build_object(
+             'productId', product_id,
+             'quantity', quantity,
+             'unitCost', unit_cost
+         ) ORDER BY product_id)::text
+         FROM stock_snapshot_items WHERE snapshot_id = $1),
+        'sha256'
+     ), 'hex') AS computed_hash,
+     (SELECT COUNT(*) FROM stock_snapshot_items WHERE snapshot_id = $1) AS item_count`,
     [snapshotId]
   );
-  const computedHash = require('crypto').createHash('sha256').update(JSON.stringify(items.rows)).digest('hex');
+  const computedHash = r.rows[0].computed_hash ?? '';
 
   return {
     snapshotId,
     storedHash: snap.dataHash,
     computedHash,
+    itemCount: Number(r.rows[0].item_count),
     isValid: snap.dataHash === computedHash,
   };
 }

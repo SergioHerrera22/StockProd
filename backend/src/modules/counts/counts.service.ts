@@ -9,7 +9,7 @@ import { AuthUser } from '../../middleware/auth';
 import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
-import { createSnapshot } from '../../services/snapshot.service';
+import { createSnapshotInTx } from '../../services/snapshot.service';
 
 /**
  * Crea un recuento por ubicacion. Toma una fotografia del stock del sistema
@@ -26,7 +26,7 @@ export async function createCount(
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion invalida');
 
     // Crear snapshot PRE_COUNT para referencia
-    await createSnapshot(user, ip, locationId, 'PRE_COUNT', undefined, undefined);
+    await createSnapshotInTx(c, user, ip, locationId, 'PRE_COUNT', undefined, undefined);
 
     const number = await nextDocNumber(c, 'count');
     const r = await c.query<{ id: number }>(
@@ -91,111 +91,160 @@ export async function saveCountItems(
  * Ahora con: evaluación de reglas, solicitud de aprobación si corresponde, segregación de funciones.
  */
 export async function applyCount(user: AuthUser, ip: string | undefined, id: number, reason: string) {
-  return withTx(async (c) => {
-    const head = await c.query<{ status: string; number: string; location_id: number; created_by: number }>(
-      'SELECT status, number, location_id, created_by FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
-    );
-    const count = head.rows[0];
-    if (!count) throw ApiError.notFound('Inventario no encontrado');
-    assertLocationAccess(user, count.location_id);
-    if (count.status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
-    if (!reason || reason.trim().length < 5) throw ApiError.badRequest('El motivo del ajuste es obligatorio');
+  return withTx((c) => applyCountTx(c, user, ip, id, reason));
+}
 
-    // Segregación: quien aplica NO debe ser quien creó
-    if (count.created_by === user.id) {
-      throw ApiError.forbidden('No puedes aplicar un inventario que tú mismo creaste (segregación de funciones)');
-    }
+/**
+ * Logica central de aplicacion de inventario. Recibe el cliente de la
+ * transaccion para poder ser invocada desde approveCount SIN abrir una
+ * segunda transaccion (antes abria withTx propia dentro de la tx de
+ * aprobacion que retenia el lock de la misma fila -> deadlock seguro).
+ */
+async function applyCountTx(c: PoolClient, user: AuthUser, ip: string | undefined, id: number, reason: string) {
+  const head = await c.query<{ status: string; number: string; location_id: number; created_by: number; created_at: Date }>(
+    'SELECT status, number, location_id, created_by, created_at FROM stock_counts WHERE id = $1 FOR UPDATE', [id]
+  );
+  const count = head.rows[0];
+  if (!count) throw ApiError.notFound('Inventario no encontrado');
+  assertLocationAccess(user, count.location_id);
+  if (count.status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
+  if (!reason || reason.trim().length < 5) throw ApiError.badRequest('El motivo del ajuste es obligatorio');
 
-    const items = await c.query<{ id: number; product_id: number; counted_quantity: string | null; system_quantity: string }>(
-      'SELECT id, product_id, counted_quantity, system_quantity FROM stock_count_items WHERE count_id = $1', [id]
-    );
+  // Segregación: quien aplica NO debe ser quien creó
+  if (count.created_by === user.id) {
+    throw ApiError.forbidden('No puedes aplicar un inventario que tú mismo creaste (segregación de funciones)');
+  }
 
-    const adjustments = items.rows.filter(it => it.counted_quantity !== null && Number(it.counted_quantity) !== Number(it.system_quantity));
-    const adjustmentsCount = adjustments.length;
-    const totalLines = items.rows.filter(it => it.counted_quantity !== null).length;
-    const context = { 
-      lines_count: totalLines, 
-      adjustments_count: adjustmentsCount,
-      location_id: count.location_id, 
-      user_role: user.role 
-    };
+  const items = await c.query<{ id: number; product_id: number; counted_quantity: string | null; system_quantity: string }>(
+    'SELECT id, product_id, counted_quantity, system_quantity FROM stock_count_items WHERE count_id = $1', [id]
+  );
 
-    // Evaluar reglas ANTES de aplicar
-    const rules = await evaluateBusinessRules('COUNT', 'BEFORE_APPLY', context);
-    const requiresApproval = rules.some(r => r.action.require_approval);
-    if (requiresApproval && user.role === 'EMPLEADO') {
-      throw ApiError.forbidden('Este inventario requiere aprobador con rol ENCARGADO o superior');
-    }
+  const adjustments = items.rows.filter(it => it.counted_quantity !== null && Number(it.counted_quantity) !== Number(it.system_quantity));
+  const adjustmentsCount = adjustments.length;
+  const totalLines = items.rows.filter(it => it.counted_quantity !== null).length;
+  const context = {
+    lines_count: totalLines,
+    adjustments_count: adjustmentsCount,
+    location_id: count.location_id,
+    user_role: user.role
+  };
 
-    if (requiresApproval) {
-      const rule = rules.find(r => r.action.require_approval)!;
-      await createApprovalRequest({
-        ruleId: rule.ruleId,
-        entityType: 'COUNT',
-        entityId: id,
-        entityNumber: count.number,
-        requestedBy: user.id,
-        context: { ...context, reason, adjustments: adjustmentsCount },
-      });
-      await writeAudit(c, { userId: user.id, action: 'COUNT_APPLY_PENDING_APPROVAL', entity: 'count', entityId: id, details: { reason, adjustments: adjustmentsCount, requiresApproval: true }, ip });
-      return { ok: false, requiresApproval: true, adjustments: adjustmentsCount };
-    }
+  // Evaluar reglas ANTES de aplicar
+  const rules = await evaluateBusinessRules('COUNT', 'BEFORE_APPLY', context);
+  const requiresApproval = rules.some(r => r.action.require_approval);
+  if (requiresApproval && user.role === 'EMPLEADO') {
+    throw ApiError.forbidden('Este inventario requiere aprobador con rol ENCARGADO o superior');
+  }
 
-    let appliedAdjustments = 0;
-    for (const it of items.rows) {
-      if (it.counted_quantity === null) continue; // no contado: no se ajusta
-      const bal = await c.query<{ quantity: string }>(
-        `INSERT INTO stock_balances (product_id, location_id, quantity)
-         VALUES ($1,$2,0) ON CONFLICT (product_id, location_id) DO NOTHING
-         RETURNING quantity`,
-        [it.product_id, count.location_id]
-      );
-      const cur = bal.rows[0]
-        ? Number(bal.rows[0].quantity)
-        : Number((await c.query<{ quantity: string }>(
-            'SELECT quantity FROM stock_balances WHERE product_id = $1 AND location_id = $2 FOR UPDATE',
-            [it.product_id, count.location_id]
-          )).rows[0].quantity);
-
-      const delta = Number(it.counted_quantity) - cur;
-      if (delta === 0) continue;
-
-      await applyStockChange(c, {
-        productId: it.product_id,
-        locationId: count.location_id,
-        delta,
-        type: delta > 0 ? 'AJUSTE_POS' : 'AJUSTE_NEG',
-        referenceType: 'COUNT',
-        referenceId: id,
-        referenceNumber: count.number,
-        userId: user.id,
-        reason: `Inventario ${count.number}: ${reason}`,
-      });
-      await c.query('UPDATE stock_count_items SET adjusted = true WHERE id = $1', [it.id]);
-      appliedAdjustments++;
-    }
-
-    // Crear snapshot POST_COUNT
-    await createSnapshot(user, ip, count.location_id, 'POST_COUNT', id, 'COUNT');
-
-    await c.query(
-      `UPDATE stock_counts SET status = 'APLICADO', approved_by = $1, applied_at = now() WHERE id = $2`,
-      [user.id, id]
-    );
-
-    await writeAudit(c, {
-      userId: user.id, action: 'COUNT_APPLY', entity: 'count', entityId: id,
-      details: { reason, adjustments: appliedAdjustments }, ip,
+  if (requiresApproval) {
+    const rule = rules.find(r => r.action.require_approval)!;
+    await createApprovalRequest({
+      ruleId: rule.ruleId,
+      entityType: 'COUNT',
+      entityId: id,
+      entityNumber: count.number,
+      requestedBy: user.id,
+      context: { ...context, reason, adjustments: adjustmentsCount },
     });
+    await writeAudit(c, { userId: user.id, action: 'COUNT_APPLY_PENDING_APPROVAL', entity: 'count', entityId: id, details: { reason, adjustments: adjustmentsCount, requiresApproval: true }, ip });
+    return { ok: false, requiresApproval: true, adjustments: adjustmentsCount };
+  }
 
-    // Resolver aprobación si existía
-    await c.query(
-      `UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'COUNT' AND entity_id = $2 AND status = 'PENDIENTE'`,
-      [user.id, id]
+  // El conteo compara contra el SNAPSHOT tomado al crear (system_quantity).
+  // Basar el ajuste en el saldo actual revertiria en silencio ventas/movimientos
+  // posteriores. Si hubo movimientos despues del snapshot, ese item se
+  // detecta como conflicto (el stock fisico puede haber cambiado): no se
+  // ajusta automaticamente, se reporta para volver a contar.
+  const moved = await c.query<{ product_id: number }>(
+    `SELECT DISTINCT m.product_id
+     FROM stock_movements m
+     WHERE m.location_id = $1 AND m.reference_type <> 'COUNT'
+       AND m.created_at > $2
+       AND m.product_id IN (SELECT product_id FROM stock_count_items WHERE count_id = $3 AND counted_quantity IS NOT NULL)`,
+    [count.location_id, count.created_at, id]
+  );
+  const movedSet = new Set(moved.rows.map(r => r.product_id));
+
+  // Reservas activas: si hay stock comprometido para un producto contado en
+  // esta ubicacion, ajustar por arriba dejaria un respaldo fantasma y por
+  // abajo revienta el CHECK reserved_quantity <= quantity. Se reporta y el
+  // usuario debe consumir/cancelar esas reservas antes de aplicar.
+  const reservedRows = await c.query<{ product_id: number }>(
+    `SELECT DISTINCT sb.product_id
+     FROM stock_balances sb
+     JOIN stock_reservations r ON r.product_id = sb.product_id AND r.source_location_id = sb.location_id
+     WHERE sb.location_id = $1
+       AND sb.reserved_quantity > 0
+       AND r.status IN ('ACTIVA', 'PARCIAL')
+       AND sb.product_id IN (SELECT product_id FROM stock_count_items WHERE count_id = $2 AND counted_quantity IS NOT NULL)`,
+    [count.location_id, id]
+  );
+  const reservedSet = new Set(reservedRows.rows.map(r => r.product_id));
+
+  const conflictProducts = new Set<number>([...movedSet, ...reservedSet]);
+  if (conflictProducts.size > 0) {
+    const names = await c.query<{ id: number; code: string; name: string }>(
+      'SELECT id, code, name FROM products WHERE id = ANY($1)', [[...conflictProducts]]
     );
+    await writeAudit(c, { userId: user.id, action: 'COUNT_APPLY_BLOCKED', entity: 'count', entityId: id, details: { reason: 'movimientos posteriores o reservas activas', products: names.rows }, ip });
+    throw ApiError.conflict(
+      `El inventario no se puede aplicar: hubo movimientos de stock o hay reservas activas desde que se creó ` +
+      `para: ${names.rows.map(p => `${p.code} — ${p.name}`).join(', ')}. ` +
+      `Recontá esos productos o liberá las reservas (consumir órdenes de retiro) y volvé a intentar.`
+    );
+  }
 
-    return { ok: true, adjustments: appliedAdjustments };
+  // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
+  let appliedAdjustments = 0;
+  const sortedRows = [...items.rows].sort((a, b) => a.product_id - b.product_id);
+  for (const it of sortedRows) {
+    if (it.counted_quantity === null) continue; // no contado: no se ajusta
+    const bal = await c.query<{ quantity: string }>(
+      `SELECT COALESCE(quantity, 0) AS quantity FROM stock_balances
+       WHERE product_id = $1 AND location_id = $2 FOR UPDATE`,
+      [it.product_id, count.location_id]
+    );
+    // applyStockChange asegura la existencia de la fila y su lock si no existe.
+    const cur = Number(bal.rows[0]?.quantity ?? 0);
+
+    const delta = Number(it.counted_quantity) - cur;
+    if (delta === 0) continue;
+
+    await applyStockChange(c, {
+      productId: it.product_id,
+      locationId: count.location_id,
+      delta,
+      type: delta > 0 ? 'AJUSTE_POS' : 'AJUSTE_NEG',
+      referenceType: 'COUNT',
+      referenceId: id,
+      referenceNumber: count.number,
+      userId: user.id,
+      reason: `Inventario ${count.number}: ${reason}`,
+    });
+    await c.query('UPDATE stock_count_items SET adjusted = true WHERE id = $1', [it.id]);
+    appliedAdjustments++;
+  }
+
+  // Crear snapshot POST_COUNT
+  await createSnapshotInTx(c, user, ip, count.location_id, 'POST_COUNT', id, 'COUNT');
+
+  await c.query(
+    `UPDATE stock_counts SET status = 'APLICADO', approved_by = $1, applied_at = now() WHERE id = $2`,
+    [user.id, id]
+  );
+
+  await writeAudit(c, {
+    userId: user.id, action: 'COUNT_APPLY', entity: 'count', entityId: id,
+    details: { reason, adjustments: appliedAdjustments }, ip,
   });
+
+  // Resolver aprobación si existía
+  await c.query(
+    `UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'COUNT' AND entity_id = $2 AND status = 'PENDIENTE'`,
+    [user.id, id]
+  );
+
+  return { ok: true, adjustments: appliedAdjustments };
 }
 
 /**
@@ -210,7 +259,10 @@ export async function approveCount(user: AuthUser, ip: string | undefined, id: n
     if (head.rows[0].status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
     if (head.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar un inventario que tú mismo creaste (segregación de funciones)');
     assertLocationAccess(user, head.rows[0].location_id);
-    return applyCount(user, ip, id, reason);
+    // Comparte la MISMA transaccion: la fila del conteo ya esta bloqueada aqui.
+    const result = await applyCountTx(c, user, ip, id, reason);
+    await writeAudit(c, { userId: user.id, action: 'COUNT_APPROVE', entity: 'count', entityId: id, details: { reason }, ip });
+    return result;
   });
 }
 

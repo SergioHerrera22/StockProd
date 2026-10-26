@@ -11,7 +11,9 @@
     "db:setup": "node scripts/setup-db.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "node scripts/seed.mjs",
-    "test:smoke": "node tests/smoke.mjs"
+    "test:smoke": "node tests/smoke.mjs",
+    "test:negative": "node tests/negative.mjs",
+    "test:scenario": "node tests/scenario-shortfall-derivation.mjs"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",

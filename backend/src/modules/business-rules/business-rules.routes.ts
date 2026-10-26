@@ -30,6 +30,9 @@ router.get(
 
 router.post(
   '/',
+  // Mutación de configuración: solo ADMIN (settings.write). El router base
+  // exige audit.read, pero leer no es lo mismo que configurar reglas.
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const input = z.object({
       code: z.string().min(3).max(50),
@@ -48,6 +51,8 @@ router.post(
 
 router.patch(
   '/:id',
+  // Mutación de configuración: solo ADMIN (settings.write)
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const input = z.object({
       name: z.string().min(3).max(100).optional(),
@@ -93,6 +98,8 @@ router.get(
 
 router.post(
   '/thresholds',
+  // Mutación de configuración: solo ADMIN (settings.write)
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const input = z.object({
       locationId: z.number().int().positive().nullable().optional().transform(v => v ?? null),
@@ -109,6 +116,8 @@ router.post(
 
 router.delete(
   '/thresholds/:id',
+  // Mutación de configuración: solo ADMIN (settings.write)
+  requirePerm('settings.write'),
   asyncH(async (req, res) => {
     const result = await deleteControlThreshold(req.user!, req.ip, pathId(req.params.id));
     res.json(result);

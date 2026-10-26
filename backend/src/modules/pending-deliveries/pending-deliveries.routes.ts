@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { asyncH } from '../../middleware/errorHandler';
+import { idempotent } from '../../middleware/idempotency';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam } from '../../lib/pagination';
 import * as svc from './pending-deliveries.service';
@@ -13,7 +14,9 @@ const PendingDeliveryItemSchema = z.object({
   productId: z.number().int().positive(),
   quantityRequested: z.number().positive(),
   sourceLocationId: z.number().int().positive(),
-  quantityReserved: z.number().positive(),
+  // 0 permitido = deuda sin reserva todavía (el service lo soporta y lo
+  // valida; antes el schema rechazaba 0 y contradecía al service).
+  quantityReserved: z.number().min(0),
 });
 
 const CreatePendingDeliverySchema = z.object({
@@ -85,11 +88,11 @@ router.get('/stock-available', asyncH(async (req: Request, res: Response) => {
  */
 router.post('/', 
   requirePerm('deliveries.write'),
-  asyncH(async (req: Request, res: Response) => {
+  idempotent(asyncH(async (req: Request, res: Response) => {
     const input = CreatePendingDeliverySchema.parse(req.body);
     const result = await svc.createPendingDelivery(req.user!, req.ip, input);
     res.status(201).json({ success: true, ...result });
-  })
+  }))
 );
 
 /**
@@ -110,11 +113,11 @@ router.get('/scan/:barcode', asyncH(async (req: Request, res: Response) => {
  */
 router.post('/confirm-pickup',
   requirePerm('deliveries.write'),
-  asyncH(async (req: Request, res: Response) => {
+  idempotent(asyncH(async (req: Request, res: Response) => {
     const input = ConfirmPickupSchema.parse(req.body);
     const result = await svc.confirmPickup(req.user!, req.ip, input);
     res.json(result);
-  })
+  }))
 );
 
 /**
@@ -123,11 +126,27 @@ router.post('/confirm-pickup',
  */
 router.post('/:id/cancel',
   requirePerm('deliveries.void'),
-  asyncH(async (req: Request, res: Response) => {
+  idempotent(asyncH(async (req: Request, res: Response) => {
     const { reason } = CancelSchema.parse(req.body);
     const result = await svc.cancelPendingDelivery(req.user!, req.ip, Number(req.params.id), reason);
     res.json(result);
-  })
+  }))
+);
+
+/**
+ * POST /api/pending-deliveries/:id/extend
+ * Extiende el plazo de retiro (dias desde ahora). Solo orden activa.
+ */
+router.post('/:id/extend',
+  requirePerm('deliveries.write'),
+  idempotent(asyncH(async (req: Request, res: Response) => {
+    const { days, note } = z.object({
+      days: z.number().int().min(1).max(60).default(7),
+      note: z.string().max(300).nullable().optional(),
+    }).parse(req.body ?? {});
+    const result = await svc.extendPendingDelivery(req.user!, req.ip, Number(req.params.id), days, note ?? null);
+    res.json(result);
+  }))
 );
 
 /**
