@@ -26,6 +26,8 @@ backend/server4001.err
 backend/server4001.out
 frontend/vite.err
 frontend/vite.out
+smoke.err
+smoke.out
 
 # Variables de entorno (NUNCA commitear .env reales)
 .env
