@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "node -e \"console.log('OK: el paquete ya viene compilado en dist/ (no compilar en servidor)')\"",
     "start": "node dist/index.js",
     "db:setup": "node scripts/setup-db.mjs",
     "db:migrate": "node scripts/migrate.mjs",
