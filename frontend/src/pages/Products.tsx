@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { BrowserMultiFormatReader } from '@zxing/browser';
 import { api, qs } from '../lib/api';
 import { exportCSV, fmtMoney, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
@@ -11,6 +10,8 @@ import {
 } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
+import { CameraScanner } from '../components/CameraScanner';
+import Barcode from '../components/Barcode';
 
 const UNIT_LABELS: Record<string, string> = {
   UNIDAD: 'Unidad', LITRO: 'Litro', KG: 'Kilogramo', METRO: 'Metro', OTRO: 'Otro',
@@ -186,35 +187,64 @@ export default function Products() {
   // Escaneo con cámara y generación automática del código de barras
   const [scanOpen, setScanOpen] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
-  const scanVideoRef = useRef<HTMLVideoElement>(null);
-  const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
+  // Escaneo del buscador del listado: localizar/editar un producto leyendo su barras
+  const [searchScanOpen, setSearchScanOpen] = useState(false);
 
-  // Cámara: se abre/cierra con scanOpen y decodifica continuamente
-  useEffect(() => {
-    if (!scanOpen) return;
-    const reader = new BrowserMultiFormatReader();
-    let stopped = false;
-    let ctrl: { stop: () => void } | null = null;
-    reader
-      .decodeFromVideoDevice(undefined, scanVideoRef.current!, (result, _err, control) => {
-        ctrl = control as unknown as { stop: () => void };
-        if (!result || stopped) return;
-        const code = result.getText().trim();
-        const now = Date.now();
-        // Ignora disparos repetidos del mismo cuadro (mismo código < 1.5s)
-        if (code === lastScanRef.current.code && now - lastScanRef.current.time < 1500) return;
-        lastScanRef.current = { code, time: now };
-        stopped = true;
-        setForm((f) => ({ ...f, barcode: code }));
-        setScanOpen(false);
-        toast.success(`Código de barras leído: ${code}`);
-      })
-      .catch(() => toast.error('No se pudo abrir la cámara. Revisá los permisos del navegador.'));
-    return () => {
-      stopped = true;
-      try { ctrl?.stop(); } catch { /* noop */ }
-    };
-  }, [scanOpen]);
+  // ===== Etiquetas de código de barras (mejora 12) =====
+  const [labelsTarget, setLabelsTarget] = useState<Product | null>(null);
+  const [labelCopies, setLabelCopies] = useState('12');
+
+  function openLabels(p: Product) {
+    setLabelCopies('12');
+    setLabelsTarget(p);
+  }
+
+  /** Imprime la hoja de etiquetas en un iframe aislado: usa estilos propios y
+   *  no interfiere con el CSS de la aplicación. JsBarcode deja el contenido
+   *  pintado en el SVG, así que clonando el markup del preview el lector
+   *  escanea el código igual que en pantalla. */
+  function printLabels() {
+    const grid = document.getElementById('label-preview-grid');
+    if (!grid || !labelsTarget) return;
+    const copies = Math.max(1, Math.min(parseInt(labelCopies, 10) || 12, 120));
+    // Los SVG de barras salen del preview ya renderizado (JsBarcode los genera on-mount)
+    const svgHtml = grid.querySelector('svg')?.outerHTML ?? '';
+    if (!svgHtml) { toast.error('El código de barras todavía no está listo, probá de nuevo'); return; }
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const sheet = Array.from({ length: copies }, () => `<div class="sticker">
+        <div class="name">${esc(labelsTarget.name)}</div>
+        ${labelsTarget.brand ? `<div class="meta">${esc(labelsTarget.brand)}</div>` : ''}
+        <div class="meta">${esc(labelsTarget.code)}</div>
+        ${svgHtml}
+      </div>`).join('');
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument;
+    if (!doc) { document.body.removeChild(iframe); toast.error('El navegador bloqueó la impresión'); return; }
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Etiquetas ${esc(labelsTarget.code)}</title>
+      <style>
+        @page { margin: 6mm; }
+        body { margin: 0; font-family: Arial, Helvetica, sans-serif; }
+        .sheet { display: flex; flex-wrap: wrap; gap: 2mm; }
+        .sticker { box-sizing: border-box; width: 38mm; height: 21mm; border: 0.3mm dashed #cbd5e1;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          overflow: hidden; padding: 1mm; text-align: center; }
+        .sticker .name { font-size: 8.5px; font-weight: bold; color: #0f172a; line-height: 1.15;
+          max-height: 2.3em; overflow: hidden; }
+        .sticker .meta { font-size: 7px; color: #334155; }
+        .sticker svg { max-width: 34mm; }
+      </style></head>
+      <body><div class="sheet">${sheet}</div></body></html>`);
+    doc.close();
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => { document.body.removeChild(iframe); }, 750);
+    }, 350);
+  }
 
   async function generateBarcode() {
     setGenBusy(true);
@@ -289,6 +319,42 @@ export default function Products() {
     setDuplicates([]);
     setScanOpen(false);
     setModalOpen(true);
+  }
+
+  /**
+   * Buscar por código de barras escaneado: traeme el/los productos que matchean
+   * (el backend matchea también por p.barcode). Si hay UNO solo, lo abre en
+   * edición directamente; si hay varios, solo filtra el listado.
+   */
+  async function handleScanFind(code: string) {
+    const clean = code.trim();
+    if (!clean) return;
+    try {
+      // active='': buscar en activos e inactivos para no ocultar match exactos
+      const res = await api<{ products: Product[]; total: number }>(
+        `/products${qs({ q: clean, active: '', page: 1, pageSize: 15 })}`
+      );
+      if (res.products.length === 0) {
+        toast.error(`Ningún producto con el código "${clean}". Si está inactivo, abrilo desde el listado con filtro "Todos".`);
+        return;
+      }
+      setSearchScanOpen(false);
+      setQ(clean);
+      setPage(1);
+      if (res.products.length === 1) {
+        const p = res.products[0];
+        if (can('products.write')) {
+          openEdit(p);
+          toast.success(`Producto encontrado: ${p.name}`);
+        } else {
+          toast.success(`Producto encontrado: ${p.name} (sin permiso para editarlo)`);
+        }
+      } else {
+        toast.success(`Se encontraron ${res.products.length} productos con ese código`);
+      }
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
   }
 
   async function save() {
@@ -540,6 +606,13 @@ export default function Products() {
     },
     { key: 'actions', label: '', align: 'right', render: (p) => (
       <div className="flex justify-end gap-1">
+        <Button
+          size="sm" variant="ghost"
+          onClick={(e) => { e.stopPropagation(); openLabels(p); }}
+          title={p.barcode ? 'Imprimir etiquetas de código de barras' : 'Sin EAN-13: generá uno en Editar producto'}
+        >
+          🖨
+        </Button>
         {can('products.write') && (
           <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Editar</Button>
         )}
@@ -574,6 +647,14 @@ export default function Products() {
             onChange={(e) => { setQ(e.target.value); setPage(1); }}
             className="min-w-[220px] flex-1"
           />
+          <Button
+            variant="secondary"
+            onClick={() => setSearchScanOpen(true)}
+            title="Escanear un código de barras con la cámara para localizar el producto"
+            type="button"
+          >
+            📷
+          </Button>
           <Select value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(1); }} className="w-44">
             <option value="">Todas las categorías</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -602,6 +683,15 @@ export default function Products() {
           emptyAction={can('products.write') ? <Button size="sm" onClick={openNew}>+ Cargar producto</Button> : undefined}
         />
       </Card>
+
+      {/* Escáner de búsqueda del listado: localiza el producto por sus barras */}
+      {searchScanOpen && (
+        <CameraScanner
+          hint="Buscar producto por código de barras"
+          onScan={(code) => void handleScanFind(code)}
+          onClose={() => setSearchScanOpen(false)}
+        />
+      )}
 
       {/* Modal alta/edición */}
       <Modal
@@ -641,19 +731,24 @@ export default function Products() {
                 ✨
               </Button>
               <Button
-                variant={scanOpen ? 'danger' : 'secondary'}
-                onClick={() => { setScanOpen((v) => !v); }}
-                title={scanOpen ? 'Detener escaneo' : 'Escanear con cámara'}
+                variant="secondary"
+                onClick={() => setScanOpen(true)}
+                title="Escanear con cámara"
                 type="button"
               >
-                {scanOpen ? '⏹' : '📷'}
+                📷
               </Button>
             </div>
             {scanOpen && (
-              <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
-                <video ref={scanVideoRef} className="w-full" style={{ maxHeight: 240 }} muted playsInline />
-                <p className="p-2 text-center text-xs text-slate-400">Enfocá el código de barras del envase…</p>
-              </div>
+              <CameraScanner
+                hint="Escanear código del producto"
+                onScan={(code) => {
+                  setForm((f) => ({ ...f, barcode: code }));
+                  toast.success(`Código de barras leído: ${code}`);
+                  setScanOpen(false);
+                }}
+                onClose={() => setScanOpen(false)}
+              />
             )}
           </Field>
           <Field label="Nombre" required className="sm:col-span-2">
@@ -713,6 +808,77 @@ export default function Products() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal etiquetas de código de barras (mejora 12) */}
+      <Modal
+        open={!!labelsTarget}
+        onClose={() => setLabelsTarget(null)}
+        title={`Etiquetas de barras · ${labelsTarget?.name ?? ''}`}
+        width="lg"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setLabelsTarget(null)}>Cerrar</Button>
+            <Button
+              disabled={!labelsTarget?.barcode}
+              onClick={printLabels}
+              title="Manda la hoja completa a la impresora (etiquetas 38×21 mm)"
+            >
+              🖨 Imprimir hoja
+            </Button>
+          </>
+        }
+      >
+        {labelsTarget && (
+          <div>
+            {!labelsTarget.barcode ? (
+              <div className="rounded-lg bg-amber-50 p-4 text-sm text-amber-800">
+                <p className="font-semibold">Este producto no tiene código de barras interno (EAN-13).</p>
+                <p className="mt-1 text-xs">
+                  Entra a <strong>Editar</strong> en la fila y tocá el botón ✨ <em>Generar EAN-13</em>,
+                  guardá el producto y volvé acá para imprimir las etiquetas. Así el código impreso
+                  queda grabado en el sistema y confiable para escanear.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="mb-3 flex flex-wrap items-end gap-3">
+                  <Field label="Cantidad de etiquetas">
+                    <Input
+                      type="number" min="1" max="120" className="w-28"
+                      value={labelCopies}
+                      onChange={(e) => setLabelCopies(e.target.value)}
+                    />
+                  </Field>
+                  <div className="text-xs text-slate-400">
+                    Hoja de etiquetas 38×21 mm (11 por hoja A4 aprox.). Tocá Imprimir y elegí la impresora de etiquetas.
+                  </div>
+                </div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Vista previa</p>
+                <div
+                  id="label-preview-grid"
+                  className="flex flex-wrap gap-1"
+                  style={{ maxHeight: 320, overflow: 'auto' }}
+                >
+                  {Array.from({ length: Math.min(Math.max(parseInt(labelCopies, 10) || 12, 1), 120) }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="flex flex-col items-center justify-center overflow-hidden border border-dashed border-slate-300 p-1 text-center"
+                      style={{ width: '38mm', height: '21mm' }}
+                    >
+                      <div className="truncate text-[10px] font-bold leading-tight text-slate-800">{labelsTarget.name}</div>
+                      {labelsTarget.brand && <div className="text-[8px] text-slate-500">{labelsTarget.brand}</div>}
+                      <div className="font-mono text-[8px] text-slate-500">{labelsTarget.code}</div>
+                      {labelsTarget.barcode && (
+                        <Barcode value={labelsTarget.barcode} format="EAN13" height={26} width={1.1} displayValue />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </Modal>

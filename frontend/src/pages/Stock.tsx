@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { exportCSV, fmtMoney, fmtQty } from '../lib/format';
-import type { Location, StockRow } from '../types';
+import { availableOf, type Location, type StockRow } from '../types';
 import { Badge, Button, Card, Input, PageHeader, Select, Tabs } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
@@ -55,10 +55,21 @@ export default function StockPage() {
       key: `loc_${loc.id}`,
       label: loc.code,
       align: 'right' as const,
-      value: (p: StockRow) => Number(p.by_location?.[loc.code] ?? 0),
+      value: (p: StockRow) => availableOf(p, loc.code),
       render: (p: StockRow) => {
-        const qty = Number(p.by_location?.[loc.code] ?? 0);
-        return <span className={qty === 0 ? 'text-slate-300' : 'font-semibold text-slate-700'}>{fmtQty(qty)}</span>;
+        const free = availableOf(p, loc.code);
+        const phys = Number(p.by_location?.[loc.code] ?? 0);
+        // Si hay stock prometido (reservado), la celda muestra lo LIBRE y
+        // entre paréntesis lo reservado: el físico solo ya mentía.
+        if (phys > free) {
+          return (
+            <span>
+              <span className="font-semibold text-slate-800">{fmtQty(free)}</span>
+              <span className="text-xs text-amber-600"> ({fmtQty(phys - free)} res.)</span>
+            </span>
+          );
+        }
+        return <span className={phys === 0 ? 'text-slate-300' : 'font-semibold text-slate-700'}>{fmtQty(phys)}</span>;
       },
     })),
     {
@@ -67,7 +78,9 @@ export default function StockPage() {
       sortable: true,
       align: 'right' as const,
       render: (p) => {
-        const total = selectedLocation ? Number(p.by_location?.[selectedLocation.code] ?? 0) : p.total_qty;
+        const total = selectedLocation
+          ? Number(p.by_location?.[selectedLocation.code] ?? 0) - Number(p.by_reserved?.[selectedLocation.code] ?? 0)
+          : availableOf(p);
         const min = Number(p.min_stock);
         return total <= 0
           ? <Badge color="red">Sin stock</Badge>
@@ -76,6 +89,23 @@ export default function StockPage() {
             : <span className="font-semibold text-slate-700">{fmtQty(total)}</span>;
       },
     },
+    { key: 'available', label: 'Físico', align: 'right', render: (p) => {
+      const phys = selectedLocation
+        ? Number(p.by_location?.[selectedLocation.code] ?? 0)
+        : p.total_qty;
+      const reserved = selectedLocation
+        ? Number(p.by_reserved?.[selectedLocation.code] ?? 0)
+        : Number(p.total_reserved ?? 0);
+      if (phys > 0 && phys > reserved) {
+        return (
+          <span>
+            <span className="text-slate-500">{fmtQty(phys)}</span>
+            {reserved > 0 && <span className="text-xs text-amber-600"> ({fmtQty(reserved)} res.)</span>}
+          </span>
+        );
+      }
+      return <span className={phys === 0 ? 'text-slate-300' : 'text-slate-500'}>{fmtQty(phys)}</span>;
+    } },
     { key: 'min_stock', label: 'Mín.', align: 'right', render: (p) => fmtQty(p.min_stock) },
     { key: 'unit', label: 'Unidad', render: (p) => p.unit?.toLowerCase() },
     ...(selectedLocation
@@ -107,11 +137,11 @@ export default function StockPage() {
               onClick={() =>
                 exportCSV(
                   'stock.csv',
-                  ['Código', 'Producto', 'Marca', ...showColumns.map((l) => l.name), 'Total', 'Mínimo'],
+                  ['Código', 'Producto', 'Marca', ...showColumns.map((l) => l.name), 'Disponible', 'Total', 'Mínimo'],
                   rows.map((p) => [
                     p.code, p.name, p.brand,
-                    ...showColumns.map((l) => Number(p.by_location?.[l.code] ?? 0)),
-                    p.total_qty, p.min_stock,
+                    ...showColumns.map((l) => availableOf(p, l.code)),
+                    availableOf(p), p.total_qty, p.min_stock,
                   ])
                 )
               }

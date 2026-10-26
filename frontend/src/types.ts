@@ -51,7 +51,22 @@ export interface StockRow {
   cost: string | number | null;
   category_name: string | null;
   total_qty: number;
+  /** Unidades comprometidas: por producto, y por loc.code en by_reserved */
+  total_reserved?: number;
+  by_reserved?: Record<string, string | number>;
+  /** Físico − reservado: lo que realmente se puede vender */
+  available?: number;
   by_location: Record<string, string | number>;
+}
+
+/** Lo realmente libre en una ubicación (o el consolidado), en unidades. */
+export function availableOf(row: StockRow, locCode?: string): number {
+  if (locCode) {
+    const qty = Number(row.by_location?.[locCode] ?? 0);
+    const reserved = Number(row.by_reserved?.[locCode] ?? 0);
+    return qty - reserved;
+  }
+  return Number(row.available ?? (Number(row.total_qty) - Number(row.total_reserved ?? 0)));
 }
 
 export interface DeliveryItem {
@@ -72,6 +87,8 @@ export interface DeliveryItem {
 export interface Delivery {
   id: number;
   number: string;
+  /** EAN-13 único de la orden (imprimible y escaneable en el comprobante) */
+  barcode?: string | null;
   // PARCIAL: parte del stock se derivo a otra sucursal y quedo una orden de
   // retiro abierta. El backend puede devolver este estado al confirmar.
   status: 'BORRADOR' | 'CONFIRMADO' | 'PARCIAL' | 'ANULADO';
@@ -87,6 +104,10 @@ export interface Delivery {
   items: DeliveryItem[];
   total_items?: number;
   line_count?: number;
+  /** Faltantes de la orden (CONFIRMADO/PARCIAL): líneas y unidades que quedan
+   *  por entregar, descontando lo ya retirado por órdenes de retiro derivadas. */
+  shortfall_lines?: number | null;
+  shortfall_units?: number | null;
 }
 
 export interface Entry {
@@ -275,6 +296,10 @@ export interface PendingDelivery {
   notes?: string | null;
   created_by_name?: string;
   created_at: string;
+  /** Vencimiento de la reserva activa mas próxima (auto-cancela al pasar el plazo) */
+  expires_at?: string | null;
+  /** Si el auto-cancel ya la declaro vencida (expires_at <= now()) */
+  overdue?: boolean;
   prepared_at?: string | null;
   delivered_at?: string | null;
   cancelled_at?: string | null;
@@ -333,6 +358,39 @@ export interface ScanPendingDeliveryResult {
   customer_document: string | null;
   items: PendingDeliveryItem[];
   created_at: string;
+}
+
+/** Item de mercadería solicitada en una orden de entrega escaneada */
+export interface ScanDeliveryItem {
+  productId: number;
+  code: string;
+  name: string;
+  unit: string;
+  /** Cantidad a entregar según la orden */
+  quantity: number;
+  /** Lo ya entregado (null mientras esté en borrador) */
+  quantityDelivered: number | null;
+  /** Lo facturado al cliente (null si no se cargó factura) */
+  requestedQuantity: number | null;
+  /** Stock disponible ahora en la sucursal de salida */
+  stockAvailable: number;
+}
+
+/** Resultado de escanear el código de barras de la orden de entrega */
+export interface ScanDeliveryResult {
+  id: number;
+  number: string;
+  status: Delivery['status'];
+  locationId: number;
+  barcode: string;
+  invoiceNumber: string | null;
+  notes: string | null;
+  createdAt: string;
+  confirmedAt: string | null;
+  locationName: string;
+  locationCode: string;
+  createdByName: string;
+  items: ScanDeliveryItem[];
 }
 
 export interface ConfirmPickupInput {

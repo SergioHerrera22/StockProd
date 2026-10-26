@@ -24,6 +24,21 @@ interface Summary {
   }[];
   byLocation: { id: number; code: string; name: string; type: string; units: number; skus: number; value: number }[];
   series: { day: string; entradas: number; salidas: number }[];
+  debts: {
+    pickupsPending: number;
+    pickupsOverdue: number;
+    pickupOrders: {
+      id: number; number: string; status: string; created_at: string;
+      pickup_location_name: string; pickup_location_code: string;
+      customer_name: string | null; customer_phone: string | null;
+      pending_units: number;
+    }[];
+    underivedDeliveries: {
+      id: number; number: string; status: string; created_at: string;
+      shortfall_lines: number; shortfall_units: number;
+    }[];
+    underivedCount: number;
+  };
 }
 
 const TYPE_BADGE: Record<string, { label: string; color: 'green' | 'red' | 'amber' | 'blue' | 'violet' | 'gray' }> = {
@@ -121,6 +136,74 @@ export default function Dashboard() {
                 Valor del inventario por ubicación (si hay costos):
                 {data.byLocation.map((l) => ` ${l.name} ${fmtMoney(l.value)}`).join(' · ')}
               </div>
+            </Card>
+          </div>
+
+          {/* Deudas con clientes */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader
+                title={`Retiros pendientes (${data.debts.pickupsPending})`}
+                actions={<Link to="/reservas" className="text-xs font-semibold text-brand-600 hover:underline">Gestionar →</Link>}
+              />
+              {data.debts.pickupsPending === 0 ? (
+                <p className="px-4 py-6 text-center text-sm text-slate-400">No hay retiros pendientes ✅</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {data.debts.pickupOrders.map((o) => {
+                    const vencida = new Date(o.created_at).getTime() < Date.now() - 48 * 3600 * 1000;
+                    return (
+                      <li key={o.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                        <div className="min-w-0">
+                          <div>
+                            <span className="font-semibold text-brand-700">{o.number}</span>
+                            {o.customer_name && <span className="ml-2 truncate text-slate-600">{o.customer_name}</span>}
+                            {vencida && <span className="ml-2 text-xs font-semibold text-red-600">+48h</span>}
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            Retira en {o.pickup_location_name} · {fmtDateTime(o.created_at)}
+                          </div>
+                        </div>
+                        <span className={`shrink-0 text-sm font-semibold ${o.pending_units > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+                          {fmtQty(o.pending_units)} u.
+                        </span>
+                      </li>
+                    );
+                  })}
+                  {data.debts.pickupsOverdue > 0 && (
+                    <li className="bg-red-50 px-4 py-2.5 text-xs text-red-700">
+                      ⚠ {data.debts.pickupsOverdue} orden(es) superó el plazo de 48h sin reserva vigente: el auto-cancel la anulará al pasar el scheduler.
+                    </li>
+                  )}
+                </ul>
+              )}
+            </Card>
+
+            <Card>
+              <CardHeader
+                title={`Faltantes sin derivar (${data.debts.underivedCount})`}
+                actions={<Link to="/entregas" className="text-xs font-semibold text-brand-600 hover:underline">Ver entregas →</Link>}
+              />
+              {data.debts.underivedCount === 0 ? (
+                <p className="px-4 py-6 text-center text-sm text-slate-400">Nadie está esperando reposición ✅</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {data.debts.underivedDeliveries.map((d) => (
+                    <li key={d.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                      <div className="min-w-0">
+                        <div>
+                          <span className="font-semibold text-brand-700">{d.number}</span>
+                          <Badge color={d.status === 'PARCIAL' ? 'amber' : 'green'}>{d.status === 'PARCIAL' ? 'Parcial' : 'Entregada'}</Badge>
+                        </div>
+                        <div className="text-xs text-slate-400">{d.shortfall_lines} producto(s) · {fmtDateTime(d.created_at)}</div>
+                      </div>
+                      <span className="shrink-0 text-sm font-semibold text-amber-600">
+                        {fmtQty(d.shortfall_units)} u.
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </Card>
           </div>
 

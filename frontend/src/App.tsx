@@ -21,6 +21,7 @@ import Locations from './pages/Locations';
 import Reports from './pages/Reports';
 import Audit from './pages/Audit';
 import Reservations from './pages/Reservations';
+import Alerts from './pages/Alerts';
 
 function Protected({ children }: { children: ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -69,6 +70,7 @@ export default function App() {
               <Route path="inventarios" element={<RequirePerm perm="counts.read"><Counts /></RequirePerm>} />
               <Route path="movimientos" element={<RequirePerm perm="movements.read"><Movements /></RequirePerm>} />
               <Route path="reportes" element={<RequirePerm perm="reports.read"><Reports /></RequirePerm>} />
+              <Route path="alertas" element={<RequirePerm perm="alerts.read"><Alerts /></RequirePerm>} />
               <Route path="usuarios" element={<RequirePerm perm="users.manage"><Users /></RequirePerm>} />
               <Route path="ubicaciones" element={<RequirePerm perm="locations.manage"><Locations /></RequirePerm>} />
               <Route path="auditoria" element={<RequirePerm perm="audit.read"><Audit /></RequirePerm>} />

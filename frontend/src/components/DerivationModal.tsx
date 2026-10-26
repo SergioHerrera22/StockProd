@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Modal } from './ui';
 import { fmtQty } from '../lib/format';
 import type { DeliveryAvailabilityItem, UserAlternativeChoice } from '../types';
@@ -20,10 +20,21 @@ export function DerivationModal({
 }) {
   const [choices, setChoices] = useState<Map<number, { locationId: number; quantity: number }>>(new Map());
 
+  // Reset al abrir el modal: sin esto, las elecciones de un intento anterior
+  // (otro borrador/producto) se enviaban silenciosamente, derivando stock en
+  // la sucursal o cantidad equivocadas.
+  useEffect(() => {
+    if (open) setChoices(new Map());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   if (!open) return null;
 
   // Solo items con faltantes
   const shortfallItems = items.filter(i => i.shortfall > 0);
+  // Los items SIN alternativas no bloquean la confirmacion: el backend los
+  // registra como deuda sin derivar y la entrega avanza con lo disponible.
+  const derivableItems = shortfallItems.filter(i => i.alternativeLocations.length > 0);
 
   const handleLocationChange = (productId: number, locationId: number) => {
     const item = shortfallItems.find(i => i.productId === productId);
@@ -39,13 +50,20 @@ export function DerivationModal({
   const handleQtyChange = (productId: number, qty: number) => {
     setChoices(prev => {
       const next = new Map(prev);
+      const item = shortfallItems.find(i => i.productId === productId);
       const current = next.get(productId);
-      if (current) next.set(productId, { ...current, quantity: qty });
+      if (current && item) {
+        const max = Math.min(item.shortfall,
+          item.alternativeLocations.find(a => a.locationId === current.locationId)?.availableQuantity || 0);
+        // Clamp real (el atributo max de HTML no bloquea lo tipeado) para no
+        // prometer stock que no existe.
+        next.set(productId, { ...current, quantity: Math.min(Math.max(qty, 0), max) });
+      }
       return next;
     });
   };
 
-  const allSelected = shortfallItems.every(item => {
+  const allSelected = derivableItems.every(item => {
     const choice = choices.get(item.productId);
     return choice && choice.locationId > 0 && choice.quantity > 0;
   });
@@ -115,18 +133,20 @@ export function DerivationModal({
       </div>
 
       {noAlternativeItems.length > 0 && (
-        <div className="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">
-          {noAlternativeItems.length} producto(s) sin stock en ninguna sucursal no pueden confirmarse.
-          Volvé al borrador y quitá/reducí esos ítems, o ajustá la cantidad facturada.
+        <div className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
+          {noAlternativeItems.length} producto(s) sin stock en ninguna sucursal quedarán como <strong>deuda sin derivar</strong> (podré derivarse más tarde desde el detalle).
         </div>
       )}
 
       <div className="mt-4 flex justify-end gap-3">
         <Button variant="secondary" onClick={onClose}>Cancelar</Button>
         <Button variant="primary" onClick={() => {
+          // Solo se envian elecciones de items con alternativas: los sin
+          // opcion van limpios y el backend los registra como unresolved.
+          const derivableIds = new Set(derivableItems.map(i => i.productId));
           const choicesArray: UserAlternativeChoice[] = [];
           choices.forEach((v, productId) => {
-            if (v.locationId && v.quantity > 0) {
+            if (derivableIds.has(productId) && v.locationId && v.quantity > 0) {
               choicesArray.push({ productId, chosenLocationId: v.locationId, quantity: v.quantity });
             }
           });

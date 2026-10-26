@@ -11,6 +11,8 @@ interface NavItem {
   label: string;
   icon: string;
   perm: Permission;
+  /** Muestra contador de pendientes (endpoint /alerts/pending-count). */
+  badge?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -24,6 +26,7 @@ const NAV: NavItem[] = [
   { to: '/inventarios', label: 'Inventarios', icon: '📋', perm: 'counts.read' },
   { to: '/movimientos', label: 'Movimientos', icon: '📜', perm: 'movements.read' },
   { to: '/reportes', label: 'Reportes', icon: '📈', perm: 'reports.read' },
+  { to: '/alertas', label: 'Alertas', icon: '🛎️', perm: 'alerts.read', badge: true },
   { to: '/usuarios', label: 'Usuarios', icon: '👤', perm: 'users.manage' },
   { to: '/ubicaciones', label: 'Ubicaciones', icon: '🏪', perm: 'locations.manage' },
   { to: '/auditoria', label: 'Auditoría', icon: '🛡️', perm: 'audit.read' },
@@ -38,6 +41,20 @@ export function Layout() {
   const toast = useToast();
 
   useEffect(() => { setOpen(false); }, [location.pathname]);
+
+  // ===== Badge de alertas pendientes =====
+  // Se refresca al cambiar de página; silencioso si el endpoint o el permiso
+  // no están disponibles.
+  const [alertsCount, setAlertsCount] = useState(0);
+  useEffect(() => {
+    if (!can('alerts.read')) { setAlertsCount(0); return; }
+    let cancelled = false;
+    api<{ count: number }>('/alerts/pending-count')
+      .then((r) => { if (!cancelled) setAlertsCount(r.count ?? 0); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, user?.id]);
 
   // ===== Cierre automático por inactividad =====
   useEffect(() => {
@@ -120,7 +137,12 @@ export function Layout() {
               }
             >
               <span className="w-5 text-center text-base">{item.icon}</span>
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.badge && alertsCount > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-bold text-brand-900">
+                  {alertsCount > 99 ? '99+' : alertsCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -150,7 +172,7 @@ export function Layout() {
           <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" onClick={() => setOpen(true)}>☰</button>
           <span className="font-bold text-brand-800">Robles Stock</span>
         </header>
-        <main className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="min-h-0 flex-1 overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:p-6">
           <Outlet />
         </main>
       </div>

@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast';
 type ReportKey =
   | 'stock-by-location' | 'low-stock' | 'out-of-stock' | 'in-out-period'
   | 'movements-by-user' | 'deliveries-by-location' | 'pending-transfers'
-  | 'inventory-differences' | 'inventory-value';
+  | 'inventory-differences' | 'inventory-value' | 'rotation' | 'debts-customers';
 
 interface ReportDef {
   key: ReportKey;
@@ -104,6 +104,36 @@ const REPORTS: ReportDef[] = [
     headers: () => ['Ubicación', 'Unidades', 'Valor'],
     rowToCells: (r) => [r.location_name, Number(r.units), Number(r.value)],
     renderCell: (col, row) => (col === 'Valor' ? fmtMoney(Number(row.value)) : col === 'Unidades' ? fmtQty(Number(row.units)) : String(row.location_name)),
+  },
+  {
+    key: 'rotation',
+    title: 'Rotación de productos',
+    icon: '📊',
+    desc: 'Qué se mueve por sucursal (ventas y trasvasos) para decidir traslados y compras',
+    needsPeriod: true,
+    headers: (locs) => [
+      'Código', 'Producto',
+      ...locs.map((l) => l.code || l.name),
+      'Total', 'De venta', 'Trasvasado',
+    ],
+    rowToCells: (r, locs) => {
+      const byLoc = new Map<string, number>(
+        ((r.by_location as Array<{ loc: string; units: number }>) ?? []).map((x) => [x.loc, Number(x.units)])
+      );
+      return [
+        r.code, r.name,
+        ...locs.map((l) => byLoc.get(l.code || l.name) ?? 0),
+        Number(r.total), Number(r.salidas_venta), Number(r.transferido),
+      ];
+    },
+  },
+  {
+    key: 'debts-customers',
+    title: 'Deudas por cliente',
+    icon: '🧾',
+    desc: 'Órdenes de retiro activas agrupadas por cliente',
+    headers: () => ['Cliente', 'Teléfono', 'Órdenes', 'Unidades pendientes', 'Más antigua'],
+    rowToCells: (r) => [r.customer, r.customer_phone, Number(r.orders), Number(r.units_pending), fmtDateTime(r.oldest_created_at as string)],
   },
 ];
 

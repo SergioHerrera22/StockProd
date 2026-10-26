@@ -12,7 +12,10 @@ export type Permission =
   | 'counts.read' | 'counts.write' | 'counts.apply'
   | 'movements.read' | 'dashboard.read' | 'reports.read'
   | 'locations.read' | 'locations.manage'
-  | 'users.manage' | 'audit.read';
+  | 'users.manage' | 'audit.read'
+  | 'alerts.read' | 'alerts.manage'
+  /** Configuración global (reglas de aprobación, reglas de negocio). Espejo del backend. */
+  | 'settings.write';
 
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write',
@@ -23,6 +26,7 @@ const ENCARGADO: Permission[] = [
   'counts.read', 'counts.write', 'counts.apply',
   'movements.read', 'dashboard.read', 'reports.read',
   'locations.read',
+  'alerts.read', 'alerts.manage',
 ];
 
 const EMPLEADO: Permission[] = [
@@ -31,10 +35,11 @@ const EMPLEADO: Permission[] = [
   'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
+  'alerts.read',
 ];
 
 export const PERMISSIONS: Record<Role, Permission[]> = {
-  ADMIN: [...ENCARGADO, 'locations.manage', 'users.manage', 'audit.read'],
+  ADMIN: [...ENCARGADO, 'locations.manage', 'users.manage', 'audit.read', 'settings.write'],
   ENCARGADO,
   EMPLEADO,
 };

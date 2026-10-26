@@ -4,6 +4,7 @@ import { api, qs, checkDeliveryAvailability, confirmDeliveryWithAlternatives } f
 import { fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Delivery, Location, StockRow, DeliveryAvailabilityItem, UserAlternativeChoice } from '../types';
+import { availableOf } from '../types';
 import {
   Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select, Textarea,
 } from '../components/ui';
@@ -92,7 +93,7 @@ export default function DeliveryNew() {
         toast.info(`+1 ${p.name} (total ${next[idx].quantity})`);
         return next;
       }
-      const stock = Number(p.total_qty ?? 0);
+      const stock = availableOf(p);
       return [
         ...prev,
         {
@@ -123,7 +124,7 @@ export default function DeliveryNew() {
     try {
       const res = await api<{ products: StockRow[] }>(`/stock${qs({ locationId, limit: 300 })}`);
       const map: Record<string, number> = {};
-      for (const p of res.products) map[p.code] = Number(p.total_qty);
+      for (const p of res.products) map[p.code] = availableOf(p);
       setStockMap(map);
       toast.info('Stock actualizado');
     } catch { /* silencioso */ }

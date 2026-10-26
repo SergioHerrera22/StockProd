@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { fmtQty } from '../lib/format';
-import type { StockRow } from '../types';
+import { availableOf, type StockRow } from '../types';
 import { Badge, Button, Input, Modal, Spinner } from './ui';
 
 /** Buscador de productos (nombre, código, código de barras, marca) con stock por ubicación. */
@@ -59,8 +59,8 @@ export function ProductPicker({ open, onClose, locationId, onPick }: {
                 {p.code}{p.brand ? ` · ${p.brand}` : ''}
               </div>
             </div>
-            <Badge color={p.total_qty <= 0 ? 'red' : Number(p.total_qty) <= Number(p.min_stock) ? 'amber' : 'green'}>
-              {fmtQty(p.total_qty)} {p.unit?.toLowerCase()}
+            <Badge color={availableOf(p) <= 0 ? 'red' : availableOf(p) <= Number(p.min_stock) ? 'amber' : 'green'}>
+              {fmtQty(availableOf(p))} {p.unit?.toLowerCase()}
             </Badge>
           </button>
         ))}

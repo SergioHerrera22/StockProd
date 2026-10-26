@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { listPendingDeliveries, scanPendingDelivery, confirmPendingDeliveryPickup, cancelPendingDeliveryOrder } from '../lib/api';
+import { api, listPendingDeliveries, scanPendingDelivery, confirmPendingDeliveryPickup, cancelPendingDeliveryOrder } from '../lib/api';
 import type { PendingDelivery, PendingDeliveryStatus, PendingDeliveryItem, ScanPendingDeliveryResult } from '../types';
 import { DataTable } from '../components/DataTable';
+import { Card } from '../components/ui';
+import Barcode from '../components/Barcode';
 import { useToast } from '../components/Toast';
 import { ScanInput } from '../components/ScanInput';
 import { fmtDateTime, fmtQty } from '../lib/format';
@@ -50,6 +52,14 @@ export default function ReservationsPage() {
   // Modal cancelar
   const [cancelTarget, setCancelTarget] = useState<PendingDelivery | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  // Modal extender plazo
+  const [extendTarget, setExtendTarget] = useState<PendingDelivery | null>(null);
+  const [extendDays, setExtendDays] = useState('7');
+  const [extendNote, setExtendNote] = useState('');
+  const [extending, setExtending] = useState(false);
+  // Nota de retiro imprimible (trae el detalle completo con items)
+  const [printOrder, setPrintOrder] = useState<PendingDelivery | null>(null);
+  const [printLoading, setPrintLoading] = useState(false);
 
   // Sucursal de retiro: usuario restringido ve solo la suya; admin puede elegir "todas"
   const myLocationId = user?.locationId ?? null;
@@ -150,6 +160,39 @@ export default function ReservationsPage() {
     }
   }
 
+  // ===== Extender plazo de retiro (B2) =====
+  async function handleExtend() {
+    if (!extendTarget) return;
+    setExtending(true);
+    try {
+      await api(`/pending-deliveries/${extendTarget.id}/extend`, {
+        method: 'POST',
+        body: { days: Number(extendDays), note: extendNote.trim() || null },
+      });
+      toast.success(`Plazo de ${extendTarget.number} extendido ${extendDays} días`);
+      setExtendTarget(null);
+      setExtendNote('');
+      void load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setExtending(false);
+    }
+  }
+
+  // ===== Nota de retiro imprimible (B3) =====
+  async function openPrintNota(row: PendingDelivery) {
+    setPrintLoading(true);
+    try {
+      const detail = await api<PendingDelivery>(`/pending-deliveries/${row.id}`);
+      setPrintOrder(detail);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setPrintLoading(false);
+    }
+  }
+
   const columns = [
     { key: 'number', label: 'Orden', className: 'font-mono' },
     {
@@ -204,6 +247,21 @@ export default function ReservationsPage() {
       render: (row: PendingDelivery) => fmtDateTime(row.created_at),
     },
     {
+      key: 'expires_at',
+      label: 'Vence',
+      render: (row: PendingDelivery) => {
+        if (!ACTIVE_STATUSES.includes(row.status) || !row.expires_at) {
+          return <span className="text-xs text-slate-300">—</span>;
+        }
+        const vencida = new Date(row.expires_at).getTime() <= Date.now();
+        return (
+          <span className={vencida ? 'text-xs font-semibold text-red-600' : 'text-xs text-slate-500'}>
+            {vencida ? '⚠ Vencida · ' : ''}{fmtDateTime(row.expires_at)}
+          </span>
+        );
+      },
+    },
+    {
       key: 'actions',
       label: 'Acciones',
       align: 'right' as const,
@@ -215,6 +273,23 @@ export default function ReservationsPage() {
               onClick={() => { void handleScan(row.barcode); }}
             >
               Entregar
+            </button>
+            <button
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              onClick={() => { void openPrintNota(row); }}
+              disabled={printLoading}
+            >
+              🖨 Nota
+            </button>
+            <button
+              className="rounded-lg border border-amber-200 px-2.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-50"
+              onClick={() => {
+                setExtendTarget(row);
+                setExtendDays('7');
+                setExtendNote('');
+              }}
+            >
+              ⏳ Extender
             </button>
             {hasPermission(user?.role, 'deliveries.void') && (
               <button
@@ -415,6 +490,125 @@ export default function ReservationsPage() {
               >
                 Confirmar cancelación
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal extender plazo */}
+      {extendTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-1 text-lg font-bold text-slate-800">⏳ Extender plazo · {extendTarget.number}</h2>
+            <p className="mb-4 text-sm text-slate-500">
+              Las reservas de la orden se corren N días desde ahora: el auto-cancel
+              ya no la va a anular al vencer el plazo actual.
+            </p>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Días de extensión</label>
+            <select className="input w-full" value={extendDays} onChange={(e) => setExtendDays(e.target.value)}>
+              <option value="7">7 días</option>
+              <option value="14">14 días</option>
+              <option value="30">30 días</option>
+            </select>
+            <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Nota (opcional)</label>
+            <textarea
+              className="input w-full"
+              rows={2}
+              value={extendNote}
+              onChange={(e) => setExtendNote(e.target.value)}
+              placeholder="Ej: cliente pagó, pasa a buscar el sábado…"
+            />
+            <div className="mt-4 flex justify-end gap-3">
+              <button className="btn btn-secondary" onClick={() => setExtendTarget(null)}>Volver</button>
+              <button className="btn btn-success" onClick={handleExtend} disabled={extending}>
+                {extending ? 'Extendiendo…' : 'Confirmar extensión'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Nota de retiro imprimible */}
+      {printOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4">
+          <div className="w-full max-w-lg">
+            <Card className="print-area p-6 text-sm text-slate-800">
+              <div className="flex items-start justify-between border-b-2 border-slate-800 pb-3">
+                <div>
+                  <div className="text-lg font-black tracking-wide">ROBLES PINTURERÍAS</div>
+                  <div className="text-xs text-slate-500">Nota de retiro · Comprobante interno</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-mono text-sm font-bold">{printOrder.number}</div>
+                  <div className="text-xs text-slate-500">{fmtDateTime(printOrder.created_at)}</div>
+                </div>
+              </div>
+
+              <div className="print:flex print:justify-center py-3">
+                <Barcode value={printOrder.barcode} format="EAN13" height={44} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-slate-200 pb-3">
+                <div>
+                  <span className="text-xs text-slate-500">Cliente: </span>
+                  <span className="font-semibold">{printOrder.customer_name || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500">Teléfono: </span>
+                  <span className="font-semibold">{printOrder.customer_phone || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500">Retira en: </span>
+                  <span className="font-semibold">{printOrder.pickup_location_name ?? '—'}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500">Vendido en: </span>
+                  <span className="font-semibold">{printOrder.sale_location_name ?? '—'}</span>
+                </div>
+              </div>
+
+              <table className="mt-2 w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-300 text-left uppercase tracking-wide text-slate-500">
+                    <th className="py-1">Producto</th>
+                    <th className="py-1 text-right">Pedido</th>
+                    <th className="py-1 text-right">Entregado</th>
+                    <th className="py-1 text-right">Pendiente</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(printOrder.items ?? []).map((it) => {
+                    const pending = Number(it.quantity_reserved) - Number(it.quantity_delivered);
+                    return (
+                      <tr key={`${it.product_id}-${it.source_location_id}`} className="border-b border-slate-100">
+                        <td className="py-1">
+                          <div className="font-medium">{it.product_name}</div>
+                          <div className="font-mono text-[10px] text-slate-400">{it.product_code}</div>
+                        </td>
+                        <td className="py-1 text-right">{fmtQty(it.quantity_requested)}</td>
+                        <td className="py-1 text-right">{fmtQty(it.quantity_delivered)}</td>
+                        <td className={`py-1 text-right font-semibold ${pending > 0 ? 'text-slate-800' : 'text-emerald-600'}`}>
+                          {pending > 0 ? fmtQty(pending) : '✓'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {printOrder.notes && (
+                <p className="mt-2 text-xs text-slate-600">Nota: {printOrder.notes}</p>
+              )}
+
+              <div className="mt-8 grid grid-cols-2 gap-8 print:flex">
+                <div className="border-t border-slate-800 pt-1 text-center text-xs">Firma de quien retira</div>
+                <div className="border-t border-slate-800 pt-1 text-center text-xs">Firma y sello · Robles</div>
+              </div>
+            </Card>
+
+            <div className="mt-3 flex justify-end gap-3 no-print">
+              <button className="btn btn-secondary" onClick={() => setPrintOrder(null)}>Cerrar</button>
+              <button className="btn btn-success" onClick={() => window.print()}>🖨 Imprimir</button>
             </div>
           </div>
         </div>

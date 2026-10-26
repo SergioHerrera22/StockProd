@@ -60,12 +60,57 @@ interface Options {
   body?: unknown;
 }
 
-async function doFetch(path: string, options: Options, t: string | null) {
+/**
+ * Idempotencia (punto 9 del audit): en las operaciones críticas el frontend
+ * envía un header `Idempotency-Key`. La clave se reutiliza si la petición
+ * anterior FALLÓ EN RED (fetch rechazado) o devolvió error de conexión, de
+ * modo que el reintento del usuario devuelva la respuesta real guardada en el
+ * servidor en vez de ejecutar la operación dos veces.
+ * Clave estable por operación <acción>-<id>; para creaciones, uuid por
+ * llamada (protege del doble click; contra red caída nada razonable puede
+ * reusar la clave porque el body se acaba de crear).
+ */
+const IDEMPOTENT_PATTERNS: RegExp[] = [
+  /^\/deliveries$/,
+  /^\/deliveries\/\d+\/(confirm|void|rederive)$/,
+  /^\/deliveries\/\d+\/confirm-with-alternatives$/,
+  /^\/entries$/,
+  /^\/entries\/\d+\/(confirm|void)$/,
+  /^\/transfers$/,
+  /^\/transfers\/\d+\/(receive|void)$/,
+  /^\/pending-deliveries$/,
+  /^\/pending-deliveries\/confirm-pickup$/,
+  /^\/pending-deliveries\/\d+\/(cancel|extend)$/,
+];
+
+/** Claves en "vuelo": si la red se cae, el reintento reusa la misma clave. */
+const inFlightKeys = new Map<string, string>();
+
+function idempotencyKeyFor(path: string): string | null {
+  if (IDEMPOTENT_PATTERNS.some((re) => re.test(path))) {
+    let key = inFlightKeys.get(path);
+    if (!key) {
+      key = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID().replace(/-/g, '').slice(0, 32)
+        : `k${Date.now()}${Math.random().toString(36).slice(2)}`);
+      inFlightKeys.set(path, key);
+    }
+    return key;
+  }
+  return null;
+}
+
+function clearInFlightKey(path: string, key: string) {
+  if (inFlightKeys.get(path) === key) inFlightKeys.delete(path);
+}
+
+async function doFetch(path: string, options: Options, t: string | null, extraHeaders: Record<string, string>) {
   const res = await fetch(BASE + path, {
     method: options.method ?? 'GET',
     headers: {
       'Content-Type': 'application/json',
       ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      ...extraHeaders,
     },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
@@ -73,17 +118,60 @@ async function doFetch(path: string, options: Options, t: string | null) {
 }
 
 export async function api<T = unknown>(path: string, options: Options = {}): Promise<T> {
-  let { res, sentAuth } = await doFetch(path, options, currentToken());
+  // El 401 de las credenciales inválidas del propio login NO es "sesión
+  // vencida": tratarlo igual recargaba la página de login sobre sí misma,
+  // borraba lo tipeado y desconectaba otras pestañas con sesión válida.
+  const isAuthCall = path.startsWith('/auth/login');
+
+  // Clave de idempotencia solo para POST críticos
+  const idempKey = options.method === 'POST' ? idempotencyKeyFor(path.replace(/\?.*$/, '')) : null;
+
+  try {
+    return await rawApi<T>(path, options, isAuthCall, idempKey);
+  } catch (e) {
+    // Si falló en RED (no una ApiError del servidor), la clave sigue viva para
+    // que el reintento devuelva la respuesta real en lugar de re-ejecutar.
+    const networkFailure = !(e instanceof ApiError);
+    if (idempKey && networkFailure) {
+      inFlightKeys.set(path.replace(/\?.*$/, ''), idempKey);
+    } else if (idempKey) {
+      clearInFlightKey(path.replace(/\?.*$/, ''), idempKey);
+    }
+    throw e;
+  }
+  // nota: clearInFlightKey también se ocupa acá para peticiones exitosas
+  // (rawApi nunca lanza ApiError con status 2xx).
+}
+
+async function rawApi<T>(
+  path: string,
+  options: Options,
+  isAuthCall: boolean,
+  idempKey: string | null,
+): Promise<T> {
+  const { res, sentAuth } = await doFetch(path, options, currentToken(), idempKey ? { 'Idempotency-Key': idempKey } : {});
+  if (res.ok && idempKey) clearInFlightKey(path.replace(/\?.*$/, ''), idempKey);
 
   // Reintento único: si la llamada salió sin token pero en localStorage hay uno
   // válido, se reintenta antes de dar la sesión por cerrada.
-  if (res.status === 401 && !sentAuth) {
+  if (res.status === 401 && !sentAuth && !isAuthCall) {
     const stored = readStoredToken();
     if (stored) {
       setToken(stored);
-      ({ res, sentAuth } = await doFetch(path, options, stored));
+      const retry = await doFetch(path, options, stored, idempKey ? { 'Idempotency-Key': idempKey } : {});
+      return finishResponse<T>(path, retry.res, isAuthCall, idempKey);
     }
   }
+
+  return finishResponse<T>(path, res, isAuthCall, idempKey);
+}
+
+async function finishResponse<T>(
+  path: string,
+  res: Response,
+  isAuthCall: boolean,
+  idempKey: string | null,
+): Promise<T> {
 
   let json: { error?: string; details?: unknown } & Record<string, unknown> = {} as never;
   try {
@@ -92,7 +180,7 @@ export async function api<T = unknown>(path: string, options: Options = {}): Pro
     /* respuesta sin cuerpo */
   }
 
-  if (res.status === 401) {
+  if (res.status === 401 && !isAuthCall) {
     setToken(null);
     // Guarda el motivo (inactividad, expulsada por admin, vencida…) para mostrarlo en el login
     try { sessionStorage.setItem('robles_logout_reason', (json.error as string) ?? 'Sesión cerrada'); } catch { /* noop */ }
@@ -106,8 +194,7 @@ export async function api<T = unknown>(path: string, options: Options = {}): Pro
   return json as T;
 }
 
-export function qs(params: Record<string, string | number | undefined | null>): string {
-  const usp = new URLSearchParams();
+export function qs(params: Record<string, string | number | undefined | null>): string {  const usp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') usp.set(k, String(v));
   }
@@ -122,6 +209,7 @@ import type {
   PendingDelivery,
   PendingDeliveryStatus,
   ScanPendingDeliveryResult,
+  ScanDeliveryResult,
   ConfirmPickupInput,
   MultiLocationAvailability,
   StockAvailabilityRow,
@@ -158,6 +246,15 @@ export async function scanPendingDelivery(barcode: string): Promise<ScanPendingD
   return api<ScanPendingDeliveryResult>(
     `/pending-deliveries/scan/${encodeURIComponent(barcode)}`
   );
+}
+
+/** Escanea el EAN-13 de la ORDEN DE ENTREGA y devuelve la entrega con toda la
+ *  mercadería solicitada (cantidad, facturado y stock disponible). */
+export async function scanDelivery(barcode: string): Promise<ScanDeliveryResult> {
+  const res = await api<{ delivery: ScanDeliveryResult }>(
+    `/deliveries/scan/${encodeURIComponent(barcode)}`
+  );
+  return res.delivery;
 }
 
 /** Órdenes pendientes (retiros) derivadas de una entrega, con ítems y barcode.
@@ -262,4 +359,38 @@ export async function rederiveDeliveryShortfalls(
   deliveryId: number
 ): Promise<{ ok: boolean; created: DeliveryConfirmResponse['pendingDeliveries']; message?: string }> {
   return api(`/deliveries/${deliveryId}/rederive`, { method: 'POST' });
+}
+
+/** Confirma (acepta) una entrega en borrador. Recordar que el resultado puede
+ *  traer shortfalls/pendientes si faltó stock (flujo de entrega parcial).
+ *  `pick` (mejora 10): checklist de picking — {productId, quantity} recibido
+ *  por item. Lo que no entra queda como PARCIAL/deuda con re-derivación. */
+export async function confirmDelivery(
+  deliveryId: number,
+  pick?: Array<{ productId: number; quantity: number }>
+): Promise<DeliveryConfirmResponse> {
+  return api(`/deliveries/${deliveryId}/confirm`, { method: 'POST', ...(pick ? { body: { pick } } : {}) });
+}
+
+/** Descarga un CSV protegido (lleva Authorization). csvPath SIN la base B, ej:
+ *  '/movements/export.csv?q=...' */
+export async function downloadCsv(csvPath: string, filename: string): Promise<void> {
+  const res = await fetch(BASE + csvPath, {
+    headers: { Authorization: `Bearer ${currentToken()}` },
+  });
+  if (!res.ok) {
+    let msg = `Error ${res.status}`;
+    try {
+      const j = await res.json();
+      msg = (j.error as string) ?? msg;
+    } catch { /* respuesta no json */ }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, qs } from '../lib/api';
+import { api, downloadCsv, qs } from '../lib/api';
 import { exportCSV, fmtDateTime, fmtQty, todayISO } from '../lib/format';
 import type { Location, Movement } from '../types';
 import { Badge, Button, Card, Input, PageHeader, Select } from '../components/ui';
@@ -125,18 +125,34 @@ export default function Movements() {
         title="Historial de movimientos"
         subtitle={`${total} movimientos registrados`}
         actions={
-          <Button
-            variant="secondary"
-            onClick={() =>
-              exportCSV(
-                'movimientos.csv',
-                ['Fecha', 'Producto', 'Código', 'Ubicación', 'Tipo', 'Cantidad', 'Saldo anterior', 'Saldo posterior', 'Documento', 'Usuario', 'Motivo'],
-                rows.map((m) => [fmtDateTime(m.created_at), m.product_name, m.product_code, m.location_name, m.type, m.quantity, m.balance_before, m.balance_after, m.reference_number, m.user_name, m.reason])
-              )
-            }
-          >
-            ⬇ Exportar página
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              onClick={() =>
+                exportCSV(
+                  'movimientos.csv',
+                  ['Fecha', 'Producto', 'Código', 'Ubicación', 'Tipo', 'Cantidad', 'Saldo anterior', 'Saldo posterior', 'Documento', 'Usuario', 'Motivo'],
+                  rows.map((m) => [fmtDateTime(m.created_at), m.product_name, m.product_code, m.location_name, m.type, m.quantity, m.balance_before, m.balance_after, m.reference_number, m.user_name, m.reason])
+                )
+              }
+            >
+              ⬇ Exportar página
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                // Libro completo (hasta 10.000 filas) con los MISMOS filtros activos
+                toast.info('Generando CSV completo…');
+                downloadCsv(
+                  `/movements/export.csv${qs({ q, locationId, type, userId, from, to })}`,
+                  'movimientos-completo.csv'
+                ).then(() => toast.success('CSV descargado')).catch((e) => toast.error((e as Error).message));
+              }}
+              title="Descarga todo el libro de movimientos (hasta 10.000 filas) aplicando los filtros de esta pantalla"
+            >
+              ⬇ Exportar todo
+            </Button>
+          </>
         }
       />
 

@@ -20,6 +20,32 @@ body {
 *::-webkit-scrollbar-thumb:hover { @apply bg-slate-400; }
 *::-webkit-scrollbar-track { background: transparent; }
 
+/* Móvil: evita el doble-tap zoom en botones/controles */
+@layer utilities {
+  button, a, [role="button"], input[type="range"] { touch-action: manipulation; }
+}
+
+/* Línea de barrido del marco del escáner */
+.scan-frame::after {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 12%;
+  height: 3px;
+  border-radius: 999px;
+  background: #fbbf24;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.9);
+  animation: scanline 2.2s ease-in-out infinite;
+}
+@keyframes scanline {
+  0%, 100% { top: 12%; opacity: 0.85; }
+  50% { top: 84%; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-frame::after { animation: none; top: 50%; }
+}
+
 /* Impresión de comprobantes */
 @media print {
   body { @apply bg-white; }

@@ -175,27 +175,56 @@ export default function DeliveryDetail() {
 
   // Deuda sin derivar: objetivo (cargado vs facturado) - entregado - lo que
   // sigue prometido vía órdenes de retiro. Solo aplica a entregas confirmadas.
-  const underived = (() => {
-    if (delivery.status === 'BORRADOR' || delivery.status === 'ANULADO') return [] as { name: string; qty: number }[];
-    const owedThroughOrders = new Map<number, number>();
+  // El mapa también alimenta la columna/banner de "Faltan" del comprobante.
+  const orderOwed = new Map<number, number>();
+  if (delivery.status !== 'BORRADOR' && delivery.status !== 'ANULADO') {
     for (const order of pendingOrders) {
       for (const it of order.items) {
-        const prev = owedThroughOrders.get(it.product_id) ?? 0;
-        owedThroughOrders.set(
-          it.product_id,
-          prev + Number(it.quantity_requested) - Number(it.quantity_delivered)
-        );
+        const pending = Number(it.quantity_requested) - Number(it.quantity_delivered);
+        if (pending > 0) {
+          const prev = orderOwed.get(it.product_id) ?? 0;
+          orderOwed.set(it.product_id, prev + pending);
+        }
       }
     }
+  }
+  const underived = (() => {
+    if (delivery.status === 'BORRADOR' || delivery.status === 'ANULADO') return [] as { name: string; qty: number }[];
     const rows: { name: string; qty: number }[] = [];
     for (const it of delivery.items) {
       const billed = it.requested_quantity == null ? null : Number(it.requested_quantity);
       const target = Math.max(Number(it.quantity), billed ?? 0);
       const delivered = deliveredQtyOf(it);
-      const owed = target - delivered - (owedThroughOrders.get(it.product_id) ?? 0);
+      const owed = target - delivered - (orderOwed.get(it.product_id) ?? 0);
       if (owed > 0) rows.push({ name: it.name ?? it.code ?? `Producto #${it.product_id}`, qty: owed });
     }
     return rows;
+  })();
+
+  // Faltantes por ítem: cuántas unidades del objetivo total quedaron sin
+  // entregar en esta orden (derivadas a retiro o sin stock, ambas cuentan:
+  // el cliente todavía no las tiene). En borrador/anulada no se computa.
+  const itemShortfall: (number | null)[] = delivery.items.map((it) => {
+    if (delivery.status !== 'PARCIAL' && delivery.status !== 'CONFIRMADO') return null;
+    const billed = it.requested_quantity == null ? null : Number(it.requested_quantity);
+    const target = Math.max(Number(it.quantity), billed ?? 0);
+    const owe = target - deliveredQtyOf(it);
+    return owe > 0 ? owe : null;
+  });
+  const shortfallSummary = (() => {
+    let products = 0, units = 0, derivedUnits = 0, underivedUnits = 0;
+    const hasUnits = delivery.status === 'PARCIAL' || delivery.status === 'CONFIRMADO';
+    if (!hasUnits) return { products, units, derivedUnits, underivedUnits };
+    delivery.items.forEach((it, idx) => {
+      const owe = itemShortfall[idx];
+      if (owe == null) return;
+      products += 1;
+      units += owe;
+      const derived = orderOwed.get(it.product_id) ?? 0;
+      derivedUnits += Math.min(derived, owe);
+      underivedUnits += Math.max(0, owe - derived);
+    });
+    return { products, units, derivedUnits, underivedUnits };
   })();
 
   return (
@@ -236,6 +265,14 @@ export default function DeliveryDetail() {
             <div className="mt-1 print:mt-2">
               <Barcode value={delivery.number} height={40} width={1.3} />
             </div>
+            {/* Código de barras EAN-13 de la orden: el control del vendedor
+                escanea este código y le sale toda la mercadería solicitada */}
+            {delivery.barcode ? (
+              <>
+                <Barcode value={delivery.barcode} format="EAN13" height={40} className="mt-1" />
+                <div className="text-[10px] text-slate-400">Código de la orden</div>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -257,19 +294,48 @@ export default function DeliveryDetail() {
               <th className="py-2">Producto</th>
               <th className="py-2 text-center">Facturado</th>
               <th className="py-2 text-right">Entregado</th>
+              <th className="py-2 text-center">Faltan</th>
             </tr>
           </thead>
           <tbody>
-            {delivery.items.map((it) => (
+            {delivery.items.map((it, idx) => (
               <tr key={it.id ?? it.product_id} className="border-b border-slate-100">
                 <td className="py-2 font-mono text-xs">{it.code}</td>
                 <td className="py-2 font-medium text-slate-700">{it.name}</td>
                 <td className="py-2 text-center text-slate-400">{it.requested_quantity != null ? fmtQty(it.requested_quantity) : '—'}</td>
                 <td className="py-2 text-right font-semibold">{fmtQty(deliveredQtyOf(it))} {(it.unit ?? '').toLowerCase()}</td>
+                <td className="py-2 text-center">
+                  {itemShortfall[idx] != null ? (
+                    <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">
+                      Faltan {fmtQty(itemShortfall[idx]!)} {(it.unit ?? '').toLowerCase()}
+                    </span>
+                  ) : (
+                    <span className="text-slate-300">—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+
+        {/* Resumen de faltantes del comprobante (se imprime con el comprobante) */}
+        {shortfallSummary.units > 0 && (
+          <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+            <div className="text-xs font-bold uppercase tracking-wide">⚠️ Faltantes en esta orden</div>
+            <p>
+              Faltan <strong>{shortfallSummary.products}</strong> producto(s) ·{' '}
+              <strong>{fmtQty(shortfallSummary.units)}</strong> unidades sin entregar todavía.
+              {shortfallSummary.derivedUnits > 0 && (
+                <> De ellas, <strong>{fmtQty(shortfallSummary.derivedUnits)}</strong> u. quedaron derivadas
+                para retiro en otra sucursal (ver Pendientes de entrega).</>
+              )}
+              {shortfallSummary.underivedUnits > 0 && (
+                <> Además quedan <strong>{fmtQty(shortfallSummary.underivedUnits)}</strong> u. sin stock
+                en ninguna sucursal (deuda sin derivar).</>
+              )}
+            </p>
+          </div>
+        )}
 
         {delivery.notes && (
           <div className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">

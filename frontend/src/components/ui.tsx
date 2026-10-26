@@ -37,7 +37,7 @@ export function Button({
 }
 
 /* ============ Inputs ============ */
-const inputCls = `w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+const inputCls = `w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base sm:text-sm
   placeholder:text-slate-400 focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-200
   disabled:bg-slate-100 disabled:text-slate-500`;
 
@@ -223,20 +223,30 @@ const ConfirmCtx = createContext<(c: ConfirmState) => void>(() => {});
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ConfirmState | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Guard de doble click: confirmaciones pesadas (anular/aplicar stock) son
+  // async; sin este guard, dos clicks lanzaban dos veces la misma operación
+  // sobre un documento ya cambiado de estado.
+  const handleConfirm = async () => {
+    if (!state || busy) return;
+    setBusy(true);
+    try { await state.onConfirm(); } finally { setBusy(false); setState(null); }
+  };
   return (
     <ConfirmCtx.Provider value={setState}>
       {children}
       <Modal
         open={!!state}
-        onClose={() => setState(null)}
+        onClose={() => { if (!busy) setState(null); }}
         title={state?.title ?? ''}
         width="sm"
         footer={
           <>
-            <Button variant="secondary" onClick={() => setState(null)}>Cancelar</Button>
+            <Button variant="secondary" disabled={busy} onClick={() => setState(null)}>Cancelar</Button>
             <Button
               variant={state?.danger ? 'danger' : 'primary'}
-              onClick={() => { state?.onConfirm(); setState(null); }}
+              loading={busy}
+              onClick={handleConfirm}
             >
               {state?.confirmLabel ?? 'Confirmar'}
             </Button>
