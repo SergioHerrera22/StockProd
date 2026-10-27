@@ -46,17 +46,22 @@ export default function RepartoNew() {
 
   const [avail, setAvail] = useState<AvailableDocs | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
+  /** Error cargando documentos: sin esto, un fallo de red/pagina reintentaba
+   *  render con avail=null y crasheaba en avail!.deliveries (TypeError). */
+  const [docsError, setDocsError] = useState(false);
   const [stops, setStops] = useState<DraftStop[]>([]);
   const [saving, setSaving] = useState(false);
 
   const loadDocs = useCallback(async (origin: string) => {
-    if (!origin) { setAvail(null); return; }
+    if (!origin) { setAvail(null); setDocsError(false); return; }
     setLoadingDocs(true);
+    setDocsError(false);
     try {
       setAvail(await getAvailableDocs(Number(origin)));
     } catch (e) {
       toast.error((e as Error).message);
       setAvail(null);
+      setDocsError(true);
     } finally {
       setLoadingDocs(false);
     }
@@ -201,13 +206,15 @@ export default function RepartoNew() {
             <EmptyState icon="🏪" title="Elegí primero la sucursal de salida" />
           ) : loadingDocs ? (
             <div className="flex justify-center py-8"><Spinner /></div>
+          ) : docsError ? (
+            <EmptyState icon="⚠️" title="No se pudieron cargar los documentos" hint="Revisá tu conexión y volvé a elegir la sucursal para reintentar." />
           ) : noDocs ? (
             <EmptyState icon="📭" title="No hay documentos disponibles" hint="Faltan entregas confirmadas, transferencias EN_TRANSITO u órdenes de retiro pendientes desde esa sucursal." />
           ) : (
             <div className="space-y-4">
-              {avail!.deliveries.length > 0 && (
+              {(avail?.deliveries?.length ?? 0) > 0 && (
                 <PickerGroup title="Entregas (pedidos)" accent="blue">
-                  {avail!.deliveries.map((d) => (
+                  {avail?.deliveries?.map((d) => (
                     <PickerRow
                       key={d.id}
                       onAdd={() => addStop(d.id, 'DELIVERY')}
@@ -221,9 +228,9 @@ export default function RepartoNew() {
                   ))}
                 </PickerGroup>
               )}
-              {!!avail!.transfers?.length && (
+              {!!avail?.transfers?.length && (
                 <PickerGroup title="Transferencias a otros locales">
-                  {avail!.transfers!.map((t) => (
+                  {avail.transfers.map((t) => (
                     <PickerRow
                       key={t.id}
                       onAdd={() => addStop(t.id, 'TRANSFER')}
@@ -236,9 +243,9 @@ export default function RepartoNew() {
                   ))}
                 </PickerGroup>
               )}
-              {!!avail!.pendingDeliveries?.length && (
+              {!!avail?.pendingDeliveries?.length && (
                 <PickerGroup title="Ordenes de retiro (mercadería en tránsito a retiro Sucursal)">
-                  {avail!.pendingDeliveries!.map((p) => (
+                  {avail.pendingDeliveries.map((p) => (
                     <PickerRow
                       key={p.id}
                       onAdd={() => addStop(p.id, 'PENDING_DELIVERY', p.customer_name)}

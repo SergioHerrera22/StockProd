@@ -511,7 +511,7 @@ function AddStopModal({ tripId, originLocationId, existing, onClose, onAdded }: 
           )}
 
           <div className="max-h-72 space-y-1 overflow-y-auto">
-            {selected === 'DELIVERY' && avail!.deliveries.map((d) => (
+            {selected === 'DELIVERY' && (avail?.deliveries ?? []).map((d) => (
               <div key={d.id} className="flex items-center gap-2 rounded-lg border border-slate-100 p-2 text-sm">
                 <span className="font-semibold">{d.number}</span>
                 <Badge color="blue">{d.status}</Badge>
@@ -524,7 +524,7 @@ function AddStopModal({ tripId, originLocationId, existing, onClose, onAdded }: 
                 </span>
               </div>
             ))}
-            {selected === 'TRANSFER' && avail!.transfers!.map((t) => (
+            {selected === 'TRANSFER' && (avail?.transfers ?? []).map((t) => (
               <div key={t.id} className="flex items-center gap-2 rounded-lg border border-slate-100 p-2 text-sm">
                 <span className="font-semibold">{t.number}</span>
                 <Badge color="blue">{t.status}</Badge>
@@ -538,7 +538,7 @@ function AddStopModal({ tripId, originLocationId, existing, onClose, onAdded }: 
                 </span>
               </div>
             ))}
-            {selected === 'PENDING_DELIVERY' && avail!.pendingDeliveries!.map((p) => (
+            {selected === 'PENDING_DELIVERY' && (avail?.pendingDeliveries ?? []).map((p) => (
               <div key={p.id} className="flex items-center gap-2 rounded-lg border border-slate-100 p-2 text-sm">
                 <span className="font-semibold">{p.number}</span>
                 <Badge color="blue">{p.status}</Badge>
