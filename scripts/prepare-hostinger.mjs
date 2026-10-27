@@ -28,16 +28,48 @@ console.log('✓ Backend copiado a dist/');
 copyRecursive(frontendDist, rootPublic);
 console.log('✓ Frontend copiado a public/');
 
-// Copiar package.json y package-lock.json del backend a raíz
-fs.copyFileSync(
-  path.join(rootDir, 'backend', 'package.json'),
-  path.join(rootDir, 'package.json')
-);
-fs.copyFileSync(
-  path.join(rootDir, 'backend', 'package-lock.json'),
-  path.join(rootDir, 'package-lock.json')
-);
-console.log('✓ package.json copiado a raíz');
+// package.json del backend -> raiz, PERO ajustado para el servidor:
+//  1) sin la dependencia circular "robles-stock-pro": "file:.." (rompe npm ci)
+//  2) build = no-op (el ZIP ya viene compilado; tsc en la raiz no halla
+//     tsconfig.json y el builder de Hostinger fallaba)
+writeServerPackage();
+console.log('✓ package.json copiado a raíz (limpio para despliegue)');
+
+function writeServerPackage() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'backend', 'package.json'), 'utf8'));
+  delete pkg.dependencies['robles-stock-pro'];
+  // El server nunca ejecuta herramientas de desarrollo. Solo tsx (y su
+  // dependencia esbuild con postinstall) esta en devDependencies, pero el
+  // builder de Hostinger con pnpm FALLA si esbuild no tiene aprobado su
+  // postinstall (ERR_PNPM_IGNORED_BUILDS). Sin devDeps el install es limpio.
+  delete pkg.devDependencies;
+  // Blindaje por si algo transitive vuelve a traer postinstalls: pnpm los
+  // ignora explicitamente en lugar de fallar el build.
+  pkg.pnpm = { ignoredBuiltDependencies: ['esbuild'] };
+  pkg.scripts.build = 'node -e "console.log(\'OK: el paquete ya viene compilado en dist/ (no compilar en servidor)\')"';
+  fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+
+  // package-lock: quitar tambien el paquete "link" generado por el file: dep
+  // y las herramientas de dev (tsx/esbuild) para que quede sincronizado con
+  // el package.json sin devDependencies (npm ci exige consistencia total).
+  const lockPath = path.join(rootDir, 'backend', 'package-lock.json');
+  if (fs.existsSync(lockPath)) {
+    const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    if (lock.packages) {
+      delete lock.packages[''].dependencies?.['robles-stock-pro'];
+      delete lock.packages['node_modules/robles-stock-pro'];
+      delete lock.packages[''].devDependencies;
+      delete lock.packages['node_modules/tsx'];
+      delete lock.packages['node_modules/esbuild'];
+    }
+    if (lock.dependencies) {
+      delete lock.dependencies['robles-stock-pro'];
+      delete lock.dependencies.tsx;
+    }
+    if (lock.devDependencies) delete lock.devDependencies.tsx;
+    fs.writeFileSync(path.join(rootDir, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  }
+}
 
 function copyRecursive(src, dest) {
   if (!fs.existsSync(src)) {

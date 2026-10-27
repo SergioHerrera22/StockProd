@@ -262,7 +262,7 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
         entityNumber: number,
         requestedBy: user.id,
         context: { ...context, items: input.items },
-      });
+      }, c);
       await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_PENDING_APPROVAL', entity: 'delivery', entityId: deliveryId, details: { number, requiresApproval: true }, ip });
       return { id: deliveryId, number, status: 'BORRADOR', requiresApproval: true };
     }

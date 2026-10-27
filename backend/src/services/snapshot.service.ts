@@ -272,14 +272,16 @@ export async function verifySnapshotIntegrity(snapshotId: number) {
   const snap = await getSnapshot(snapshotId);
   if (!snap) throw ApiError.notFound('Snapshot no encontrado');
 
+  // La funcion de BD usa COALESCE(..., '[]') para snapshots vacios: replicar
+  // exactamente la misma expresion o los vacios dara "manipulado".
   const r = await query<{ computed_hash: string | null; item_count: string }>(
     `SELECT encode(digest(
-        (SELECT jsonb_agg(jsonb_build_object(
-             'productId', product_id,
-             'quantity', quantity,
-             'unitCost', unit_cost
-         ) ORDER BY product_id)::text
-         FROM stock_snapshot_items WHERE snapshot_id = $1),
+        COALESCE((SELECT jsonb_agg(jsonb_build_object(
+             'productId', si.product_id,
+             'quantity', si.quantity,
+             'unitCost', si.unit_cost
+         ) ORDER BY si.product_id)
+         FROM stock_snapshot_items si WHERE si.snapshot_id = $1), '[]'::jsonb)::text,
         'sha256'
      ), 'hex') AS computed_hash,
      (SELECT COUNT(*) FROM stock_snapshot_items WHERE snapshot_id = $1) AS item_count`,

@@ -8,6 +8,7 @@ import { ApiError } from '../../lib/errors';
 import { config } from '../../config/env';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, AuthUser } from '../../middleware/auth';
+import { authLimiter } from '../../middleware/security';
 import { writeAudit } from '../../services/audit.service';
 
 const router = Router();
@@ -27,6 +28,7 @@ function parseExpiresMs(value: string): number {
 
 router.post(
   '/login',
+  authLimiter, // solo cuenta fallos: 10 errores por IP en 15 min
   asyncH(async (req, res) => {
     const { username, password } = loginSchema.parse(req.body);
 
@@ -134,6 +136,7 @@ const changePasswordSchema = z.object({
 router.post(
   '/change-password',
   authRequired,
+  authLimiter, // frenar fuerza bruta sobre la contrasena actual
   asyncH(async (req, res) => {
     const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
     const r = await query<{ password_hash: string }>(

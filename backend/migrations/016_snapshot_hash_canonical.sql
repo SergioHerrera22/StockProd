@@ -24,7 +24,7 @@ DECLARE
 BEGIN
     INSERT INTO stock_snapshots (location_id, snapshot_type, reference_id, reference_type, total_products, total_quantity, total_value, data_hash, created_by)
     SELECT p_location_id, p_snapshot_type, p_reference_id, p_reference_type,
-           count(*)::int, sum(sb.quantity), sum(sb.quantity * COALESCE(p.cost, 0)), ''
+           count(*)::int, sum(sb.quantity), sum(sb.quantity * COALESCE(p.cost, 0)), '', p_created_by
     FROM stock_balances sb
     JOIN products p ON p.id = sb.product_id
     WHERE sb.location_id = p_location_id AND sb.quantity > 0

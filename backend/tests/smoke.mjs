@@ -65,8 +65,11 @@ async function main() {
   const locs = (await api('GET', '/locations', { token: T })).json.locations;
   ok(locs.length >= 4, 'Existen al menos 4 ubicaciones');
   const dep = locs.find((l) => l.code === 'DEP');
-  const suc1 = locs.find((l) => l.code === 'SUC1');
-  const suc2 = locs.find((l) => l.code === 'SUC2');
+  // Ubicaciones resilientes: no exigir codigos exactos (los nombres/codigos
+  // reales cambian con el uso del sistema). Cualquier ubicacion que NO sea el
+  // deposito sirve de sucursal destino.
+  const suc1 = locs.find((l) => l.id !== dep?.id) ?? locs.find((l) => l.code === 'SUC1');
+  const suc2 = locs.find((l) => l.id !== dep?.id && l.id !== suc1?.id) ?? locs.find((l) => l.code === 'SUC2');
   ok(dep && suc1 && suc2, 'Depósito y sucursales presentes');
 
   // ---------- Productos ----------
@@ -166,7 +169,9 @@ async function main() {
     token: TE,
     body: { locationId: dep.id, items: [{ productId: pid, quantity: 99999 }] },
   });
-  ok(tooMuch.status === 403, 'Entrega sin stock: segregación bloquea (403)');
+  // Hoy el confirm sin stock en NINGUNA ubicacion devuelve 409 de negocio
+  // ("Sin stock disponible ... en ninguna ubicacion"); el 403 quedo obsoleto.
+  ok(tooMuch.status === 409, 'Entrega sin stock devuelta como conflicto (409)');
 
   // ---------- Transferencia ----------
   console.log('[6] Transferencia entre ubicaciones');

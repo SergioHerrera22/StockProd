@@ -98,7 +98,7 @@ export async function createTransfer(user: AuthUser, ip: string | undefined, inp
         entityNumber: number,
         requestedBy: user.id,
         context: { ...context, items: input.items, origin: locs.rows.find(l => l.id === input.originLocationId)?.name, destination: locs.rows.find(l => l.id === input.destinationLocationId)?.name },
-      });
+      }, c);
       await writeAudit(c, { userId: user.id, action: 'TRANSFER_CREATE_PENDING_APPROVAL', entity: 'transfer', entityId: transferId, details: { number, requiresApproval: true, rules: rules.map(r => r.ruleCode) }, ip });
       return { id: transferId, number, status: 'BORRADOR', requiresApproval: true };
     }

@@ -146,16 +146,23 @@ export async function evaluateApprovalRules(entityType: string, operation: strin
 }
 
 /**
- * Crear solicitud de aprobacion
+ * Crear solicitud de aprobacion.
+ * Acepta un PoolClient OPCIONAL: invocada dentro de la transaccion del
+ * documento padre (entrada/transferencia/entrega/conteo), corre en esa MISMA
+ * tx. Antes abria withTx propia: obtenia una SEGUNDA conexion del pool con la
+ * primera retenida (agotamiento/bloqueos bajo carga) y, peor, si el padre
+ * hacia ROLLBACK la solicitud quedaba COMMITTEADA apuntando a un documento
+ * que nunca existio. Con client opcional queda todo atomico.
  */
-export async function createApprovalRequest(input: ApprovalRequestInput) {
-  return withTx(async (c) => {
+export async function createApprovalRequest(input: ApprovalRequestInput, client?: PoolClient) {
+  const run = async (c: PoolClient) => {
     const r = await c.query<{ id: number }>(
       `SELECT create_approval_request($1,$2,$3,$4,$5,$6::jsonb,$7) AS id`,
       [input.ruleId, input.entityType, input.entityId, input.entityNumber, input.requestedBy, JSON.stringify(input.context), input.expiresHours ?? 48]
     );
     return { approvalRequestId: r.rows[0].id };
-  });
+  };
+  return client ? run(client) : withTx(run);
 }
 
 /**

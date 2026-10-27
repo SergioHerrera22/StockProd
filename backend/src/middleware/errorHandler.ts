@@ -55,7 +55,18 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     });
   }
 
-  logger.error(`Error no manejado en ${req.method} ${req.originalUrl}:`, anyErr?.message ?? err);
+  const dbg = [
+    anyErr?.code ? `code=${anyErr.code}` : null,
+    anyErr?.constraint ? `constraint=${anyErr.constraint}` : null,
+    anyErr?.table ? `table=${anyErr.table}` : null,
+    anyErr?.column ? `column=${anyErr.column}` : null,
+    anyErr?.detail ? `detail=${anyErr.detail}` : null,
+  ].filter(Boolean).join(' ');
+  logger.error(
+    `Error no manejado en ${req.method} ${req.originalUrl}: ${anyErr?.message ?? err}` +
+      (dbg ? ` [${dbg}]` : ''),
+    err instanceof Error ? err.stack : undefined
+  );
   return res.status(500).json({
     error: 'Error interno del servidor',
     ...(config.isProd ? {} : { detail: anyErr?.message }),

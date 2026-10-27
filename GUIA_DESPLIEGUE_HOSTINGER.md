@@ -66,8 +66,8 @@ En la misma pantalla de Node.js, sección **Environment Variables**:
 |----------|-------|
 | `NODE_ENV` | `production` |
 | `PORT` | `3000` (Hostinger lo asigna automáticamente) |
-| `DATABASE_URL` | `postgresql://postgres.axoaagdgygpynxbvpnit:Dni29165947@aws-1-us-west-2.pooler.supabase.com:5432/postgres` |
-| `JWT_SECRET` | `x7Kp9mQ2vT4wZ8nB5rY1cE6hJ3fD0aS7Kp9mQ2vT4wZ8nB5rY1cE6h` |
+| `DATABASE_URL` | `postgresql://postgres.<REF>:<CONTRASEÑA>@aws-1-us-west-2.pooler.supabase.com:5432/postgres` (ver `.env` del servidor, NO commitear) |
+| `JWT_SECRET` | Generar con: `openssl rand -base64 48` (rotar si se expuso alguna vez) |
 | `JWT_EXPIRES` | `12h` |
 | `SESSION_IDLE_MINUTES` | `30` |
 | `CORS_ORIGIN` | `https://tudominio.hostinger.com` (cambia por tu dominio real) |

@@ -77,7 +77,7 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
         entityNumber: number,
         requestedBy: user.id,
         context: { ...context, items: input.items },
-      });
+      }, c);
       await writeAudit(c, { userId: user.id, action: 'ENTRY_CREATE_PENDING_APPROVAL', entity: 'entry', entityId: entryId, details: { number, requiresApproval: true }, ip });
       return { id: entryId, number, status: 'BORRADOR', requiresApproval: true };
     }

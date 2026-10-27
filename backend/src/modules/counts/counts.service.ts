@@ -145,7 +145,7 @@ async function applyCountTx(c: PoolClient, user: AuthUser, ip: string | undefine
       entityNumber: count.number,
       requestedBy: user.id,
       context: { ...context, reason, adjustments: adjustmentsCount },
-    });
+    }, c);
     await writeAudit(c, { userId: user.id, action: 'COUNT_APPLY_PENDING_APPROVAL', entity: 'count', entityId: id, details: { reason, adjustments: adjustmentsCount, requiresApproval: true }, ip });
     return { ok: false, requiresApproval: true, adjustments: adjustmentsCount };
   }
