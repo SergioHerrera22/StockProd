@@ -14,6 +14,11 @@ dist/
 public/
 *.tsbuildinfo
 
+# Artefactos generados por prepare-hostinger.mjs (van solo al ZIP)
+/migrations/
+/migrate.mjs
+/scripts/migrate.mjs
+
 # Paquetes de despliegue (se regeneran con create_zip_hostinger.ps1)
 *.zip
 *.rar

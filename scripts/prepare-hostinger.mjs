@@ -28,6 +28,22 @@ console.log('✓ Backend copiado a dist/');
 copyRecursive(frontendDist, rootPublic);
 console.log('✓ Frontend copiado a public/');
 
+// Migraciones + runner: para poder correr 'npm run db:migrate' en el server
+// contra la DB que apunte su .env (Supabase en produccion).
+const migrationsDir = path.join(rootDir, 'backend', 'migrations');
+const rootMigrations = path.join(rootDir, 'migrations');
+if (fs.existsSync(migrationsDir)) {
+  fs.mkdirSync(rootMigrations, { recursive: true });
+  copyRecursive(migrationsDir, rootMigrations);
+  console.log('✓ Migraciones copiadas a migrations/');
+}
+const migrateSrc = path.join(rootDir, 'backend', 'scripts', 'migrate.mjs');
+if (fs.existsSync(migrateSrc)) {
+  fs.mkdirSync(path.join(rootDir, 'scripts'), { recursive: true });
+  fs.copyFileSync(migrateSrc, path.join(rootDir, 'scripts', 'migrate.mjs'));
+  console.log('✓ scripts/migrate.mjs copiado');
+}
+
 // package.json del backend -> raiz, PERO ajustado para el servidor:
 //  1) sin la dependencia circular "robles-stock-pro": "file:.." (rompe npm ci)
 //  2) build = no-op (el ZIP ya viene compilado; tsc en la raiz no halla
