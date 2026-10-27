@@ -56,7 +56,7 @@ export class ApiError extends Error {
 }
 
 interface Options {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
 }
 
@@ -81,6 +81,9 @@ const IDEMPOTENT_PATTERNS: RegExp[] = [
   /^\/pending-deliveries$/,
   /^\/pending-deliveries\/confirm-pickup$/,
   /^\/pending-deliveries\/\d+\/(cancel|extend)$/,
+  /^\/tracking\/trips$/,
+  /^\/tracking\/trips\/\d+\/(depart|complete|cancel)$/,
+  /^\/tracking\/trips\/\d+\/stops\/\d+\/delivered$/,
 ];
 
 /** Claves en "vuelo": si la red se cae, el reintento reusa la misma clave. */
@@ -189,7 +192,10 @@ async function finishResponse<T>(
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, (json.error as string) ?? `Error ${res.status}`, json.details);
+    const msg = (json.error as string) ?? `Error ${res.status}`;
+    // Los 5xx no dicen nada del problema real: guiá al usuario sobre que hacer.
+    const hint = res.status >= 500 ? ' (problema del servidor; reintentá en unos segundos)' : '';
+    throw new ApiError(res.status, msg + hint, json.details);
   }
   return json as T;
 }
@@ -393,4 +399,94 @@ export async function downloadCsv(csvPath: string, filename: string): Promise<vo
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ===== TRANSPORTE / REPARTO CON GPS =====
+
+import type {
+  Trip,
+  TripStop,
+  TripStatus,
+  AvailableDocs,
+} from '../types';
+
+export interface TripListResponse { trips: Trip[]; total: number; page: number; pageSize: number }
+
+export async function listTrips(filters: {
+  status?: string; originLocationId?: number; q?: string; page?: number; pageSize?: number;
+} = {}): Promise<TripListResponse> {
+  return api(`/tracking/trips${qs(filters as Record<string, string | number | undefined>)}`);
+}
+
+export async function getTrip(id: number): Promise<Trip> {
+  const r = await api<{ trip: Trip }>(`/tracking/trips/${id}`);
+  return r.trip;
+}
+
+export async function getTripTrack(id: number, limit = 500): Promise<{ points: { lat: number; lng: number; recorded_at: string }[] }> {
+  return api(`/tracking/trips/${id}/track${qs({ limit })}`);
+}
+
+export async function createTrip(input: {
+  originLocationId: number; driverName: string; driverPhone?: string | null;
+  vehicle?: string | null; notes?: string | null;
+  stops: { docType: string; docId: number; address?: string | null; customerName?: string | null }[];
+}): Promise<Trip> {
+  const r = await api<{ trip: Trip }>('/tracking/trips', { method: 'POST', body: input });
+  return r.trip;
+}
+
+export async function updateTrip(id: number, input: {
+  driverName?: string; driverPhone?: string | null; vehicle?: string | null; notes?: string | null;
+}): Promise<Trip> {
+  const r = await api<{ trip: Trip }>(`/tracking/trips/${id}`, { method: 'PUT', body: input });
+  return r.trip;
+}
+
+export async function addTripStop(id: number, input: {
+  docType: string; docId: number; address?: string | null; customerName?: string | null;
+}): Promise<TripStop[]> {
+  const r = await api<{ stops: TripStop[] }>(`/tracking/trips/${id}/stops`, { method: 'POST', body: input });
+  return r.stops;
+}
+
+export async function removeTripStop(id: number, stopId: number): Promise<TripStop[]> {
+  const r = await api<{ stops: TripStop[] }>(`/tracking/trips/${id}/stops/${stopId}`, { method: 'DELETE' });
+  return r.stops;
+}
+
+export async function departTrip(id: number): Promise<Trip> {
+  const r = await api<{ trip: Trip }>(`/tracking/trips/${id}/depart`, { method: 'POST' });
+  return r.trip;
+}
+
+export async function completeTrip(id: number): Promise<Trip> {
+  const r = await api<{ trip: Trip }>(`/tracking/trips/${id}/complete`, { method: 'POST' });
+  return r.trip;
+}
+
+export async function cancelTrip(id: number, reason: string): Promise<Trip> {
+  const r = await api<{ trip: Trip }>(`/tracking/trips/${id}/cancel`, { method: 'POST', body: { reason } });
+  return r.trip;
+}
+
+export async function markStopDelivered(id: number, stopId: number, notes?: string): Promise<{ ok: boolean; allDelivered: boolean; trip: Trip }> {
+  return api(`/tracking/trips/${id}/stops/${stopId}/delivered`, { method: 'POST', body: { notes } });
+}
+
+/** Envía la posición del dispositivo (throttle server-side ~8s) */
+export async function postTripPosition(id: number, pos: {
+  lat: number; lng: number; accuracy?: number | null; speed?: number | null; heading?: number | null;
+}): Promise<{ skipped: boolean }> {
+  return api(`/tracking/trips/${id}/positions`, { method: 'POST', body: pos });
+}
+
+/** Viajes EN_RUTA con última posición y paradas: feed del mapa en vivo */
+export async function getLiveTracking(): Promise<{ trips: Trip[] }> {
+  return api('/tracking/live');
+}
+
+/** Documentos elegibles para paradas de un viaje desde `originLocationId` */
+export async function getAvailableDocs(originLocationId: number): Promise<AvailableDocs> {
+  return api(`/tracking/available${qs({ originLocationId })}`);
 }

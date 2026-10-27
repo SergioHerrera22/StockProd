@@ -6,6 +6,7 @@ const DOC_PREFIX: Record<string, string> = {
   transfer: 'T',
   count: 'INV',
   pending_delivery: 'PD',
+  trip: 'RP',
 };
 
 const SEQ: Record<string, string> = {
@@ -14,6 +15,7 @@ const SEQ: Record<string, string> = {
   transfer: 'seq_transfer_number',
   count: 'seq_stock_count_number',
   pending_delivery: 'seq_pending_delivery_number',
+  trip: 'seq_trip_number',
 };
 
 /** Genera el numero correlativo del documento (E-000123, I-000045, T-000012, INV-000003). */

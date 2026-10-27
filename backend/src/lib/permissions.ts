@@ -36,6 +36,9 @@ export type Permission =
   | 'reports.read'
   | 'locations.read'
   | 'locations.manage'
+  | 'tracking.read'
+  | 'tracking.write'
+  | 'tracking.gps'
   | 'users.read'
   | 'users.manage'
   | 'audit.read'
@@ -55,6 +58,7 @@ const ENCARGADO: Permission[] = [
   'counts.read', 'counts.write', 'counts.apply', 'counts.void', 'counts.approve',
   'movements.read', 'dashboard.read', 'reports.read',
   'locations.read',
+  'tracking.read', 'tracking.write', 'tracking.gps',
   'approvals.read', 'approvals.approve',
   'alerts.read', 'alerts.manage',
 ];
@@ -65,6 +69,7 @@ const EMPLEADO: Permission[] = [
   'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
+  'tracking.read', 'tracking.gps',
   'approvals.read',
   'alerts.read',
 ];

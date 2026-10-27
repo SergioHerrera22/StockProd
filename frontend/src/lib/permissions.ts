@@ -4,28 +4,32 @@
 export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO';
 
 export type Permission =
-  | 'products.read' | 'products.write' | 'categories.write'
+  | 'products.read' | 'products.write' | 'categories.write' | 'products.import'
   | 'stock.read' | 'stock.adjust'
-  | 'deliveries.read' | 'deliveries.write' | 'deliveries.confirm' | 'deliveries.void'
-  | 'entries.read' | 'entries.write'
-  | 'transfers.read' | 'transfers.write' | 'transfers.receive'
-  | 'counts.read' | 'counts.write' | 'counts.apply'
+  | 'deliveries.read' | 'deliveries.write' | 'deliveries.confirm' | 'deliveries.void' | 'deliveries.approve'
+  | 'entries.read' | 'entries.write' | 'entries.confirm' | 'entries.void' | 'entries.approve'
+  | 'transfers.read' | 'transfers.write' | 'transfers.receive' | 'transfers.dispatch' | 'transfers.verify' | 'transfers.void' | 'transfers.approve'
+  | 'counts.read' | 'counts.write' | 'counts.apply' | 'counts.void' | 'counts.approve'
   | 'movements.read' | 'dashboard.read' | 'reports.read'
   | 'locations.read' | 'locations.manage'
-  | 'users.manage' | 'audit.read'
+  | 'tracking.read' | 'tracking.write' | 'tracking.gps'
+  | 'users.read' | 'users.manage' | 'audit.read'
+  | 'approvals.read' | 'approvals.approve'
   | 'alerts.read' | 'alerts.manage'
-  /** Configuración global (reglas de aprobación, reglas de negocio). Espejo del backend. */
+  /** Configuración global (reglas de aprobación, reglas de negocio, umbrales). Espejo del backend. */
   | 'settings.write';
 
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write',
   'stock.read', 'stock.adjust',
-  'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void',
-  'entries.read', 'entries.write',
-  'transfers.read', 'transfers.write', 'transfers.receive',
-  'counts.read', 'counts.write', 'counts.apply',
+  'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve',
+  'entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve',
+  'transfers.read', 'transfers.write', 'transfers.receive', 'transfers.dispatch', 'transfers.verify', 'transfers.void', 'transfers.approve',
+  'counts.read', 'counts.write', 'counts.apply', 'counts.void', 'counts.approve',
   'movements.read', 'dashboard.read', 'reports.read',
   'locations.read',
+  'tracking.read', 'tracking.write', 'tracking.gps',
+  'approvals.read', 'approvals.approve',
   'alerts.read', 'alerts.manage',
 ];
 
@@ -35,11 +39,16 @@ const EMPLEADO: Permission[] = [
   'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
+  'tracking.read', 'tracking.gps',
+  'approvals.read',
   'alerts.read',
 ];
 
 export const PERMISSIONS: Record<Role, Permission[]> = {
-  ADMIN: [...ENCARGADO, 'locations.manage', 'users.manage', 'audit.read', 'settings.write'],
+  ADMIN: [
+    ...ENCARGADO,
+    'locations.manage', 'users.manage', 'users.read', 'audit.read', 'settings.write',
+  ],
   ENCARGADO,
   EMPLEADO,
 };

@@ -22,6 +22,13 @@ import Reports from './pages/Reports';
 import Audit from './pages/Audit';
 import Reservations from './pages/Reservations';
 import Alerts from './pages/Alerts';
+import Repartos from './pages/Repartos';
+import RepartoNew from './pages/RepartoNew';
+import RepartoDetail from './pages/RepartoDetail';
+import Approvals from './pages/Approvals';
+import BusinessRules from './pages/BusinessRules';
+import LocationPermissions from './pages/LocationPermissions';
+import Reconciliation from './pages/Reconciliation';
 
 function Protected({ children }: { children: ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -71,6 +78,13 @@ export default function App() {
               <Route path="movimientos" element={<RequirePerm perm="movements.read"><Movements /></RequirePerm>} />
               <Route path="reportes" element={<RequirePerm perm="reports.read"><Reports /></RequirePerm>} />
               <Route path="alertas" element={<RequirePerm perm="alerts.read"><Alerts /></RequirePerm>} />
+              <Route path="repartos" element={<RequirePerm perm="tracking.read"><Repartos /></RequirePerm>} />
+              <Route path="repartos/nuevo" element={<RequirePerm perm="tracking.write"><RepartoNew /></RequirePerm>} />
+              <Route path="repartos/:id" element={<RequirePerm perm="tracking.read"><RepartoDetail /></RequirePerm>} />
+              <Route path="aprobaciones" element={<RequirePerm perm="approvals.read"><Approvals /></RequirePerm>} />
+              <Route path="reglas" element={<RequirePerm perm="audit.read"><BusinessRules /></RequirePerm>} />
+              <Route path="permisos-ubicacion" element={<RequirePerm perm="users.manage"><LocationPermissions /></RequirePerm>} />
+              <Route path="reconciliacion" element={<RequirePerm perm="audit.read"><Reconciliation /></RequirePerm>} />
               <Route path="usuarios" element={<RequirePerm perm="users.manage"><Users /></RequirePerm>} />
               <Route path="ubicaciones" element={<RequirePerm perm="locations.manage"><Locations /></RequirePerm>} />
               <Route path="auditoria" element={<RequirePerm perm="audit.read"><Audit /></RequirePerm>} />

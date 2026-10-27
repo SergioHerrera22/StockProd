@@ -23,13 +23,18 @@ const NAV: NavItem[] = [
   { to: '/productos', label: 'Productos', icon: '🧴', perm: 'products.read' },
   { to: '/entradas', label: 'Entradas', icon: '📥', perm: 'entries.read' },
   { to: '/transferencias', label: 'Transferencias', icon: '🚚', perm: 'transfers.read' },
+  { to: '/repartos', label: 'Repartos', icon: '🗺️', perm: 'tracking.read' },
   { to: '/inventarios', label: 'Inventarios', icon: '📋', perm: 'counts.read' },
   { to: '/movimientos', label: 'Movimientos', icon: '📜', perm: 'movements.read' },
   { to: '/reportes', label: 'Reportes', icon: '📈', perm: 'reports.read' },
   { to: '/alertas', label: 'Alertas', icon: '🛎️', perm: 'alerts.read', badge: true },
+  { to: '/aprobaciones', label: 'Aprobaciones', icon: '✅', perm: 'approvals.read' },
   { to: '/usuarios', label: 'Usuarios', icon: '👤', perm: 'users.manage' },
   { to: '/ubicaciones', label: 'Ubicaciones', icon: '🏪', perm: 'locations.manage' },
   { to: '/auditoria', label: 'Auditoría', icon: '🛡️', perm: 'audit.read' },
+  { to: '/reglas', label: 'Reglas de negocio', icon: '📏', perm: 'audit.read' },
+  { to: '/reconciliacion', label: 'Reconciliación', icon: '🧮', perm: 'audit.read' },
+  { to: '/permisos-ubicacion', label: 'Permisos por ubicación', icon: '🔑', perm: 'users.manage' },
 ];
 
 export function Layout() {

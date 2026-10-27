@@ -453,3 +453,80 @@ export interface DeliveryAvailabilityResult {
   canFullyDeliverLocally: boolean;
   hasShortfalls: boolean;
 }
+
+// ===== TRANSPORTE / REPARTO CON GPS =====
+
+export type TripStatus = 'EN_PREPARACION' | 'EN_RUTA' | 'COMPLETADO' | 'CANCELADO';
+
+export type StopDocType = 'DELIVERY' | 'TRANSFER' | 'PENDING_DELIVERY';
+
+/** Posición GPS de un punto (camioneta) */
+export interface TripPosition {
+  lat: number;
+  lng: number;
+  recorded_at: string;
+  accuracy?: number | null;
+  speed?: number | null;
+  heading?: number | null;
+}
+
+/** Parada del viaje: documento transportado + sucursal/cliente destino */
+export interface TripStop {
+  id: number;
+  sequence: number;
+  location_id: number | null;
+  location_code?: string | null;
+  location_name?: string | null;
+  delivery_id?: number | null;
+  transfer_id?: number | null;
+  pending_delivery_id?: number | null;
+  doc_type: StopDocType;
+  reference: string;
+  customer_name?: string | null;
+  address?: string | null;
+  delivered_at?: string | null;
+  delivered_by_name?: string | null;
+  notes?: string | null;
+}
+
+export interface Trip {
+  id: number;
+  number: string;               // RP-000001
+  status: TripStatus;
+  origin_location_id: number;
+  origin_code?: string;
+  origin_name?: string;
+  driver_name: string;
+  driver_phone?: string | null;
+  vehicle?: string | null;
+  notes?: string | null;
+  departed_at?: string | null;
+  completed_at?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  stop_count?: number;
+  delivered_count?: number;
+  last_position?: TripPosition | null;
+  stops?: TripStop[];
+}
+
+/** Documentos disponibles para agregar como parada (GET /tracking/available) */
+export interface AvailableDocs {
+  deliveries: { id: number; number: string; status: string; invoice_number?: string | null; created_at?: string | null }[];
+  transfers?: { id: number; number: string; status: string; destination_location_id?: number; destination_name?: string | null; created_at?: string | null }[];
+  pendingDeliveries?: { id: number; number: string; status: string; pickup_location_id?: number; pickup_location_name?: string | null; customer_name?: string | null; created_at?: string | null }[];
+}
+
+export const TRIP_STATUS: Record<TripStatus, { label: string; color: 'amber' | 'green' | 'red' | 'blue' | 'gray' }> = {
+  EN_PREPARACION: { label: 'En preparación', color: 'amber' },
+  EN_RUTA: { label: 'En ruta', color: 'blue' },
+  COMPLETADO: { label: 'Completado', color: 'green' },
+  CANCELADO: { label: 'Cancelado', color: 'red' },
+};
+
+/** Etiqueta/color de un estado de viaje, con fallback */
+export function tripStatusStyle(status: string): { label: string; color: 'amber' | 'green' | 'red' | 'blue' | 'gray' } {
+  return TRIP_STATUS[status as TripStatus] ?? { label: status, color: 'gray' };
+}
