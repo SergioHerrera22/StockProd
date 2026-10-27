@@ -14,7 +14,7 @@ router.use(authRequired);
 const userSchema = z.object({
   username: z.string().min(3).max(60).regex(/^[a-zA-Z0-9._-]+$/, 'Solo letras, numeros, punto, guion y guion bajo'),
   fullName: z.string().min(3).max(120),
-  role: z.enum(['ADMIN', 'ENCARGADO', 'EMPLEADO']),
+  role: z.enum(['ADMIN', 'ENCARGADO', 'EMPLEADO', 'TRANSPORTE']),
   defaultLocationId: z.number().int().positive().nullable().optional(),
   password: z.string().min(6).max(100).optional(),
   isActive: z.boolean().optional(),

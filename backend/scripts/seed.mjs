@@ -30,7 +30,7 @@ const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 async function main() {
   // Roles
-  for (const [code, name] of [['ADMIN', 'Administrador'], ['ENCARGADO', 'Encargado'], ['EMPLEADO', 'Empleado']]) {
+  for (const [code, name] of [['ADMIN', 'Administrador'], ['ENCARGADO', 'Encargado'], ['EMPLEADO', 'Empleado'], ['TRANSPORTE', 'Transporte / Chofer']]) {
     await pool.query(
       'INSERT INTO roles (code, name) VALUES ($1,$2) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name',
       [code, name]

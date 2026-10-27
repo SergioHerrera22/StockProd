@@ -9,9 +9,12 @@ import { useNavigate } from 'react-router-dom';
 import type { Trip, TripStatus } from '../types';
 import { tripStatusStyle } from '../types';
 import { api, qs, listTrips } from '../lib/api';
+import { getGpsShareStatus, getGpsSchedule, startGpsShare, stopGpsShare, saveGpsSchedule, type GpsSchedule, type DriverLive } from '../lib/api';
+import { getGpsState, subscribe as subscribeGps, startSharing, stopUser, type GpsShareState } from '../lib/gpsShare';
+import { useSyncExternalStore } from 'react';
 import { fmtDateTimeShort } from '../lib/format';
 import { useAuth } from '../store/auth';
-import { Badge, Button, Card, PageHeader, Select, Spinner, Tabs, StatCard, EmptyState } from '../components/ui';
+import { Badge, Button, Card, PageHeader, Select, Spinner, Tabs, StatCard, EmptyState, Field, Input } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 import MapView, { type MapMarker } from '../components/MapView';
@@ -41,9 +44,12 @@ export default function Repartos() {
         title="Repartos / Transporte"
         subtitle="Viajes de la camioneta con paradas y seguimiento GPS en vivo"
         actions={
-          tab === 'viajes' && can('tracking.write') ? (
-            <Button variant="primary" onClick={() => navigate('/repartos/nuevo')}>+ Nuevo viaje</Button>
-          ) : undefined
+          <>
+            {can('tracking.gps') && <GpsShareControl />}
+            {tab === 'viajes' && can('tracking.write') ? (
+              <Button variant="primary" onClick={() => navigate('/repartos/nuevo')}>+ Nuevo viaje</Button>
+            ) : undefined}
+          </>
         }
       />
 
@@ -60,6 +66,185 @@ export default function Repartos() {
     </div>
   );
 }
+
+/* ============================== COMPARTIR UBICACIÓN (persistente) ============== */
+
+function GpsShareControl() {
+  const toast = useToast();
+  const gps = useSyncExternalStore(subscribeGps, getGpsState);
+  const [info, setInfo] = useState<{ restricted: boolean; within: boolean } | null>(null);
+
+  useEffect(() => {
+    getGpsShareStatus().then((r) => setInfo({ restricted: r.restricted, within: r.within })).catch(() => {});
+  }, []);
+
+  async function start() {
+    try {
+      await startSharing();
+      toast.success('Compartiendo ubicación hasta que cierres sesión');
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  }
+  async function stop() {
+    await stopUser();
+    toast.info('Compartido de ubicación detenido');
+  }
+  return <GpsShareButton gps={gps} info={info} onStart={start} onStop={stop} />;
+}
+
+function GpsShareButton({ gps, info, onStart, onStop }: {
+  gps: GpsShareState;
+  info: { restricted: boolean; within: boolean } | null;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  if (gps.state === 'active' || gps.state === 'paused' || gps.state === 'starting') {
+    const paused = gps.state === 'paused';
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-semibold ring-1 ${
+          paused ? 'bg-amber-50 text-amber-700 ring-amber-200' : 'bg-blue-50 text-blue-700 ring-blue-200'
+        }`}>
+          <span className="relative flex h-2.5 w-2.5">
+            <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${paused ? 'bg-amber-400' : 'bg-blue-400'} opacity-75`} />
+            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${paused ? 'bg-amber-500' : 'bg-blue-600'}`} />
+          </span>
+          {paused ? 'GPS en pausa (fuera de horario)' : 'GPS activo'}
+        </span>
+        <Button variant="secondary" size="sm" onClick={onStop}>Detener</Button>
+      </div>
+    );
+  }
+  if (gps.state === 'error') {
+    return <span className="text-sm text-red-600" title={gps.message ?? undefined}>⚠️ GPS: {gps.message}</span>;
+  }
+  const fuera = info?.restricted && !info.within;
+  return (
+    <Button variant="primary" onClick={onStart} title="Comparte tu ubicación hasta que cierres sesión">
+      📍 Compartir mi ubicación
+      {fuera && <span className="ml-2 text-xs font-normal text-brand-100">(fuera de horario: queda en pausa)</span>}
+    </Button>
+  );
+}
+
+/* ============================== HORARIO LABORAL GPS (admin) ============== */
+
+const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+function ScheduleEditor() {
+  const toast = useToast();
+  const [sched, setSched] = useState<GpsSchedule | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await withOldServer404(safeGetSchedule);
+        setSched(r ?? { enabled: false, days: [1, 2, 3, 4, 5], start: '08:00', end: '18:00' });
+      } catch {
+        setSched({ enabled: false, days: [1, 2, 3, 4, 5], start: '08:00', end: '18:00' });
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save() {
+    if (!sched) return;
+    setSaving(true);
+    try {
+      const r = await saveGpsSchedule(sched);
+      setSched(r.schedule ?? sched);
+      setOpen(false);
+      toast.success('Horario GPS guardado');
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <Spinner />;
+  if (!sched) return null;
+
+  const diasTxt = sched.days.length ? sched.days.map((d) => DIAS[d]).join(' ') : 'sin días';
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-semibold text-brand-800">🛎️ Horario de compartido GPS</div>
+          <p className="text-xs text-slate-500">
+            {sched.enabled ? `Se comparte ${diasTxt} de ${sched.start} a ${sched.end}` : 'Sin restricción: siempre activo'}
+          </p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>Configurar</Button>
+      </div>
+      {open && (
+        <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox" id="gps-authored" checked={sched.enabled}
+              onChange={(e) => setSched({ ...sched, enabled: e.target.checked })}
+            />
+            <label htmlFor="gps-authored" className="text-sm font-medium">Limitar al horario laboral</label>
+          </div>
+          <div>
+            <div className="mb-1 text-xs font-semibold uppercase text-slate-500">Días</div>
+            <div className="flex gap-1.5">
+              {DIAS.map((d, i) => {
+                const on = sched.days.includes(i);
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setSched({ ...sched, days: on ? sched.days.filter((x) => x !== i) : [...sched.days, i].sort((a, b) => a - b) })}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold ring-1 transition-colors ${
+                      on ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Desde">
+              <Input type="time" value={sched.start} onChange={(e) => setSched({ ...sched, start: e.target.value })} />
+            </Field>
+            <Field label="Hasta" hint="Puede pasar de medianoche">
+              <Input type="time" value={sched.end} onChange={(e) => setSched({ ...sched, end: e.target.value })} />
+            </Field>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>Cancelar</Button>
+            <Button variant="primary" size="sm" loading={saving} onClick={save}>Guardar</Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+async function safeGetSchedule(): Promise<GpsSchedule | null> {
+  const r = await getGpsSchedule();
+  return r.schedule ?? null;
+}
+
+async function withOldServer404(fn: () => Promise<GpsSchedule | null>): Promise<GpsSchedule | null> {
+  try {
+    return await fn();
+  } catch (e) {
+    if ((e as { status?: number }).status === 404) return null; // server sin 025
+    throw e;
+  }
+}
+
 
 /* ============================== LISTA DE VIAJES ============================== */
 
@@ -173,14 +358,16 @@ function LiveMapTab() {
   const navigate = useNavigate();
   const { user, can } = useAuth();
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [drivers, setDrivers] = useState<DriverLive[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const r = await api<{ trips: Trip[] }>('/tracking/live');
+      const r = await api<{ trips: Trip[]; drivers?: DriverLive[] }>('/tracking/live');
       setTrips(r.trips);
+      setDrivers(r.drivers ?? []);
     } catch (e) {
       if (!silent) toast.error((e as Error).message);
     } finally {
@@ -218,14 +405,46 @@ function LiveMapTab() {
     });
   }
 
+  // Choferes con compartido activo sin viaje EN_RUTA asignado: salen como
+  // punto individual (con viaje activo su marca ya está como vehicle).
+  const mapped = new Set(trips.map((t) => t.driver_user_id).filter(Boolean)) as Set<number>;
+  for (const d of drivers.filter((x) => !mapped.has(x.user_id))) {
+    markers.push({
+      id: `driver-${d.user_id}`,
+      lat: d.lat,
+      lng: d.lng,
+      tone: 'driver',
+      accuracyM: d.accuracy,
+      tooltip: `${d.full_name} (GPS)`,
+      popup:
+        `<b>🚗 ${d.full_name}</b><br/>Comparte GPS desde ${fmtDateTimeShort(d.share_started_at)}` +
+        `<br/>Actualizado hace ${ago(d.recorded_at)}` +
+        (d.accuracy ? `<br/><i>Precisión ±${Math.round(d.accuracy)}m</i>` : ''),
+    });
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
       {/* Panel de viajes activos */}
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <StatCard label="En ruta" value={inRoute.length} icon="🚐" tone="default" />
-          <StatCard label="En preparación" value={preparing.length} icon="📦" />
+          <StatCard label="Choferes con GPS" value={drivers.filter((d) => !mapped.has(d.user_id)).length} icon="🚗" />
         </div>
+
+        {can('settings.write') && <ScheduleEditor />}
+
+        {drivers.filter((d) => !mapped.has(d.user_id)).length > 0 && (
+          <Card className="p-3">
+            <div className="mb-1 text-xs font-semibold uppercase text-slate-500">🚗 Compartiendo ahora</div>
+            {drivers.filter((d) => !mapped.has(d.user_id)).map((d) => (
+              <div key={d.user_id} className="flex items-center justify-between py-0.5 text-sm">
+                <span>{d.full_name}</span>
+                <span className="text-xs text-slate-400">hace {ago(d.recorded_at)}</span>
+              </div>
+            ))}
+          </Card>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-10"><Spinner size="lg" /></div>

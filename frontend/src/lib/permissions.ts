@@ -1,7 +1,7 @@
 // Copia espejo de la matriz de permisos del backend (backend/src/lib/permissions.ts).
 // La validación REAL siempre ocurre en el servidor; esto solo guía la interfaz.
 
-export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO';
+export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO' | 'TRANSPORTE';
 
 export type Permission =
   | 'products.read' | 'products.write' | 'categories.write' | 'products.import'
@@ -51,6 +51,8 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
   ],
   ENCARGADO,
   EMPLEADO,
+  // Espejo exacto del backend: chofer de transporte solo consulta/opera GPS.
+  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps'],
 };
 
 export function hasPermission(role: Role | undefined | null, permission: Permission): boolean {
@@ -62,4 +64,5 @@ export const ROLE_LABEL: Record<Role, string> = {
   ADMIN: 'Administrador',
   ENCARGADO: 'Encargado',
   EMPLEADO: 'Empleado',
+  TRANSPORTE: 'Transporte',
 };

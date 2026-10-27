@@ -17,9 +17,11 @@ export interface MapMarker {
   popup: string;
   tooltip?: string;
   /** Tono del marcador */
-  tone?: 'vehicle' | 'stop' | 'pending' | 'branch';
+  tone?: 'vehicle' | 'stop' | 'pending' | 'branch' | 'driver';
   /** Es la posición del vehículo que se sigue (centrar el mapa acá) */
   focus?: boolean;
+  /** Radio real del fix GPS en metros (dibuja el círculo de incertidumbre) */
+  accuracyM?: number | null;
 }
 
 export interface MapPathPoint {
@@ -29,6 +31,7 @@ export interface MapPathPoint {
 
 const TONE_STYLE: Record<NonNullable<MapMarker['tone']>, { color: string; icon: string; radius: number }> = {
   vehicle: { color: '#2563eb', icon: '🚐', radius: 8 },
+  driver: { color: '#7c3aed', icon: '🚗', radius: 8 },
   stop: { color: '#16a34a', icon: '', radius: 6 },
   pending: { color: '#f59e0b', icon: '', radius: 6 },
   branch: { color: '#475569', icon: '', radius: 5 },
@@ -99,6 +102,17 @@ export default function MapView({ markers, path, followKey, height = 'h-[420px]'
       if (m.popup) mk.bindPopup(`<div style="font-size:13px">${m.popup}</div>`);
       if (m.tooltip) mk.bindTooltip(m.tooltip, { direction: 'top', offset: [0, -14] });
       mk.addTo(layer);
+      // Círculo de incertidumbre del fix GPS (metros): la info visual del error
+      if (m.accuracyM && m.accuracyM > 0) {
+        L.circle([m.lat, m.lng], {
+          radius: m.accuracyM,
+          color: st.color,
+          fillColor: st.color,
+          fillOpacity: 0.08,
+          weight: 1,
+          dashArray: '4 4',
+        }).addTo(layer);
+      }
       coords.push([m.lat, m.lng]);
       if (m.focus) focusAt = [m.lat, m.lng];
     }

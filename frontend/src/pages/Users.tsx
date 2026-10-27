@@ -238,7 +238,7 @@ export default function Users() {
   const columns: Column<UserRow>[] = [
     { key: 'username', label: 'Usuario', sortable: true, render: (u) => <span className="font-mono font-semibold text-slate-700">{u.username}</span> },
     { key: 'full_name', label: 'Nombre', sortable: true },
-    { key: 'role_code', label: 'Rol', render: (u) => <Badge color={u.role_code === 'ADMIN' ? 'violet' : u.role_code === 'ENCARGADO' ? 'blue' : 'gray'}>{ROLE_LABEL[u.role_code]}</Badge> },
+    { key: 'role_code', label: 'Rol', render: (u) => <Badge color={u.role_code === 'ADMIN' ? 'violet' : u.role_code === 'ENCARGADO' ? 'blue' : u.role_code === 'TRANSPORTE' ? 'amber' : 'gray'}>{ROLE_LABEL[u.role_code]}</Badge> },
     { key: 'location_name', label: 'Ubicación habitual', render: (u) => u.location_name ?? '—' },
     {
       key: 'restrict_to_location', label: 'Alcance',
@@ -302,6 +302,7 @@ export default function Users() {
             <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
               <option value="EMPLEADO">Empleado — entregas y consultas</option>
               <option value="ENCARGADO">Encargado — stock, movimientos e inventarios</option>
+              <option value="TRANSPORTE">Transporte — repartos y GPS</option>
               <option value="ADMIN">Administrador — acceso total</option>
             </Select>
           </Field>

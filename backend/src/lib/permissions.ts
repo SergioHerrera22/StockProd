@@ -1,7 +1,7 @@
 // Matriz de permisos por rol. El frontend usa una copia identica para la UX,
 // pero SIEMPRE se valida en el backend.
 
-export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO';
+export type Role = 'ADMIN' | 'ENCARGADO' | 'EMPLEADO' | 'TRANSPORTE';
 
 export type Permission =
   | 'products.read'
@@ -81,6 +81,9 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
   ],
   ENCARGADO,
   EMPLEADO,
+  // Chofer de transporte: ve sus viajes y opera el GPS (compartir ubicación,
+  // salió, parada entregada). NO arma Ni edita viajes (tracking.write).
+  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps'],
 };
 
 export function hasPermission(role: Role, permission: Permission): boolean {

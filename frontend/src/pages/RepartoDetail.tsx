@@ -6,7 +6,7 @@
  *  - Botón "Compartir ubicación": watchPosition del navegador para el chofer;
  *    reporta un punto a los ~12s si hubo movimiento, y se apaga solo.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState, useRef, useSyncExternalStore } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { Trip, TripStop, AvailableDocs, StopDocType } from '../types';
 import { tripStatusStyle } from '../types';
@@ -19,20 +19,9 @@ import { useAuth } from '../store/auth';
 import { Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select, Spinner, useConfirm, Textarea } from '../components/ui';
 import { useToast } from '../components/Toast';
 import MapView, { type MapMarker, type MapPathPoint } from '../components/MapView';
+import { getGpsState, subscribe as subscribeGps, startSharing, stopUser } from '../lib/gpsShare';
 
 const REFRESH_MS = 15000;
-const GPS_MIN_INTERVAL_MS = 12000;
-const GPS_MIN_DISTANCE_M = 15;
-
-function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
-}
 
 export default function RepartoDetail() {
   const { id } = useParams();
@@ -171,7 +160,7 @@ export default function RepartoDetail() {
             Completar viaje
           </Button>
         )}
-        {enRuta && <GpsSharer tripId={trip.id} />}
+        {enRuta && <GpsSharer />}
         {preparando && can('tracking.write') && (
           <Button variant="secondary" onClick={() => { setEditForm({ driverName: trip.driver_name, driverPhone: trip.driver_phone ?? '', vehicle: trip.vehicle ?? '', notes: trip.notes ?? '' }); setEditOpen(true); }}>
             Editar datos
@@ -310,81 +299,54 @@ function TripMap({ trip, track }: { trip: Trip; track: MapPathPoint[] }) {
 
 /* ============================== GPS del chofer ============================== */
 
-function GpsSharer({ tripId }: { tripId: number }) {
+/** El compartido ahora es CONTINUO A NIVEL USUARIO (lib/gpsShare): aceptás
+ *  una vez y la posición sigue hasta cerrar sesión, aunque cambies de página.
+ *  Si tenés un viaje EN_RUTA asignado, el servidor espeja tus puntos al
+ *  viaje automáticamente; no hace falta targetear tripId desde el cliente. */
+function GpsSharer() {
   const toast = useToast();
-  const [sharing, setSharing] = useState(false);
-  const [lastSent, setLastSent] = useState<Date | null>(null);
-  const [error, setError] = useState('');
-  const watchIdRef = useRef<number | null>(null);
-  const lastRef = useRef<{ pos: { lat: number; lng: number }; at: number } | null>(null);
+  const gps = useSyncExternalStore(subscribeGps, getGpsState);
 
-  function stop() {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
+  async function start() {
+    try {
+      await startSharing();
+      toast.success('Compartiendo ubicación hasta que cierres sesión');
+    } catch (e) {
+      toast.error((e as Error).message);
     }
-    setSharing(false);
-    lastRef.current = null;
   }
-
-  useEffect(() => () => stop(), []);
-
-  function start() {
-    if (!('geolocation' in navigator)) {
-      toast.error('Tu navegador no soporta geolocalización');
-      return;
-    }
-    setError('');
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (p) => {
-        const cur = { lat: p.coords.latitude, lng: p.coords.longitude };
-        const last = lastRef.current;
-        const movedEnough = !last || haversineMeters(last.pos, cur) >= GPS_MIN_DISTANCE_M;
-        const waitedEnough = !last || Date.now() - last.at >= GPS_MIN_INTERVAL_MS;
-        if (movedEnough && waitedEnough) {
-          lastRef.current = { pos: cur, at: Date.now() };
-          postTripPosition(tripId, {
-            lat: cur.lat,
-            lng: cur.lng,
-            accuracy: p.coords.accuracy ?? null,
-            speed: p.coords.speed ?? null,
-            heading: p.coords.heading ?? null,
-          }).then((r) => { if (!r.skipped) setLastSent(new Date()); }).catch((e) => {
-            // Silenciar 409 de "en curso" por doble envío: solo log de otros errores
-            if (!(e as { status?: number }).status) console.warn('GPS:', e);
-          });
-        }
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          setError('Permiso de ubicación negado: activalo en el navegador para compartir.');
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          setError('Ubicación no disponible: revisá el GPS del dispositivo.');
-        }
-      },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 }
-    );
-    setSharing(true);
-    toast.success('Compartiendo ubicación con la central');
+  async function stop() {
+    await stopUser();
+    toast.info('Compartido de ubicación detenido');
   }
+  const sharing = gps.state === 'active' || gps.state === 'paused' || gps.state === 'starting';
+  const paused = gps.state === 'paused';
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {sharing ? (
         <>
-          <span className="flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 ring-1 ring-blue-200">
+          <span className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-semibold ring-1 ${
+            paused ? 'bg-amber-50 text-amber-700 ring-amber-200' : 'bg-blue-50 text-blue-700 ring-blue-200'
+          }`}>
             <span className="relative flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-600" />
+              <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${paused ? 'bg-amber-400' : 'bg-blue-400'} opacity-75`} />
+              <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${paused ? 'bg-amber-500' : 'bg-blue-600'}`} />
             </span>
-            GPS activo{lastSent ? ` · enviado ${fmtDateTimeShort(lastSent)}` : ''}
+            {paused
+              ? 'GPS en pausa (fuera de horario laboral)'
+              : `GPS activo${gps.lastSentAt ? ` · enviado ${fmtDateTimeShort(new Date(gps.lastSentAt))}` : ''}${
+                  gps.lastAccuracy ? ` · ±${Math.round(gps.lastAccuracy)}m` : ''}`}
           </span>
           <Button variant="secondary" size="sm" onClick={stop}>Detener</Button>
         </>
       ) : (
-        <Button variant="primary" onClick={start}>📍 Compartir mi ubicación</Button>
+        <Button variant="primary" onClick={start} title="La ubicación sigue compartiéndose hasta que cierres sesión">
+          📍 Compartir mi ubicación
+        </Button>
       )}
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      {gps.state === 'error' && <span className="text-xs text-red-600">{gps.message}</span>}
+      {!sharing && gps.state === 'off' && gps.message && <span className="text-xs text-amber-600">{gps.message}</span>}
     </div>
   );
 }

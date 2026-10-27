@@ -482,8 +482,70 @@ export async function postTripPosition(id: number, pos: {
 }
 
 /** Viajes EN_RUTA con última posición y paradas: feed del mapa en vivo */
-export async function getLiveTracking(): Promise<{ trips: Trip[] }> {
+export async function getLiveTracking(): Promise<LiveTracking> {
   return api('/tracking/live');
+}
+
+export interface DriverLive {
+  user_id: number;
+  full_name: string;
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  recorded_at: string;
+  share_started_at: string;
+}
+
+export interface LiveTracking {
+  trips: Trip[];
+  /** Choferes con compartido GPS activo (posición continua por usuario) */
+  drivers?: DriverLive[];
+}
+
+export interface GpsShareInfo {
+  active: boolean;
+  started_at: string | null;
+  restricted: boolean;
+  within: boolean;
+  schedule: unknown;
+}
+
+export interface GpsSchedule {
+  enabled: boolean;
+  /** 0=domingo .. 6=sábado */
+  days: number[];
+  start: string;
+  end: string;
+}
+
+/* ===== Compartido GPS continuo por usuario (hasta cerrar sesión) ===== */
+
+export async function getGpsShareStatus(): Promise<GpsShareInfo> {
+  return api('/tracking/share');
+}
+
+export async function startGpsShare(): Promise<GpsShareInfo> {
+  return api('/tracking/share/start', { method: 'POST' });
+}
+
+export async function stopGpsShare(): Promise<void> {
+  await api('/tracking/share/stop', { method: 'POST' });
+}
+
+/** Posición del usuario compartiendo (se espeja a su viaje EN_RUTA solo) */
+export async function postSharedPosition(pos: {
+  lat: number; lng: number; accuracy?: number | null; speed?: number | null; heading?: number | null;
+}): Promise<{ skipped: boolean; reason?: string }> {
+  return api('/tracking/positions', { method: 'POST', body: pos });
+}
+
+/** Horario laboral en el que se comparte la ubicación (config del admin) */
+export async function getGpsSchedule(): Promise<{ schedule: GpsSchedule | null; restricted: boolean; within: boolean }> {
+  return api('/tracking/schedule');
+}
+
+export async function saveGpsSchedule(schedule: GpsSchedule): Promise<{ schedule: GpsSchedule | null; restricted: boolean; within: boolean }> {
+  return api('/tracking/schedule', { method: 'PUT', body: schedule });
 }
 
 /** Documentos elegibles para paradas de un viaje desde `originLocationId` */

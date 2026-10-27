@@ -26,6 +26,12 @@ import {
   cancelTrip,
   addPosition,
   getLive,
+  startShare,
+  stopShare,
+  getShareStatus,
+  addSharedPosition,
+  getSchedule,
+  saveSchedule,
   type StopDocType,
 } from './tracking.service';
 
@@ -196,7 +202,71 @@ router.post(
   }))
 );
 
-/* ============================ GPS ============================ */
+/* ============================ COMPARTIR UBICACIÓN CONTINUA ============================ */
+const scheduleSchema = z
+  .object({
+    enabled: z.boolean(),
+    /** Dias 0=domingo..6=sabado */
+    days: z.array(z.number().int().min(0).max(6)).max(7),
+    start: z.string().regex(/^\d{2}:\d{2}$/, 'HH:MM'),
+    end: z.string().regex(/^\d{2}:\d{2}$/, 'HH:MM'),
+  })
+  .strict();
+
+router.get(
+  '/schedule',
+  asyncH(async (req, res) => {
+    res.json(await getSchedule());
+  })
+);
+
+router.put(
+  '/schedule',
+  requirePerm('settings.write'),
+  asyncH(async (req, res) => {
+    const input = scheduleSchema.parse(req.body);
+    await saveSchedule(req.user!.id, req.ip, input);
+    res.json(await getSchedule());
+  })
+);
+
+/** Estado de MI compartido (píldora del chofer). */
+router.get(
+  '/share',
+  asyncH(async (req, res) => {
+    res.json(await getShareStatus(req.user!));
+  })
+);
+
+router.post(
+  '/share/start',
+  requirePerm('tracking.gps'),
+  asyncH(async (req, res) => {
+    res.json(await startShare(req.user!, req.ip));
+  })
+);
+
+router.post(
+  '/share/stop',
+  requirePerm('tracking.gps'),
+  asyncH(async (req, res) => {
+    await stopShare(req.user!, req.ip, 'user');
+    res.json({ ok: true });
+  })
+);
+
+/** Posición del usuario compartiendo (requiere tracking.gps). La posición
+ *  se espeja automaticamente a su viaje EN_RUTA si tiene uno. */
+router.post(
+  '/positions',
+  requirePerm('tracking.gps'),
+  asyncH(async (req, res) => {
+    const pos = positionSchema.parse(req.body);
+    res.json(await addSharedPosition(req.user!, pos));
+  })
+);
+
+/* ============================ GPS POR VIAJE (legacy) ============================ */
 
 router.post(
   '/trips/:id/positions',

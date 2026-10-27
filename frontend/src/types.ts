@@ -506,6 +506,8 @@ export interface Trip {
   cancel_reason?: string | null;
   created_by_name?: string | null;
   created_at: string;
+  /** Usuario chofer asignado (posiciones espejadas en el viaje) */
+  driver_user_id?: number | null;
   stop_count?: number;
   delivered_count?: number;
   last_position?: TripPosition | null;

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, setToken, setUnauthorizedHandler } from '../lib/api';
 import { hasPermission, type Role, type Permission } from '../lib/permissions';
+import { stopForLogout, clearSharePersistence } from '../lib/gpsShare';
 
 export interface AuthUser {
   id: number;
@@ -25,6 +26,7 @@ export const useAuth = create<AuthState>((set, get) => {
   const initialUser: AuthUser | null = savedUser ? JSON.parse(savedUser) : null;
 
   setUnauthorizedHandler(() => {
+    stopForLogout(); // se corta el compartido GPS sin llamar al server (sin token)
     set({ user: null });
     localStorage.removeItem('robles_user');
     window.location.hash = '';
@@ -45,6 +47,7 @@ export const useAuth = create<AuthState>((set, get) => {
         });
         setToken(res.token);
         localStorage.setItem('robles_user', JSON.stringify(res.user));
+        clearSharePersistence();
         set({ user: res.user, loading: false });
       } catch (err) {
         set({ loading: false, error: (err as Error).message });
@@ -53,6 +56,10 @@ export const useAuth = create<AuthState>((set, get) => {
     },
 
     logout: () => {
+      // El compartido GPS dura hasta cerrar la sesión: cortarlo acá en frío
+      // (sin esperar la request; el flag de localStorage se borra igual).
+      stopForLogout();
+      void api('/tracking/share/stop', { method: 'POST' }).catch(() => {});
       setToken(null);
       localStorage.removeItem('robles_user');
       set({ user: null });

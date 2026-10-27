@@ -5,6 +5,8 @@ import { ROLE_LABEL, type Permission } from '../lib/permissions';
 import { api } from '../lib/api';
 import { Modal, Button, Field, Input } from './ui';
 import { useToast } from './Toast';
+import { useSyncExternalStore } from 'react';
+import { getGpsState, subscribe as subscribeGps, maybeResume, pollSchedule } from '../lib/gpsShare';
 
 interface NavItem {
   to: string;
@@ -44,6 +46,23 @@ export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const toast = useToast();
+
+  // ===== Chip de GPS compartido persistente =====
+  // Se reanuda después de recargar la página (flag en localStorage) hasta
+  // que el usuario cierre sesión. useSyncExternalStore para reflejar el
+  // estado del singleton (que vive fuera de React).
+  const gps = useSyncExternalStore(subscribeGps, getGpsState);
+  useEffect(() => {
+    if (!user) return;
+    void maybeResume(can('tracking.gps'));
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (gps.state === 'off' || gps.state === 'error') return;
+    const t = window.setInterval(() => void pollSchedule(), 60000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gps.state]);
 
   useEffect(() => { setOpen(false); }, [location.pathname]);
 
@@ -94,6 +113,8 @@ export function Layout() {
   }, []);
 
   const items = NAV.filter((n) => can(n.perm));
+
+  const gpsVisible = gps.state === 'active' || gps.state === 'paused' || gps.state === 'starting';
 
   async function changePassword(current: string, next: string) {
     try {
@@ -155,6 +176,17 @@ export function Layout() {
         <div className="border-t border-brand-800 px-4 py-3 text-xs text-brand-300">
           <div className="font-semibold text-brand-100">{user?.fullName}</div>
           <div>{user ? ROLE_LABEL[user.role] : ''}</div>
+          {gpsVisible && (
+            <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-brand-800 px-2 py-1.5">
+              <span className="relative flex h-2 w-2">
+                <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${gps.state === 'paused' ? 'animate-pulse bg-amber-400' : 'animate-ping bg-emerald-400'}`} />
+                <span className={`relative inline-flex h-2 w-2 rounded-full ${gps.state === 'paused' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+              </span>
+              <span className="flex-1 leading-tight text-brand-100">
+                {gps.state === 'paused' ? 'GPS pausado (horario)' : 'GPS compartido'}
+              </span>
+            </div>
+          )}
           <div className="mt-2 flex gap-2">
             <button className="rounded px-2 py-1 hover:bg-brand-800 hover:text-white" onClick={() => setPwOpen(true)}>
               Cambiar clave
