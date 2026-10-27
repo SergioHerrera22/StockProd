@@ -47,6 +47,9 @@ function writeServerPackage() {
   // ignora explicitamente en lugar de fallar el build.
   pkg.pnpm = { ignoredBuiltDependencies: ['esbuild'] };
   pkg.scripts.build = 'node -e "console.log(\'OK: el paquete ya viene compilado en dist/ (no compilar en servidor)\')"';
+  pkg.scripts.start = 'node dist/index.js';
+  // Entry point para builders que leen "main" del package.json
+  pkg.main = 'dist/index.js';
   fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
 
   // package-lock: quitar tambien el paquete "link" generado por el file: dep
