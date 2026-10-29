@@ -552,3 +552,14 @@ export async function saveGpsSchedule(schedule: GpsSchedule): Promise<{ schedule
 export async function getAvailableDocs(originLocationId: number): Promise<AvailableDocs> {
   return api(`/tracking/available${qs({ originLocationId })}`);
 }
+
+
+/* ============================ CHOFERES / REPARTO DIRECTO ============================ */
+export async function getDrivers(){const r=await api<{drivers:any[]}>('/drivers/drivers');return r.drivers;} 
+export async function getMyDriverAssignments(){const r=await api<{assignments:any[]}>('/drivers/my-assignments');return r.assignments;} 
+export async function getMyDriverHistory(){const r=await api<{history:any[]}>('/drivers/my-history');return r.history;} 
+export async function assignDriverTo(type:string,id:number,driverUserId:number){return api('/drivers/assign',{method:'POST',body:{type,id,driverUserId}});} 
+export async function startDriverDelivery(type:string,id:number){return api('/drivers/start',{method:'POST',body:{type,id}});} 
+export async function completeDriverDelivery(type:string,id:number,notes?:string){return api('/drivers/complete',{method:'POST',body:{type,id,notes}});} 
+export async function getDeliveryDelays(){return api('/drivers/delays');} 
+export async function geocodeAddressApi(address:string){return api('/drivers/geocode',{method:'POST',body:{address}});}

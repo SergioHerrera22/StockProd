@@ -10,6 +10,7 @@ import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
 import { notifyStockArrivalForEntryId } from '../../services/arrivalAlerts.service';
+import { getConfirmationSetting } from '../../services/confirmationSettings.service';
 
 export interface EntryDraftInput {
   locationId: number;
@@ -109,8 +110,13 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
   // la confirmacion sucede dentro del propio alta (?confirm=true): exigirla
   // ahi bloqueaba el flujo para siempre (el creador no puede confirmar su
   // propia creacion). Para POST /:id/confirm sigue aplicando.
-  if (!opts?.skipSegregation && entry.created_by === user.id) {
-    throw ApiError.forbidden('No puedes confirmar una entrada que tú mismo creaste (segregación de funciones)');
+  if (!opts?.skipSegregation) {
+    const cfg = await getConfirmationSetting(c, 'ENTRY', 'CONFIRM');
+    if (cfg?.enabled && cfg.require_different_user && !cfg.allow_same_user) {
+      if (entry.created_by === user.id) {
+        throw ApiError.forbidden('No puedes confirmar una entrada que tú mismo creaste (segregación de funciones)');
+      }
+    }
   }
 
   // Evaluar reglas al confirmar
@@ -184,8 +190,11 @@ export async function approveEntry(user: AuthUser, ip: string | undefined, id: n
     );
     if (!e.rows[0]) throw ApiError.notFound('Entrada no encontrada');
     if (e.rows[0].status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar entradas en borrador');
-    if (e.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar tu propia entrada (segregación de funciones)');
     assertLocationAccess(user, e.rows[0].location_id);
+    const cfg = await getConfirmationSetting(c, 'ENTRY', 'APPROVE');
+    if (cfg?.enabled && cfg.require_different_user && !cfg.allow_same_user) {
+      if (e.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar tu propia entrada (segregación de funciones)');
+    }
     await confirmEntryTx(c, id, user);
     return { ok: true };
   });

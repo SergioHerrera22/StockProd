@@ -83,7 +83,7 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
   EMPLEADO,
   // Chofer de transporte: ve sus viajes y opera el GPS (compartir ubicación,
   // salió, parada entregada). NO arma Ni edita viajes (tracking.write).
-  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps'],
+  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps', 'deliveries.read', 'stock.read'],
 };
 
 export function hasPermission(role: Role, permission: Permission): boolean {

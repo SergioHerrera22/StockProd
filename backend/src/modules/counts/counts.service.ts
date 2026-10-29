@@ -10,6 +10,7 @@ import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
 import { createSnapshotInTx } from '../../services/snapshot.service';
+import { getConfirmationSetting } from '../../services/confirmationSettings.service';
 
 /**
  * Crea un recuento por ubicacion. Toma una fotografia del stock del sistema
@@ -110,9 +111,12 @@ async function applyCountTx(c: PoolClient, user: AuthUser, ip: string | undefine
   if (count.status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
   if (!reason || reason.trim().length < 5) throw ApiError.badRequest('El motivo del ajuste es obligatorio');
 
-  // Segregación: quien aplica NO debe ser quien creó
-  if (count.created_by === user.id) {
-    throw ApiError.forbidden('No puedes aplicar un inventario que tú mismo creaste (segregación de funciones)');
+  // Segregación: quien aplica NO debe ser quien creó (configurable)
+  const cfgApply = await getConfirmationSetting(c, 'COUNT', 'APPLY');
+  if (cfgApply?.enabled && cfgApply.require_different_user && !cfgApply.allow_same_user) {
+    if (count.created_by === user.id) {
+      throw ApiError.forbidden('No puedes aplicar un inventario que tú mismo creaste (segregación de funciones)');
+    }
   }
 
   const items = await c.query<{ id: number; product_id: number; counted_quantity: string | null; system_quantity: string }>(
@@ -257,8 +261,11 @@ export async function approveCount(user: AuthUser, ip: string | undefined, id: n
     );
     if (!head.rows[0]) throw ApiError.notFound('Inventario no encontrado');
     if (head.rows[0].status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue procesado');
-    if (head.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar un inventario que tú mismo creaste (segregación de funciones)');
     assertLocationAccess(user, head.rows[0].location_id);
+    const cfgApp = await getConfirmationSetting(c, 'COUNT', 'APPROVE');
+    if (cfgApp?.enabled && cfgApp.require_different_user && !cfgApp.allow_same_user) {
+      if (head.rows[0].created_by === user.id) throw ApiError.forbidden('No puedes aprobar un inventario que tú mismo creaste (segregación de funciones)');
+    }
     // Comparte la MISMA transaccion: la fila del conteo ya esta bloqueada aqui.
     const result = await applyCountTx(c, user, ip, id, reason);
     await writeAudit(c, { userId: user.id, action: 'COUNT_APPROVE', entity: 'count', entityId: id, details: { reason }, ip });

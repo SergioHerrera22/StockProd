@@ -5,7 +5,7 @@ import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
-import { createProduct, checkDuplicates, generateBarcode, updateProduct, importProducts, ProductInput } from './products.service';
+import { createProduct, checkDuplicates, generateBarcode, updateProduct, importProducts, ProductInput, scanDuplicates, bulkDeleteProducts } from './products.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('products.read'));
@@ -90,9 +90,42 @@ router.get(
 );
 
 /**
- * Genera un codigo de barras EAN-13 unico (nunca usado por otro producto ni orden).
- * GET /api/products/barcode/new → { barcode: "7798001234567" }
+ * Escanea duplicados por nombre normalizado (solo activos). Debe ir antes de /:id.
+
+/**
+ * Escanea duplicados por nombre normalizado (solo activos). Debe ir antes de /:id.
+ * GET /api/products/duplicates/scan
  */
+router.get(
+  '/duplicates/scan',
+  requirePerm('products.read'),
+  asyncH(async (_req, res) => {
+    const groups = await scanDuplicates();
+    res.json({ groups });
+  })
+);
+
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1),
+});
+
+/**
+ * Eliminación múltiple (soft delete). Solo ADMIN. Omite productos con stock > 0.
+ * POST /api/products/bulk-delete
+ */
+router.post(
+  '/bulk-delete',
+  requirePerm('products.write'),
+  asyncH(async (req, res) => {
+    if (req.user!.role !== 'ADMIN') {
+      throw ApiError.forbidden('Solo el administrador puede eliminar múltiples productos');
+    }
+    const { ids } = bulkDeleteSchema.parse(req.body);
+    const result = await bulkDeleteProducts(req.user!, req.ip, ids);
+    res.json(result);
+  })
+);
+
 router.get(
   '/barcode/new',
   requirePerm('products.write'),

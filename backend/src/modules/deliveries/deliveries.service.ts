@@ -16,6 +16,7 @@ import { createPendingDelivery, cancelPendingDelivery } from '../pending-deliver
 import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
+import { getConfirmationSetting } from '../../services/confirmationSettings.service';
 
 export interface DeliveryItemInput {
   productId: number;
@@ -28,6 +29,17 @@ export interface DeliveryDraftInput {
   invoiceNumber?: string | null;
   notes?: string | null;
   items: DeliveryItemInput[];
+  // Nuevos campos para reparto a domicilio
+  deliveryType?: 'LOCAL' | 'DOMICILIO';
+  customerName?: string | null;
+  customerPhone?: string | null;
+  deliveryAddress?: string | null;
+  deliveryLat?: number | null;
+  deliveryLng?: number | null;
+  driverUserId?: number | null;
+  driverId?: number | null; // alias
+  dueAt?: string | null;
+  deliveryObservations?: string | null;
 }
 
 export interface DeliveryConfirmResult {
@@ -196,13 +208,15 @@ async function loadDelivery(client: PoolClient, id: number) {
   const head = await client.query(
     `SELECT d.*, l.name AS location_name, l.code AS location_code,
             cu.full_name AS created_by_name, vu.full_name AS confirmed_by_name,
-            pu.full_name AS packed_by_name, vau.full_name AS void_approved_by_name
+            pu.full_name AS packed_by_name, vau.full_name AS void_approved_by_name,
+            du.full_name AS driver_name
      FROM deliveries d
      JOIN locations l ON l.id = d.location_id
      JOIN users cu ON cu.id = d.created_by
      LEFT JOIN users vu ON vu.id = d.confirmed_by
      LEFT JOIN users pu ON pu.id = d.packed_by
      LEFT JOIN users vau ON vau.id = d.void_approved_by
+     LEFT JOIN users du ON du.id = d.driver_user_id
      WHERE d.id = $1`,
     [id]
   );
@@ -238,10 +252,32 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
 
     const number = await nextDocNumber(c, 'delivery');
     const barcode = (await c.query('SELECT generate_ean13_barcode() AS barcode')).rows[0].barcode;
+    const driverUserId = input.driverUserId ?? input.driverId ?? null;
+    const deliveryType = input.deliveryType || (driverUserId || input.deliveryAddress ? 'DOMICILIO' : 'LOCAL');
     const r = await c.query<{ id: number }>(
-      `INSERT INTO deliveries (number, location_id, invoice_number, notes, barcode, created_by, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [number, input.locationId, input.invoiceNumber?.trim() || null, input.notes?.trim() || null, barcode, user.id, status]
+      `INSERT INTO deliveries (number, location_id, invoice_number, notes, barcode, created_by, status,
+                               delivery_type, customer_name, customer_phone, delivery_address, delivery_lat, delivery_lng,
+                               driver_user_id, driver_assigned_at, due_at, delivery_observations)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+      [
+        number,
+        input.locationId,
+        input.invoiceNumber?.trim() || null,
+        input.notes?.trim() || null,
+        barcode,
+        user.id,
+        status,
+        deliveryType,
+        input.customerName?.trim() || null,
+        input.customerPhone?.trim() || null,
+        input.deliveryAddress?.trim() || null,
+        input.deliveryLat ?? null,
+        input.deliveryLng ?? null,
+        driverUserId,
+        driverUserId ? new Date() : null,
+        input.dueAt ? new Date(input.dueAt) : null,
+        input.deliveryObservations?.trim() || null,
+      ]
     );
     const deliveryId = r.rows[0].id;
 
@@ -290,9 +326,36 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
     }
     await validateItems(c, input.items);
 
+    const driverUserId = input.driverUserId ?? input.driverId ?? null;
+    const deliveryType = input.deliveryType || (driverUserId || input.deliveryAddress ? 'DOMICILIO' : undefined);
     await c.query(
-      `UPDATE deliveries SET location_id = $1, invoice_number = $2, notes = $3 WHERE id = $4`,
-      [input.locationId, input.invoiceNumber?.trim() || null, input.notes?.trim() || null, id]
+      `UPDATE deliveries SET location_id = $1, invoice_number = $2, notes = $3,
+                              delivery_type = COALESCE($5, delivery_type),
+                              customer_name = COALESCE($6, customer_name),
+                              customer_phone = COALESCE($7, customer_phone),
+                              delivery_address = COALESCE($8, delivery_address),
+                              delivery_lat = COALESCE($9, delivery_lat),
+                              delivery_lng = COALESCE($10, delivery_lng),
+                              driver_user_id = COALESCE($11, driver_user_id),
+                              driver_assigned_at = CASE WHEN $11 IS NOT NULL AND driver_assigned_at IS NULL THEN now() ELSE driver_assigned_at END,
+                              due_at = COALESCE($12, due_at),
+                              delivery_observations = COALESCE($13, delivery_observations)
+       WHERE id = $4`,
+      [
+        input.locationId,
+        input.invoiceNumber?.trim() || null,
+        input.notes?.trim() || null,
+        id,
+        deliveryType || null,
+        input.customerName?.trim() || null,
+        input.customerPhone?.trim() || null,
+        input.deliveryAddress?.trim() || null,
+        input.deliveryLat ?? null,
+        input.deliveryLng ?? null,
+        driverUserId,
+        input.dueAt ? new Date(input.dueAt) : null,
+        input.deliveryObservations?.trim() || null,
+      ]
     );
     await c.query('DELETE FROM delivery_items WHERE delivery_id = $1', [id]);
     for (const it of input.items) {
@@ -565,9 +628,13 @@ export async function confirmDeliveryWithAlternatives(
     if (!delivery.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     const del = delivery.rows[0];
     if (del.status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden confirmar entregas en borrador');
-    // Regla de negocio: el propio vendedor puede confirmar el borrador que
-    // cargo (todos los vendedores que entreguen pueden aceptar la entrega).
     assertLocationAccess(user, del.location_id);
+    const cfgConfAlt = await getConfirmationSetting(c, 'DELIVERY', 'CONFIRM');
+    if (cfgConfAlt?.enabled && cfgConfAlt.require_different_user && !cfgConfAlt.allow_same_user) {
+      if (del.created_by === user.id) {
+        throw ApiError.forbidden('No podés confirmar una entrega que cargaste vos: la tiene que confirmar otra persona');
+      }
+    }
 
     const items = await c.query<{ product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string }>(
       `SELECT di.product_id, di.quantity, di.requested_quantity, p.name, p.code
@@ -938,10 +1005,13 @@ export async function approveDelivery(user: AuthUser, ip: string | undefined, id
     );
     if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     if (d.rows[0].status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar entregas en borrador');
-    // Regla de negocio decidida por operación: el MISMO usuario que creo la
-    // orden puede aceptarla/aprobarla (no hay segregación de funciones aquí;
-    // el permiso deliveries.approve sigue protegiendo quién puede llamar).
     assertLocationAccess(user, d.rows[0].location_id);
+    const cfgApprD = await getConfirmationSetting(c, 'DELIVERY', 'APPROVE');
+    if (cfgApprD?.enabled && cfgApprD.require_different_user && !cfgApprD.allow_same_user) {
+      if (d.rows[0].created_by === user.id) {
+        throw ApiError.forbidden('No podés aprobar una entrega que cargaste vos: la tiene que aprobar otra persona');
+      }
+    }
     return confirmDeliveryTx(c, id, user);
   });
 }
@@ -1236,11 +1306,15 @@ export async function listDeliveries(opts: {
   const rows = await query(
     `SELECT d.id, d.number, d.status, d.invoice_number, d.location_id, l.name AS location_name,
             d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
+            d.delivery_type, d.customer_name, d.delivery_address, d.driver_user_id, d.driver_assigned_at,
+            d.delivered_at, d.delivery_started_at, d.due_at,
+            du.full_name AS driver_name,
             (SELECT COALESCE(SUM(quantity),0) FROM delivery_items WHERE delivery_id = d.id) AS total_items,
             (SELECT COUNT(*) FROM delivery_items WHERE delivery_id = d.id) AS line_count
      FROM deliveries d
      JOIN locations l ON l.id = d.location_id
      JOIN users cu ON cu.id = d.created_by
+     LEFT JOIN users du ON du.id = d.driver_user_id
      ${whereSql}
      ORDER BY d.created_at DESC
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,

@@ -25,11 +25,16 @@ interface DataTableProps<T> {
   page?: number;
   onPageChange?: (page: number) => void;
   initialSort?: { key: string; dir: 'asc' | 'desc' };
+  selectable?: boolean;
+  selectedKeys?: Set<string | number>;
+  onSelect?: (keys: Set<string | number>) => void;
+  getRowKey?: (row: T) => string | number;
 }
 
 export function DataTable<T>({
   columns, rows, rowKey, onRowClick, loading, emptyTitle = 'Sin resultados',
   emptyHint, emptyAction, pageSize = 15, total, page, onPageChange, initialSort,
+  selectable = false, selectedKeys, onSelect,
 }: DataTableProps<T>) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(initialSort ?? null);
   const [clientPage, setClientPage] = useState(1);
@@ -57,11 +62,33 @@ export function DataTable<T>({
   const totalPages = Math.max(1, Math.ceil(totalCount / size));
   const pageRows = serverPaged ? sorted : sorted.slice((currentPage - 1) * size, currentPage * size);
 
+  const keys = useMemo(() => pageRows.map((r) => rowKey(r)), [pageRows, rowKey]);
+  const allSelected = selectable && selectedKeys ? keys.length > 0 && keys.every((k) => selectedKeys.has(k)) : false;
+  const someSelected = selectable && selectedKeys ? keys.some((k) => selectedKeys.has(k)) && !allSelected : false;
+
+  function toggleAll() {
+    if (!selectable || !onSelect || !selectedKeys) return;
+    const next = new Set(selectedKeys);
+    if (allSelected) {
+      for (const k of keys) next.delete(k);
+    } else {
+      for (const k of keys) next.add(k);
+    }
+    onSelect(next);
+  }
+
   function toggleSort(col: Column<T>) {
     if (!col.sortable) return;
     setSort((prev) =>
       prev?.key === col.key ? { key: col.key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key: col.key, dir: 'asc' }
     );
+  }
+
+  function toggleOne(key: string | number) {
+    if (!selectable || !onSelect || !selectedKeys) return;
+    const next = new Set(selectedKeys);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    onSelect(next);
   }
 
   return (
@@ -70,6 +97,17 @@ export function DataTable<T>({
         <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+              {selectable && (
+                <th className="px-3 py-2.5 w-10">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    onChange={toggleAll}
+                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                </th>
+              )}
               {columns.map((col) => (
                 <th
                   key={col.key}
@@ -83,19 +121,36 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {pageRows.map((row) => (
-              <tr
-                key={rowKey(row)}
-                onClick={() => onRowClick?.(row)}
-                className={`border-b border-slate-100 last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-brand-50/60' : 'hover:bg-slate-50'}`}
-              >
-                {columns.map((col) => (
+            {pageRows.map((row) => {
+              const k = rowKey(row);
+              const checked = selectable && selectedKeys ? selectedKeys.has(k) : false;
+              return (
+                <tr
+                  key={k}
+                  onClick={(e) => {
+                    if (selectable && (e.target as HTMLElement).tagName === 'INPUT') return;
+                    onRowClick?.(row);
+                  }}
+                  className={`border-b border-slate-100 last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-brand-50/60' : 'hover:bg-slate-50'} ${checked ? 'bg-brand-50/40' : ''}`}
+                >
+                  {selectable && (
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleOne(k)}
+                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                      />
+                    </td>
+                  )}
+                  {columns.map((col) => (
                   <td key={col.key} className={`px-3 py-2.5 ${col.className ?? ''} ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}>
                     {col.render ? col.render(row) : String((row as Record<string, unknown>)[col.key] ?? '—')}
                   </td>
                 ))}
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

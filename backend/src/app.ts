@@ -28,7 +28,9 @@ import locationPermissionRoutes from './modules/location-permissions/location-pe
 import businessRuleRoutes from './modules/business-rules/business-rules.routes';
 import reconciliationRoutes from './modules/reconciliation/reconciliation.routes';
 import snapshotRoutes from './modules/snapshots/snapshots.routes';
+import confirmationRoutes from './modules/settings/confirmation.routes';
 import trackingRoutes from './modules/tracking/tracking.routes';
+import driversRoutes from './modules/drivers/drivers.routes';
 import { pool } from './db/pool';
 
 export function createApp() {
@@ -87,7 +89,9 @@ export function createApp() {
   app.use('/api/business-rules', businessRuleRoutes);
   app.use('/api/reconciliation', reconciliationRoutes);
   app.use('/api/snapshots', snapshotRoutes);
+  app.use('/api/settings/confirmations', confirmationRoutes);
   app.use('/api/tracking', trackingRoutes);
+  app.use('/api/drivers', driversRoutes);
 
   // En produccion sirve el frontend compilado
   // Desarrollo: ../../frontend/dist | Hostinger (root): ./public

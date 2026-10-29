@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, qs, checkDeliveryAvailability, confirmDeliveryWithAlternatives } from '../lib/api';
+import { api, qs, checkDeliveryAvailability, confirmDeliveryWithAlternatives, getDrivers, geocodeAddressApi } from '../lib/api';
 import { fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Delivery, Location, StockRow, DeliveryAvailabilityItem, UserAlternativeChoice } from '../types';
@@ -48,6 +48,19 @@ export default function DeliveryNew() {
   const [checkingAvailability, setCheckingAvailability] = useState(false);
   const [draftDeliveryId, setDraftDeliveryId] = useState<number | null>(null);
 
+  // Home delivery / driver
+  const [deliveryType, setDeliveryType] = useState<'NORMAL' | 'DOMICILIO'>('NORMAL');
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [driverUserId, setDriverUserId] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryLat, setDeliveryLat] = useState<number | null>(null);
+  const [deliveryLng, setDeliveryLng] = useState<number | null>(null);
+  const [dueAt, setDueAt] = useState('');
+  const [deliveryObservations, setDeliveryObservations] = useState('');
+  const [geocoding, setGeocoding] = useState(false);
+
   // Ubicaciones disponibles
   useMemo(() => {
     api<{ locations: Location[] }>('/locations')
@@ -60,6 +73,10 @@ export default function DeliveryNew() {
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    getDrivers().then((d) => setDrivers(d || [])).catch(() => {});
   }, []);
 
   /** Busca un producto por código exacto (escaneo) y lo agrega o suma cantidad. */
@@ -139,6 +156,15 @@ export default function DeliveryNew() {
       quantity: l.quantity,
       requestedQuantity: l.requestedQuantity ?? null,
     })),
+    deliveryType,
+    customerName: customerName.trim() || null,
+    customerPhone: customerPhone.trim() || null,
+    deliveryAddress: deliveryAddress.trim() || null,
+    deliveryLat,
+    deliveryLng,
+    driverUserId: driverUserId ? Number(driverUserId) : null,
+    dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+    deliveryObservations: deliveryObservations.trim() || null,
   };
 
   function validate(): string | null {
@@ -166,9 +192,35 @@ export default function DeliveryNew() {
   }
 
   /** Paso 1: Verificar disponibilidad antes de confirmar */
+  async function geocode() {
+    if (!deliveryAddress.trim()) {
+      toast.warn('Ingresá una dirección');
+      return;
+    }
+    setGeocoding(true);
+    try {
+      const res: any = await geocodeAddressApi(deliveryAddress.trim());
+      if (res.lat && res.lng) {
+        setDeliveryLat(res.lat);
+        setDeliveryLng(res.lng);
+        toast.success('Dirección geolocalizada');
+      } else {
+        toast.warn('No se pudo geolocalizar la dirección');
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Error al geolocalizar');
+    } finally {
+      setGeocoding(false);
+    }
+  }
+
   async function checkAvailabilityAndProceed() {
     const err = validate();
     if (err) { toast.error(err); return; }
+    if (deliveryType === 'DOMICILIO' && !deliveryAddress.trim()) {
+      toast.error('Ingresá la dirección de entrega a domicilio');
+      return;
+    }
     
     // Primero guardar como borrador para tener ID
     setSaving(true);
@@ -265,6 +317,55 @@ export default function DeliveryNew() {
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Opcional" />
           </Field>
         </FormRow>
+      </Card>
+
+      <Card className="mb-4 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-700">Entrega / Reparto</h3>
+        </div>
+        <FormRow cols={3}>
+          <Field label="Tipo de entrega">
+            <Select value={deliveryType} onChange={(e) => setDeliveryType(e.target.value as any)}>
+              <option value="NORMAL">Normal</option>
+              <option value="DOMICILIO">Enviar a domicilio</option>
+            </Select>
+          </Field>
+          <Field label="Chofer asignado">
+            <Select value={driverUserId} onChange={(e) => setDriverUserId(e.target.value)}>
+              <option value="">Sin asignar</option>
+              {drivers.map((d: any) => (
+                <option key={d.id} value={d.id}>{d.full_name || d.username}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Vencimiento / Hora límite">
+            <Input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+          </Field>
+        </FormRow>
+        {(deliveryType === 'DOMICILIO' || driverUserId) && (
+          <div className="mt-3 space-y-3">
+            <FormRow cols={2}>
+              <Field label="Cliente">
+                <Input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Nombre y apellido" />
+              </Field>
+              <Field label="Teléfono">
+                <Input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="Contacto" />
+              </Field>
+            </FormRow>
+            <Field label="Dirección de entrega" required={deliveryType === 'DOMICILIO'}>
+              <div className="flex gap-2">
+                <Input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="Calle, número, localidad" className="flex-1" />
+                <Button type="button" variant="secondary" loading={geocoding} onClick={geocode}>Buscar en mapa</Button>
+              </div>
+              {deliveryLat && deliveryLng && (
+                <div className="mt-1 text-xs text-emerald-600">Geolocalizado: {deliveryLat.toFixed(6)}, {deliveryLng.toFixed(6)}</div>
+              )}
+            </Field>
+            <Field label="Observaciones para el repartidor">
+              <Textarea rows={2} value={deliveryObservations} onChange={(e) => setDeliveryObservations(e.target.value)} placeholder="Instrucciones, piso, portero..." />
+            </Field>
+          </div>
+        )}
       </Card>
 
       <Card className="mb-4 p-4">

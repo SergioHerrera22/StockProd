@@ -29,6 +29,9 @@ import Approvals from './pages/Approvals';
 import BusinessRules from './pages/BusinessRules';
 import LocationPermissions from './pages/LocationPermissions';
 import Reconciliation from './pages/Reconciliation';
+import SettingsConfirmations from './pages/SettingsConfirmations';
+import MiReparto from './pages/MiReparto';
+import DeliveryDelays from './pages/DeliveryDelays';
 
 function Protected({ children }: { children: ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -81,14 +84,17 @@ export default function App() {
               <Route path="repartos" element={<RequirePerm perm="tracking.read"><Repartos /></RequirePerm>} />
               <Route path="repartos/nuevo" element={<RequirePerm perm="tracking.write"><RepartoNew /></RequirePerm>} />
               <Route path="repartos/:id" element={<RequirePerm perm="tracking.read"><RepartoDetail /></RequirePerm>} />
+              <Route path="mi-reparto" element={<RequirePerm perm="tracking.gps"><MiReparto /></RequirePerm>} />
+              <Route path="entregas-atrasos" element={<RequirePerm perm="tracking.read"><DeliveryDelays /></RequirePerm>} />
               <Route path="aprobaciones" element={<RequirePerm perm="approvals.read"><Approvals /></RequirePerm>} />
               <Route path="reglas" element={<RequirePerm perm="audit.read"><BusinessRules /></RequirePerm>} />
               <Route path="permisos-ubicacion" element={<RequirePerm perm="users.manage"><LocationPermissions /></RequirePerm>} />
               <Route path="reconciliacion" element={<RequirePerm perm="audit.read"><Reconciliation /></RequirePerm>} />
+              <Route path="config/confirmaciones" element={<RequirePerm perm="settings.write"><SettingsConfirmations /></RequirePerm>} />
               <Route path="usuarios" element={<RequirePerm perm="users.manage"><Users /></RequirePerm>} />
               <Route path="ubicaciones" element={<RequirePerm perm="locations.manage"><Locations /></RequirePerm>} />
               <Route path="auditoria" element={<RequirePerm perm="audit.read"><Audit /></RequirePerm>} />
-<Route path="reservas" element={<RequirePerm perm="deliveries.read"><Reservations /></RequirePerm>} />
+              <Route path="reservas" element={<RequirePerm perm="deliveries.read"><Reservations /></RequirePerm>} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

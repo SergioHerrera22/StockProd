@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, qs } from '../lib/api';
+import { api, qs, getDrivers } from '../lib/api';
 import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Location, StockRow, Transfer, TransferItem } from '../types';
@@ -52,6 +52,12 @@ export default function Transfers() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [creating, setCreating] = useState(false);
 
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [driverUserId, setDriverUserId] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [dueAt, setDueAt] = useState('');
+  const [deliveryObservations, setDeliveryObservations] = useState('');
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -76,11 +82,16 @@ export default function Transfers() {
         setOrigin(String(r.locations.find((l) => l.type === 'DEPOSITO')?.id ?? r.locations[0]?.id ?? ''));
       })
       .catch(() => {});
+    getDrivers().then((d) => setDrivers(d || [])).catch(() => {});
   }, []);
 
   function openNew() {
     setLines([]);
     setNotes('');
+    setDriverUserId('');
+    setDeliveryAddress('');
+    setDueAt('');
+    setDeliveryObservations('');
     setNewOpen(true);
   }
 
@@ -103,6 +114,10 @@ export default function Transfers() {
           destinationLocationId: Number(destination),
           notes: notes.trim() || null,
           items: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+          driverUserId: driverUserId ? Number(driverUserId) : null,
+          deliveryAddress: deliveryAddress.trim() || null,
+          dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+          deliveryObservations: deliveryObservations.trim() || null,
         },
       });
       toast.success(`Transferencia ${res.number} enviada: mercadería en tránsito`);
@@ -241,6 +256,26 @@ export default function Transfers() {
             </Select>
           </Field>
         </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <Field label="Chofer asignado">
+            <Select value={driverUserId} onChange={(e) => setDriverUserId(e.target.value)}>
+              <option value="">Sin asignar</option>
+              {drivers.map((d: any) => (
+                <option key={d.id} value={d.id}>{d.full_name || d.username}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Dirección / Destino entrega">
+            <Input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="Opcional" />
+          </Field>
+          <Field label="Vencimiento">
+            <Input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Observaciones para repartidor" className="mt-3">
+          <Textarea rows={2} value={deliveryObservations} onChange={(e) => setDeliveryObservations(e.target.value)} />
+        </Field>
 
         <div className="mt-4">
           <div className="mb-2 flex items-center justify-between">

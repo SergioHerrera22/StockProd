@@ -14,12 +14,20 @@ import {
 import { evaluateBusinessRules } from '../../services/businessRules.service';
 import { createApprovalRequest } from '../../services/approval.service';
 import { createAlert } from '../../services/alerts.service';
+import { getConfirmationSetting } from '../../services/confirmationSettings.service';
 
 export interface TransferDraftInput {
   originLocationId: number;
   destinationLocationId: number;
   notes?: string | null;
   items: { productId: number; quantity: number }[];
+  driverUserId?: number | null;
+  driverId?: number | null;
+  deliveryAddress?: string | null;
+  deliveryLat?: number | null;
+  deliveryLng?: number | null;
+  dueAt?: string | null;
+  deliveryObservations?: string | null;
 }
 
 async function validateTransferItems(c: PoolClient, items: TransferDraftInput['items']) {
@@ -73,10 +81,26 @@ export async function createTransfer(user: AuthUser, ip: string | undefined, inp
     }
 
     const number = await nextDocNumber(c, 'transfer');
+    const driverUserId = input.driverUserId ?? input.driverId ?? null;
     const t = await c.query<{ id: number }>(
-      `INSERT INTO transfers (number, origin_location_id, destination_location_id, notes, created_by, status)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [number, input.originLocationId, input.destinationLocationId, input.notes?.trim() || null, user.id, status]
+      `INSERT INTO transfers (number, origin_location_id, destination_location_id, notes, created_by, status,
+                              driver_user_id, driver_assigned_at, delivery_address, delivery_lat, delivery_lng, due_at, delivery_observations)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+      [
+        number,
+        input.originLocationId,
+        input.destinationLocationId,
+        input.notes?.trim() || null,
+        user.id,
+        status,
+        driverUserId,
+        driverUserId ? new Date() : null,
+        input.deliveryAddress?.trim() || null,
+        input.deliveryLat ?? null,
+        input.deliveryLng ?? null,
+        input.dueAt ? new Date(input.dueAt) : null,
+        input.deliveryObservations?.trim() || null,
+      ]
     );
     const transferId = t.rows[0].id;
 
@@ -160,9 +184,12 @@ export async function approveTransfer(user: AuthUser, ip: string | undefined, id
     if (transfer.status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden aprobar transferencias en borrador');
     assertTransferAccess(user, transfer.origin_location_id, transfer.destination_location_id);
 
-    // Verificar que el aprobador no sea el creador (segregación)
-    if (transfer.created_by === user.id) {
-      throw ApiError.forbidden('No puedes aprobar tu propia transferencia (segregación de funciones)');
+    // Verificar que el aprobador no sea el creador (segregación configurable)
+    const cfgAppr = await getConfirmationSetting(c, 'TRANSFER', 'APPROVE');
+    if (cfgAppr?.enabled && cfgAppr.require_different_user && !cfgAppr.allow_same_user) {
+      if (transfer.created_by === user.id) {
+        throw ApiError.forbidden('No puedes aprobar tu propia transferencia (segregación de funciones)');
+      }
     }
 
     const items = await c.query<{ product_id: number; quantity: string }>(
@@ -260,10 +287,13 @@ export async function receiveTransfer(
       throw ApiError.conflict(`La transferencia ${transfer.number} ya fue procesada`);
     }
 
-    // Segregación: quien recibe NO puede ser quien despachó
+    // Segregación: quien recibe NO puede ser quien despachó (configurable)
     const dispatched = await c.query<{ dispatched_by: number }>('SELECT dispatched_by FROM transfers WHERE id = $1', [id]);
-    if (dispatched.rows[0]?.dispatched_by === user.id) {
-      throw ApiError.forbidden('No puedes recibir una transferencia que tú mismo despachaste (segregación de funciones)');
+    const cfgRecv = await getConfirmationSetting(c, 'TRANSFER', 'RECEIVE');
+    if (cfgRecv?.enabled && cfgRecv.require_different_user && !cfgRecv.allow_same_user) {
+      if (dispatched.rows[0]?.dispatched_by === user.id) {
+        throw ApiError.forbidden('No puedes recibir una transferencia que tú mismo despachaste (segregación de funciones)');
+      }
     }
 
     const dbItems = await c.query<{ id: number; product_id: number; quantity_sent: string }>(
@@ -356,8 +386,11 @@ export async function verifyTransferReceipt(user: AuthUser, ip: string | undefin
     if (!['RECIBIDO', 'RECIBIDO_CON_DIF'].includes(t.rows[0].status)) {
       throw ApiError.conflict('Solo se pueden verificar transferencias recibidas');
     }
-    if (t.rows[0].received_by === user.id) {
-      throw ApiError.forbidden('No puedes verificar una recepción que tú mismo hiciste (segregación de funciones)');
+    const cfgVer = await getConfirmationSetting(c, 'TRANSFER', 'VERIFY');
+    if (cfgVer?.enabled && cfgVer.require_different_user && !cfgVer.allow_same_user) {
+      if (t.rows[0].received_by === user.id) {
+        throw ApiError.forbidden('No puedes verificar una recepción que tú mismo hiciste (segregación de funciones)');
+      }
     }
 
     await c.query(
@@ -482,7 +515,8 @@ export async function getTransfer(id: number) {
       `SELECT t.*, lo.name AS origin_name, ld.name AS destination_name,
               cu.full_name AS created_by_name, ru.full_name AS received_by_name,
               du.full_name AS dispatched_by_name, vu.full_name AS verified_by_name,
-              vau.full_name AS void_approved_by_name
+              vau.full_name AS void_approved_by_name,
+              drv.full_name AS driver_name
        FROM transfers t
        JOIN locations lo ON lo.id = t.origin_location_id
        JOIN locations ld ON ld.id = t.destination_location_id
@@ -491,6 +525,7 @@ export async function getTransfer(id: number) {
        LEFT JOIN users du ON du.id = t.dispatched_by
        LEFT JOIN users vu ON vu.id = t.verified_by
        LEFT JOIN users vau ON vau.id = t.void_approved_by
+       LEFT JOIN users drv ON drv.id = t.driver_user_id
        WHERE t.id = $1`, [id]
     );
     if (!head.rows[0]) return null;
@@ -515,12 +550,15 @@ export async function listTransfers(opts: { status?: string; locationId?: number
     `SELECT t.id, t.number, t.status, t.origin_location_id, t.destination_location_id,
             lo.name AS origin_name, ld.name AS destination_name,
             t.created_at, t.dispatched_at, t.received_at, t.verified_at,
+            t.driver_user_id, t.driver_assigned_at, t.delivery_address, t.delivered_at, t.delivery_started_at, t.due_at,
+            drv.full_name AS driver_name,
             cu.full_name AS created_by_name,
             (SELECT COUNT(*) FROM transfer_items WHERE transfer_id = t.id) AS line_count
      FROM transfers t
      JOIN locations lo ON lo.id = t.origin_location_id
      JOIN locations ld ON ld.id = t.destination_location_id
      JOIN users cu ON cu.id = t.created_by
+     LEFT JOIN users drv ON drv.id = t.driver_user_id
      ${whereSql} ORDER BY t.created_at DESC
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params

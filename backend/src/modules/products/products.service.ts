@@ -81,6 +81,11 @@ export async function checkDuplicates(input: Partial<ProductInput>) {
  * (prefijo 779800, Argentina + interno). La funcion solo verifica unicidad
  * contra pending_deliveries, por lo que aqui se re-verifica contra products.
  */
+/**
+ * Genera un EAN-13 unico reutilizando generate_ean13_barcode() de la BD
+ * (prefijo 779800, Argentina + interno). La funcion solo verifica unicidad
+ * contra pending_deliveries, por lo que aqui se re-verifica contra products.
+ */
 export async function generateBarcode(): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const r = await query<{ barcode: string }>('SELECT generate_ean13_barcode() AS barcode');
@@ -95,8 +100,117 @@ export async function generateBarcode(): Promise<string> {
     );
     if (!dup.rows[0]) return barcode;
   }
-  throw ApiError.badRequest('No se pudo generar un codigo de barras unico, intenta de nuevo');
+  throw ApiError.badRequest('No se pudo generar un código de barras único. Volvé a intentar.');
 }
+
+function normalizeName(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export interface DuplicateGroup {
+  key: string;
+  count: number;
+  products: Array<{
+    id: number;
+    code: string;
+    name: string;
+    brand: string | null;
+    unit: string;
+    is_active: boolean;
+    total_qty: number;
+  }>;
+}
+
+export async function scanDuplicates(): Promise<DuplicateGroup[]> {
+  const r = await query<{
+    id: number;
+    code: string;
+    name: string;
+    brand: string | null;
+    unit: string;
+    is_active: boolean;
+  }>(
+    `SELECT p.id, p.code, p.name, p.brand, p.unit, p.is_active
+     FROM products p
+     WHERE p.is_active = true
+     ORDER BY lower(p.name), p.code`
+  );
+
+  const groups = new Map<string, DuplicateGroup>();
+  for (const row of r.rows) {
+    const key = normalizeName(row.name);
+    if (!key) continue;
+    if (!groups.has(key)) {
+      groups.set(key, { key, count: 0, products: [] });
+    }
+    const g = groups.get(key)!;
+    g.products.push({ ...row, total_qty: 0 });
+  }
+
+  // Get stock totals for all products in duplicates
+  const productIds = [...groups.values()].flatMap((g) => g.products.map((p) => p.id));
+  if (productIds.length > 0) {
+    const stock = await query<{ product_id: number; total_qty: number }>(
+      `SELECT product_id, COALESCE(SUM(quantity), 0) AS total_qty
+       FROM stock_balances
+       WHERE product_id = ANY($1::int[])
+       GROUP BY product_id`,
+      [productIds]
+    );
+    const map = new Map(stock.rows.map((s) => [s.product_id, Number(s.total_qty)]));
+    for (const g of groups.values()) {
+      for (const p of g.products) {
+        p.total_qty = map.get(p.id) ?? 0;
+      }
+      g.count = g.products.length;
+    }
+  }
+
+  return [...groups.values()].filter((g) => g.count > 1);
+}
+
+export async function bulkDeleteProducts(user: AuthUser, ip: string | undefined, ids: number[]): Promise<{ deleted: number; skipped: Array<{ id: number; reason: string }> }> {
+  const deleted: number[] = [];
+  const skipped: Array<{ id: number; reason: string }> = [];
+
+  await withTx(async (c) => {
+    for (const id of ids) {
+      const p = await c.query('SELECT id, code, name FROM products WHERE id = $1', [id]);
+      if (!p.rows[0]) {
+        skipped.push({ id, reason: 'No encontrado' });
+        continue;
+      }
+      const stock = await c.query<{ total: string }>(
+        'SELECT COALESCE(SUM(quantity), 0) AS total FROM stock_balances WHERE product_id = $1',
+        [id]
+      );
+      const total = Number(stock.rows[0]?.total ?? 0);
+      if (total > 0) {
+        skipped.push({ id, reason: 'Tiene stock > 0' });
+        continue;
+      }
+      await c.query('UPDATE products SET is_active = false WHERE id = $1', [id]);
+      deleted.push(id);
+      await writeAudit(c, {
+        userId: user.id,
+        action: 'PRODUCT_BULK_DELETE',
+        entity: 'product',
+        entityId: id,
+        details: { code: p.rows[0].code, name: p.rows[0].name },
+        ip,
+      });
+    }
+  });
+
+  return { deleted: deleted.length, skipped };
+}
+
 
 export async function updateProduct(user: AuthUser, ip: string | undefined, id: number, input: Partial<ProductInput>) {
   if (input.unit) assertUnit(input.unit);

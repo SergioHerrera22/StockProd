@@ -26,6 +26,8 @@ const NAV: NavItem[] = [
   { to: '/entradas', label: 'Entradas', icon: '📥', perm: 'entries.read' },
   { to: '/transferencias', label: 'Transferencias', icon: '🚚', perm: 'transfers.read' },
   { to: '/repartos', label: 'Repartos', icon: '🗺️', perm: 'tracking.read' },
+  { to: '/mi-reparto', label: 'Mi Reparto', icon: '🚛', perm: 'tracking.gps' },
+  { to: '/entregas-atrasos', label: 'Atrasos', icon: '⏱️', perm: 'tracking.read' },
   { to: '/inventarios', label: 'Inventarios', icon: '📋', perm: 'counts.read' },
   { to: '/movimientos', label: 'Movimientos', icon: '📜', perm: 'movements.read' },
   { to: '/reportes', label: 'Reportes', icon: '📈', perm: 'reports.read' },
@@ -36,6 +38,7 @@ const NAV: NavItem[] = [
   { to: '/auditoria', label: 'Auditoría', icon: '🛡️', perm: 'audit.read' },
   { to: '/reglas', label: 'Reglas de negocio', icon: '📏', perm: 'audit.read' },
   { to: '/reconciliacion', label: 'Reconciliación', icon: '🧮', perm: 'audit.read' },
+  { to: '/config/confirmaciones', label: 'Confirmaciones / Segregación', icon: '🔐', perm: 'settings.write' },
   { to: '/permisos-ubicacion', label: 'Permisos por ubicación', icon: '🔑', perm: 'users.manage' },
 ];
 

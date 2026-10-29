@@ -23,6 +23,13 @@ const draftSchema = z.object({
   destinationLocationId: z.number().int().positive(),
   notes: z.string().max(2000).nullable().optional(),
   items: z.array(z.object({ productId: z.number().int().positive(), quantity: z.number().positive() })).min(1),
+  driverUserId: z.number().int().positive().nullable().optional(),
+  driverId: z.number().int().positive().nullable().optional(),
+  deliveryAddress: z.string().max(250).nullable().optional(),
+  deliveryLat: z.number().nullable().optional(),
+  deliveryLng: z.number().nullable().optional(),
+  dueAt: z.string().nullable().optional(),
+  deliveryObservations: z.string().nullable().optional(),
 });
 
 router.get(
