@@ -188,11 +188,14 @@ router.post(
   '/:id/void',
   requirePerm('deliveries.void'),
   idempotent(asyncH(async (req, res) => {
-    const { reason, voidApprovedBy } = z.object({
-      reason: z.string().min(5).max(255),
-      voidApprovedBy: z.number().int().positive().optional()
-    }).parse(req.body);
-    await voidDelivery(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
+    const { reason, approver } = z.object({
+      reason: z.string().trim().min(5).max(255),
+      approver: z.object({
+        username: z.string().trim().min(2).max(60),
+        password: z.string().min(1).max(200),
+      }).optional(),
+    }).strict().parse(req.body);
+    await voidDelivery(req.user!, req.ip, pathId(req.params.id), reason, approver);
     res.json({ ok: true });
   }))
 );
