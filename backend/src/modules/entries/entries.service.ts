@@ -49,8 +49,10 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion de destino invalida');
 
     let supplierName = input.supplier?.trim() || null;
-    if (input.type === 'COMPRA') {
-      if (!input.supplierId) throw ApiError.badRequest('Seleccioná un proveedor registrado para la compra');
+    if (input.type === 'COMPRA' && !input.supplierId) {
+      throw ApiError.badRequest('Seleccioná un proveedor registrado para la compra');
+    }
+    if (input.supplierId) {
       const supplierRow = await c.query<{ name: string }>('SELECT name FROM suppliers WHERE id = $1 AND is_active', [input.supplierId]);
       if (!supplierRow.rows[0]) throw ApiError.badRequest('El proveedor seleccionado no existe o está inactivo');
       supplierName = supplierRow.rows[0].name;
