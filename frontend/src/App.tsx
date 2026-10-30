@@ -20,14 +20,12 @@ import Movements from './pages/Movements';
 import Users from './pages/Users';
 import Locations from './pages/Locations';
 import Reports from './pages/Reports';
-import Audit from './pages/Audit';
 import Reservations from './pages/Reservations';
 import Alerts from './pages/Alerts';
 import Repartos from './pages/Repartos';
 import RepartoNew from './pages/RepartoNew';
 import RepartoDetail from './pages/RepartoDetail';
 import Approvals from './pages/Approvals';
-import BusinessRules from './pages/BusinessRules';
 import LocationPermissions from './pages/LocationPermissions';
 import Reconciliation from './pages/Reconciliation';
 import SettingsConfirmations from './pages/SettingsConfirmations';
@@ -89,13 +87,11 @@ export default function App() {
               <Route path="mi-reparto" element={<RequirePerm perm="tracking.gps"><MiReparto /></RequirePerm>} />
               <Route path="entregas-atrasos" element={<RequirePerm perm="tracking.read"><DeliveryDelays /></RequirePerm>} />
               <Route path="aprobaciones" element={<RequirePerm perm="approvals.read"><Approvals /></RequirePerm>} />
-              <Route path="reglas" element={<RequirePerm perm="audit.read"><BusinessRules /></RequirePerm>} />
               <Route path="permisos-ubicacion" element={<RequirePerm perm="users.manage"><LocationPermissions /></RequirePerm>} />
               <Route path="reconciliacion" element={<RequirePerm perm="audit.read"><Reconciliation /></RequirePerm>} />
               <Route path="config/confirmaciones" element={<RequirePerm perm="settings.write"><SettingsConfirmations /></RequirePerm>} />
               <Route path="usuarios" element={<RequirePerm perm="users.manage"><Users /></RequirePerm>} />
               <Route path="ubicaciones" element={<RequirePerm perm="locations.manage"><Locations /></RequirePerm>} />
-              <Route path="auditoria" element={<RequirePerm perm="audit.read"><Audit /></RequirePerm>} />
               <Route path="reservas" element={<RequirePerm perm="deliveries.read"><Reservations /></RequirePerm>} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

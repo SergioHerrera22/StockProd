@@ -36,8 +36,6 @@ const NAV: NavItem[] = [
   { to: '/aprobaciones', label: 'Aprobaciones', icon: '✅', perm: 'approvals.read' },
   { to: '/usuarios', label: 'Usuarios', icon: '👤', perm: 'users.manage' },
   { to: '/ubicaciones', label: 'Ubicaciones', icon: '🏪', perm: 'locations.manage' },
-  { to: '/auditoria', label: 'Auditoría', icon: '🛡️', perm: 'audit.read' },
-  { to: '/reglas', label: 'Reglas de negocio', icon: '📏', perm: 'audit.read' },
   { to: '/reconciliacion', label: 'Reconciliación', icon: '🧮', perm: 'audit.read' },
   { to: '/config/confirmaciones', label: 'Confirmaciones / Segregación', icon: '🔐', perm: 'settings.write' },
   { to: '/permisos-ubicacion', label: 'Permisos por ubicación', icon: '🔑', perm: 'users.manage' },

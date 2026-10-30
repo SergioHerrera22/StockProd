@@ -37,6 +37,15 @@ async function main() {
   ok(admin.status === 200, 'Login admin');
   const T = admin.json.token;
 
+  // El escenario usa un segundo usuario sin restricciones para confirmar
+  // documentos creados por el administrador. La base aislada no comparte
+  // usuarios con el smoke test, por eso se crea explícitamente aquí.
+  const unrestrictedUser = await api('POST', '/users', {
+    token: T,
+    body: { username: 'encargado_smoke', fullName: 'Encargado Smoke Negativo', role: 'ENCARGADO', password: 'encargado123' },
+  });
+  ok(unrestrictedUser.status === 201 || unrestrictedUser.status === 409, 'Encargado sin restricciones preparado');
+
   const locs = (await api('GET', '/locations', { token: T })).json.locations;
   const DEP = locs.find((l) => l.code === 'DEP');
   const SUC1 = locs.find((l) => l.code === 'SUC1');
@@ -84,7 +93,7 @@ async function main() {
   console.log('\n[A] Caída a mitad de una entrega: NO debe descontar nada');
   const multi = await api('POST', '/deliveries?confirm=true', {
     token: T,
-    body: { locationId: DEP.id, items: [
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0001', items: [
       { productId: pid, quantity: 2 },      // primera línea OK
       { productId: pid, quantity: 99999 },  // duplicado se rechaza antes... usar producto distinto no hay; usar segunda línea inválida
     ] },
@@ -97,7 +106,7 @@ async function main() {
   });
   const multi2 = await api('POST', '/deliveries?confirm=true', {
     token: TX,
-    body: { locationId: DEP.id, items: [
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0005', items: [
       { productId: pid, quantity: 2 },      // línea 1: hay stock
       { productId: prod2.json.id, quantity: 5 }, // línea 2: sin stock → falla
     ] },
@@ -110,7 +119,7 @@ async function main() {
   console.log('\n[B] Dos confirmaciones al mismo tiempo');
   const draft = await api('POST', '/deliveries', {
     token: T,
-    body: { locationId: DEP.id, items: [{ productId: pid, quantity: 1 }] },
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0002', items: [{ productId: pid, quantity: 1 }] },
   });
   const [c1, c2] = await Promise.allSettled([
     api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TX }),
@@ -196,9 +205,9 @@ async function main() {
 
   // ---------- [H] Restricción por ubicación ----------
   console.log('\n[H] Usuario restringido a SUC1 intentando operar en otras ubicaciones');
-  const r1 = await api('POST', '/deliveries', { token: TE, body: { locationId: DEP.id, items: [{ productId: pid, quantity: 1 }] } });
+  const r1 = await api('POST', '/deliveries', { token: TE, body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0006', items: [{ productId: pid, quantity: 1 }] } });
   ok(r1.status === 403, 'Empleado restringido: entrega desde el Depósito → 403');
-  const r2 = await api('POST', '/deliveries', { token: TE, body: { locationId: SUC1.id, items: [{ productId: pid, quantity: 1 }] } });
+  const r2 = await api('POST', '/deliveries', { token: TE, body: { locationId: SUC1.id, invoiceNumber: '0001-NEG-0007', items: [{ productId: pid, quantity: 1 }] } });
   ok(r2.status === 201, 'Empleado restringido: entrega desde SU ubicación → OK');
   const r3 = await api('POST', '/entries?confirm=true', { token: TC, body: { locationId: DEP.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 1 }] } });
   ok(r3.status === 403, 'Encargado restringido: entrada al Depósito → 403');
@@ -214,7 +223,7 @@ async function main() {
   const r7 = await api('POST', '/counts', { token: TC, body: { locationId: SUC2.id } });
   ok(r7.status === 403, 'Encargado restringido: recuento en otra ubicación → 403');
   // Confirmar un borrador ajeno
-  const foreignDraft = await api('POST', '/deliveries', { token: T, body: { locationId: SUC2.id, items: [{ productId: pid, quantity: 1 }] } });
+  const foreignDraft = await api('POST', '/deliveries', { token: T, body: { locationId: SUC2.id, invoiceNumber: '0001-NEG-0004', items: [{ productId: pid, quantity: 1 }] } });
   const r8 = await api('POST', `/deliveries/${foreignDraft.json.id}/confirm`, { token: TE });
   ok(r8.status === 403, 'Empleado restringido: confirmar borrador de otra ubicación → 403');
 

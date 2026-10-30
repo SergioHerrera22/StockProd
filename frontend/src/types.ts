@@ -102,6 +102,7 @@ export interface Delivery {
   // PARCIAL: parte del stock se derivo a otra sucursal y quedo una orden de
   // retiro abierta. El backend puede devolver este estado al confirmar.
   status: 'BORRADOR' | 'CONFIRMADO' | 'PARCIAL' | 'ANULADO';
+  is_pending_delivery?: boolean;
   location_id: number;
   location_name?: string;
   location_code?: string;

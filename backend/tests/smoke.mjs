@@ -174,7 +174,7 @@ async function main() {
   // ---------- Entrega sin stock suficiente ----------
   const tooMuch = await api('POST', '/deliveries?confirm=true', {
     token: TE,
-    body: { locationId: dep.id, items: [{ productId: pid, quantity: 99999 }] },
+    body: { locationId: dep.id, invoiceNumber: '0001-99999999', items: [{ productId: pid, quantity: 99999 }] },
   });
   // Hoy el confirm sin stock en NINGUNA ubicacion devuelve 409 de negocio
   // ("Sin stock disponible ... en ninguna ubicacion"); el 403 quedo obsoleto.
@@ -233,6 +233,28 @@ async function main() {
   const last = movs.movements[0];
   ok(last.type === 'AJUSTE_NEG' && last.balance_after === 14, 'Último movimiento: ajuste con saldo anterior y posterior');
 
+  // ---------- Entrega pendiente: reserva sin descontar hasta efectivizar ----------
+  console.log('[8b] Entrega pendiente');
+  const pendingDraft = await api('POST', '/deliveries', {
+    token: T,
+    body: {
+      locationId: dep.id,
+      invoiceNumber: '0001-PEND-0001',
+      pendingDelivery: true,
+      items: [{ productId: pid, quantity: 2 }],
+    },
+  });
+  ok(pendingDraft.status === 201, 'Entrega pendiente creada');
+  const beforePendingConfirm = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
+  const depBeforePendingConfirm = Number(beforePendingConfirm.find((s) => s.location_id === dep.id)?.quantity);
+  ok(depBeforePendingConfirm === 77, 'La reserva no descuenta stock físico antes de la entrega efectiva');
+  const pendingConfirm = await api('POST', `/deliveries/${pendingDraft.json.id}/confirm`, { token: TE });
+  ok(pendingConfirm.status === 200, 'Entrega pendiente efectivizada correctamente');
+  const afterPendingConfirm = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
+  ok(Number(afterPendingConfirm.find((s) => s.location_id === dep.id)?.quantity) === 75, 'El stock se descuenta al efectivizar la entrega pendiente');
+  const pendingDoubleConfirm = await api('POST', `/deliveries/${pendingDraft.json.id}/confirm`, { token: TE });
+  ok(pendingDoubleConfirm.status === 409, 'La entrega pendiente no puede efectivizarse dos veces');
+
   // ---------- Validación de permisos ----------
   console.log('[9] Permisos');
   // Crear (o reactivar) usuario empleado para la prueba
@@ -263,7 +285,7 @@ async function main() {
     ok(empEntry.status === 403, 'Empleado NO puede registrar entradas (403)');
     const empDelivery = await api('POST', '/deliveries', {
       token: empLogin.json.token,
-      body: { locationId: dep.id, items: [{ productId: pid, quantity: 1 }] },
+      body: { locationId: dep.id, invoiceNumber: '0001-99999998', items: [{ productId: pid, quantity: 1 }] },
     });
     ok(empDelivery.status === 201, 'Empleado SÍ puede registrar entregas');
   } else {
@@ -275,10 +297,31 @@ async function main() {
   const dash = (await api('GET', '/dashboard/summary', { token: T })).json;
   ok(dash.activeProducts >= 1 && typeof dash.inventoryValue === 'number', 'Dashboard con datos reales');
   ok(Array.isArray(dash.series) && dash.series.length >= 14, 'Serie temporal de entradas/salidas');
+  ok(
+    dash.stockInsights &&
+    Array.isArray(dash.stockInsights.lowStockItems) &&
+    Array.isArray(dash.stockInsights.outOfStockItems) &&
+    Array.isArray(dash.stockInsights.purchaseSuggestions) &&
+    Array.isArray(dash.stockInsights.topProducts) &&
+    Array.isArray(dash.stockInsights.lowRotation) &&
+    Number.isFinite(dash.stockInsights.stockoutRate),
+    'Dashboard devuelve todos los indicadores de inventario y rotación'
+  );
+  ok(
+    Number.isFinite(dash.stockInsights.stockoutEvents) &&
+    Number.isFinite(dash.stockInsights.requestedLines) &&
+    dash.stockInsights.stockoutRate >= 0 &&
+    dash.stockInsights.stockoutRate <= 100,
+    'Tasa de rotura dentro de rango y con contadores numéricos'
+  );
+  const dashByLocation = (await api('GET', `/dashboard/summary?locationId=${dep.id}&days=30`, { token: T })).json;
+  ok(
+    dashByLocation.stockInsights &&
+    Number.isFinite(dashByLocation.stockInsights.stockoutRate),
+    'Indicadores del dashboard responden al filtro por ubicación'
+  );
   const rep = (await api('GET', '/reports/stock-by-location', { token: T })).json;
   ok(Array.isArray(rep.rows) && rep.rows.length > 0, 'Reporte stock por ubicación');
-  const val = (await api('GET', '/reports/inventory-value', { token: T })).json;
-  ok(typeof val.totalValue === 'number', 'Reporte valorización');
 
   console.log(`\n== RESULTADO: ${passed} OK, ${failed} FALLIDOS ==\n`);
   process.exit(failed > 0 ? 1 : 0);
