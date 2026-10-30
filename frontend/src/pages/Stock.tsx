@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, qs } from '../lib/api';
-import { exportCSV, fmtMoney, fmtQty } from '../lib/format';
+import { exportCSV, fmtQty } from '../lib/format';
 import { availableOf, type Location, type StockRow } from '../types';
 import { Badge, Button, Card, Input, PageHeader, Select, Tabs, Modal } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
@@ -122,14 +122,6 @@ export default function StockPage() {
     } },
     { key: 'min_stock', label: 'Mín.', align: 'right', render: (p) => fmtQty(p.min_stock) },
     { key: 'unit', label: 'Unidad', render: (p) => p.unit?.toLowerCase() },
-    ...(selectedLocation
-      ? []
-      : [{
-          key: 'cost',
-          label: 'Valor',
-          align: 'right' as const,
-          render: (p: StockRow) => (p.cost ? fmtMoney(Number(p.cost) * p.total_qty) : '—'),
-        }]),
   ], [showColumns, selectedLocation]);
 
   async function scanDuplicates() {

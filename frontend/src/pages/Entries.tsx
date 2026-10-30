@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
-import { fmtDateTime, fmtMoney, fmtQty } from '../lib/format';
+import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Entry, EntryItem, Location, StockRow } from '../types';
 import {
@@ -21,7 +21,6 @@ interface DraftLine {
   code: string;
   name: string;
   quantity: number;
-  unitCost: string;
 }
 
 export default function Entries() {
@@ -94,7 +93,6 @@ export default function Entries() {
           items: lines.map((l) => ({
             productId: l.productId,
             quantity: l.quantity,
-            unitCost: l.unitCost === '' ? null : Number(l.unitCost),
           })),
         },
       });
@@ -155,7 +153,7 @@ export default function Entries() {
     { key: 'location_name', label: 'Destino', render: (e) => e.location_name },
     { key: 'type', label: 'Tipo', render: (e) => <Badge color="blue">{e.type}</Badge> },
     { key: 'supplier', label: 'Proveedor', render: (e) => e.supplier ?? '—' },
-    { key: 'line_count', label: 'Líneas', align: 'right', render: (e) => e.line_count ?? '—' },
+    { key: 'line_count', label: 'Productos', align: 'right', render: (e) => e.line_count ?? '—' },
     { key: 'status', label: 'Estado', render: (e) => {
       const s = ENTRY_STATUS[e.status];
       return <Badge color={s.color}>{s.label}</Badge>;
@@ -243,7 +241,6 @@ export default function Entries() {
                 <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
                   <th className="py-1.5">Producto</th>
                   <th className="py-1.5 text-center">Cantidad</th>
-                  <th className="py-1.5 text-center">Costo unit.</th>
                   <th className="py-1.5"></th>
                 </tr>
               </thead>
@@ -262,16 +259,8 @@ export default function Entries() {
                         className="w-24 text-center"
                       />
                     </td>
-                    <td className="py-1.5 text-center">
-                      <Input
-                        type="number" min="0" step="0.01" placeholder="—"
-                        value={l.unitCost}
-                        onChange={(e) => setLines((prev) => prev.map((x) => x.productId === l.productId ? { ...x, unitCost: e.target.value } : x))}
-                        className="w-28 text-center"
-                      />
-                    </td>
                     <td className="py-1.5 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
+                      <Button size="lg" variant="ghost" className="!h-10 !w-10 !min-w-10 !p-0 text-xl leading-none" aria-label="Eliminar producto de la entrada" title="Eliminar producto" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
                     </td>
                   </tr>
                 ))}
@@ -293,7 +282,7 @@ export default function Entries() {
           setLines((prev) =>
             prev.some((l) => l.productId === p.id)
               ? prev.map((l) => l.productId === p.id ? { ...l, quantity: l.quantity + 1 } : l)
-              : [...prev, { productId: p.id, code: p.code, name: p.name, quantity: 1, unitCost: p.cost ? String(p.cost) : '' }]
+              : [...prev, { productId: p.id, code: p.code, name: p.name, quantity: 1 }]
           )
         }
       />
@@ -326,7 +315,6 @@ export default function Entries() {
                 <tr className="border-y border-slate-200 text-left text-xs uppercase text-slate-400">
                   <th className="py-1.5">Producto</th>
                   <th className="py-1.5 text-right">Cantidad</th>
-                  <th className="py-1.5 text-right">Costo unit.</th>
                 </tr>
               </thead>
               <tbody>
@@ -337,7 +325,6 @@ export default function Entries() {
                       <div className="font-mono text-xs text-slate-400">{it.code}</div>
                     </td>
                     <td className="py-1.5 text-right font-semibold">{fmtQty(it.quantity)}</td>
-                    <td className="py-1.5 text-right text-slate-500">{fmtMoney(it.unit_cost)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, qs } from '../lib/api';
-import { fmtDateTime, fmtMoney, fmtQty } from '../lib/format';
+import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Location } from '../types';
 import { Card, CardHeader, Loading, PageHeader, Select, StatCard, Badge } from '../components/ui';
@@ -101,7 +101,6 @@ export default function Dashboard() {
           {/* Indicadores */}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <StatCard label="Productos activos" value={data.activeProducts} icon="🧴" />
-            <StatCard label="Valor inventario" value={fmtMoney(data.inventoryValue)} icon="💰" hint="según costos cargados" />
             <StatCard label="Stock bajo" value={data.lowStock} icon="⚠️" tone={data.lowStock > 0 ? 'warn' : 'default'} />
             <StatCard label="Sin existencias" value={data.outOfStock} icon="🚫" tone={data.outOfStock > 0 ? 'danger' : 'default'} />
             <StatCard label="Entradas hoy" value={fmtQty(data.entriesToday)} icon="📥" tone="good" />
@@ -132,10 +131,6 @@ export default function Dashboard() {
                 }))}
                 valueFormat={(v) => `${fmtQty(v)} u.`}
               />
-              <div className="mt-3 border-t border-slate-100 pt-2 text-xs text-slate-400">
-                Valor del inventario por ubicación (si hay costos):
-                {data.byLocation.map((l) => ` ${l.name} ${fmtMoney(l.value)}`).join(' · ')}
-              </div>
             </Card>
           </div>
 

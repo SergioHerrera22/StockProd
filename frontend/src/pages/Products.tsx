@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { api, qs } from '../lib/api';
-import { exportCSV, fmtMoney, fmtQty } from '../lib/format';
+import { exportCSV, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Category, Product, ProductStockRow } from '../types';
 import {
@@ -595,8 +595,8 @@ export default function Products() {
   function doExport() {
     exportCSV(
       'productos.csv',
-      ['Código', 'Barras', 'Nombre', 'Marca', 'Categoría', 'Unidad', 'Stock mín.', 'Costo', 'Precio ref.', 'Activo'],
-      rows.map((p) => [p.code, p.barcode, p.name, p.brand, p.category_name, p.unit, p.min_stock, p.cost, p.reference_price, p.is_active ? 'SI' : 'NO'])
+      ['Código', 'Barras', 'Nombre', 'Marca', 'Categoría', 'Unidad', 'Stock mín.', 'Activo'],
+      rows.map((p) => [p.code, p.barcode, p.name, p.brand, p.category_name, p.unit, p.min_stock, p.is_active ? 'SI' : 'NO'])
     );
   }
 
@@ -612,7 +612,6 @@ export default function Products() {
     { key: 'category_name', label: 'Categoría', sortable: true, render: (p) => p.category_name ?? '—' },
     { key: 'unit', label: 'Unidad', render: (p) => UNIT_LABELS[p.unit] ?? p.unit },
     { key: 'min_stock', label: 'Mín.', align: 'right', render: (p) => fmtQty(p.min_stock) },
-    { key: 'cost', label: 'Costo', align: 'right', render: (p) => fmtMoney(p.cost) },
     { key: 'is_active', label: 'Estado', render: (p) =>
       p.is_active ? <Badge color="green">Activo</Badge> : <Badge color="gray">Inactivo</Badge>
     },
@@ -783,16 +782,6 @@ export default function Products() {
           <Field label="Stock mínimo" hint="Dispara alertas de stock bajo">
             <Input type="number" min="0" step="0.001" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} />
           </Field>
-          {can('products.write') && (
-            <>
-              <Field label="Costo" hint="Opcional">
-                <Input type="number" min="0" step="0.01" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} />
-              </Field>
-              <Field label="Precio de referencia" hint="Opcional">
-                <Input type="number" min="0" step="0.01" value={form.referencePrice} onChange={(e) => setForm({ ...form, referencePrice: e.target.value })} />
-              </Field>
-            </>
-          )}
           <Field label="Descripción" className="sm:col-span-2">
             <Textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </Field>
