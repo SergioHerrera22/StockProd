@@ -31,22 +31,27 @@ router.get(
       outOfStockItems,
       purchaseSuggestions,
       productRankings,
+      lowRotationProducts,
       stockoutStats,
     ] = await Promise.all([
       query<{ active_products: string; inventory_value: string; low_stock: string; out_of_stock: string }>(
-        `WITH product_stock AS (
-           SELECT p.id, p.min_stock, p.cost, COALESCE(SUM(sb.quantity), 0) AS qty
+        `WITH available AS (
+           SELECT product_id, SUM(available_quantity) AS qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ), product_stock AS (
+           SELECT p.id, p.min_stock, p.cost, COALESCE(a.qty, 0) AS qty
            FROM products p
-           LEFT JOIN stock_balances sb ON sb.product_id = p.id ${locFilterBal}
+           LEFT JOIN available a ON a.product_id = p.id
            WHERE p.is_active
-           GROUP BY p.id, p.min_stock, p.cost
          )
          SELECT
            COUNT(*)::text AS active_products,
            COALESCE(SUM(qty * cost) FILTER (WHERE cost IS NOT NULL), 0)::text AS inventory_value,
            COUNT(*) FILTER (WHERE qty > 0 AND qty <= min_stock)::text AS low_stock,
-           COUNT(*) FILTER (WHERE qty = 0)::text AS out_of_stock
-         FROM product_stock`
+           COUNT(*) FILTER (WHERE qty <= 0)::text AS out_of_stock
+         FROM product_stock`,
+        [locationId || null]
       ),
       query<{ entradas: string; salidas: string }>(
         `SELECT
@@ -133,7 +138,7 @@ router.get(
            GROUP BY product_id
          ), sold AS (
            SELECT product_id, SUM(quantity) AS qty
-           FROM stock_movements
+           FROM stock_movements m
            WHERE type = 'SALIDA' AND created_at >= now() - interval '30 days'
              ${locFilter}
            GROUP BY product_id
@@ -159,7 +164,7 @@ router.get(
            GROUP BY product_id
          ), sold AS (
            SELECT product_id, SUM(quantity) AS qty
-           FROM stock_movements
+           FROM stock_movements m
            WHERE type = 'SALIDA' AND created_at >= now() - interval '30 days'
              ${locFilter}
            GROUP BY product_id
@@ -172,6 +177,29 @@ router.get(
          LEFT JOIN available a ON a.product_id = p.id
          WHERE p.is_active
          ORDER BY COALESCE(s.qty, 0) DESC, p.name
+         LIMIT 5`,
+        [locationId || null]
+      ),
+      query(
+        `WITH available AS (
+           SELECT product_id, SUM(available_quantity) AS qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ), sold AS (
+           SELECT product_id, SUM(quantity) AS qty
+           FROM stock_movements m
+           WHERE type = 'SALIDA' AND created_at >= now() - interval '30 days'
+             ${locFilter}
+           GROUP BY product_id
+         )
+         SELECT p.id, p.code, p.name, p.unit,
+                COALESCE(s.qty, 0) AS sold_30d,
+                COALESCE(a.qty, 0) AS available_qty
+         FROM products p
+         LEFT JOIN sold s ON s.product_id = p.id
+         LEFT JOIN available a ON a.product_id = p.id
+         WHERE p.is_active AND COALESCE(a.qty, 0) > 0
+         ORDER BY COALESCE(s.qty, 0), p.name
          LIMIT 5`,
         [locationId || null]
       ),
@@ -264,14 +292,14 @@ router.get(
     res.json({
       activeProducts: Number(inventoryStats.rows[0].active_products),
       inventoryValue: Number(inventoryStats.rows[0].inventory_value),
-      lowStock: lowStockItems.rows.length,
-      outOfStock: outOfStockItems.rows.length,
+      lowStock: Number(inventoryStats.rows[0].low_stock),
+      outOfStock: Number(inventoryStats.rows[0].out_of_stock),
       stockInsights: {
         lowStockItems: lowStockItems.rows.map((r: Record<string, unknown>) => ({ ...r, available_qty: Number(r.available_qty) })),
         outOfStockItems: outOfStockItems.rows,
         purchaseSuggestions: purchaseSuggestions.rows.map((r: Record<string, unknown>) => ({ ...r, available_qty: Number(r.available_qty), sold_30d: Number(r.sold_30d), suggested_qty: Number(r.suggested_qty) })),
         topProducts: productRankings.rows.map((r: Record<string, unknown>) => ({ ...r, sold_30d: Number(r.sold_30d), available_qty: Number(r.available_qty) })),
-        lowRotation: [...productRankings.rows].reverse().map((r: Record<string, unknown>) => ({ ...r, sold_30d: Number(r.sold_30d), available_qty: Number(r.available_qty) })),
+        lowRotation: lowRotationProducts.rows.map((r: Record<string, unknown>) => ({ ...r, sold_30d: Number(r.sold_30d), available_qty: Number(r.available_qty) })),
         stockoutEvents: Number(stockoutStats.rows[0]?.stockout_events ?? 0),
         requestedLines: Number(stockoutStats.rows[0]?.requested_lines ?? 0),
         stockoutRate: Number(stockoutStats.rows[0]?.requested_lines ?? 0) > 0
