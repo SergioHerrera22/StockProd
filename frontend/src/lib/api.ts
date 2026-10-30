@@ -385,6 +385,14 @@ export interface DeliveryConfirmResponse {
   unresolvedShortfalls?: { productId: number; productName: string; quantity: number }[];
 }
 
+/** Registra quién recibió físicamente un reparto a domicilio. No mueve stock. */
+export async function markDeliveryDelivered(
+  deliveryId: number,
+  input: { receivedBy: string; notes?: string | null }
+): Promise<{ ok: boolean; deliveryId: number; deliveredAt: string }> {
+  return api(`/deliveries/${deliveryId}/mark-delivered`, { method: 'POST', body: input });
+}
+
 /** Re-deriva faltantes pendientes de una entrega ya confirmada */
 export async function rederiveDeliveryShortfalls(
   deliveryId: number
