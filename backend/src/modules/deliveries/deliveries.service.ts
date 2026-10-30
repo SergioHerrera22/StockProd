@@ -434,6 +434,15 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
   }
   if (delivery.status === 'ANULADO') throw ApiError.conflict(`La entrega ${delivery.number} esta anulada`);
 
+  // La segregación de funciones debe ser idéntica en todas las rutas de
+  // confirmación (directa, con alternativas, picking y creación+confirmación).
+  const confirmationSetting = await getConfirmationSetting(c, 'DELIVERY', 'CONFIRM');
+  if (confirmationSetting?.enabled && confirmationSetting.require_different_user && !confirmationSetting.allow_same_user) {
+    if (delivery.created_by === user.id) {
+      throw ApiError.forbidden('No podés confirmar una entrega que cargaste vos: debe confirmarla otra persona.');
+    }
+  }
+
   const items = await c.query<{ product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string }>(
     `SELECT di.product_id, di.quantity, di.requested_quantity, p.name, p.code
      FROM delivery_items di JOIN products p ON p.id = di.product_id
@@ -849,6 +858,10 @@ export async function confirmDeliveryWithAlternatives(
 
     if (shortfalls.length > 0) {
       const choicesMap = new Map(choices.map(ch => [ch.productId, ch]));
+      if (choicesMap.size !== choices.length) throw ApiError.badRequest('Hay elecciones duplicadas para un mismo producto.');
+      if (choicesMap.size !== shortfalls.length || shortfalls.some(sf => !choicesMap.has(sf.productId))) {
+        throw ApiError.badRequest('Debe elegirse una ubicación para cada producto con faltante, sin agregar productos ajenos.');
+      }
 
       const pendingItems: PendingItemInput[] = [];
 
@@ -863,14 +876,14 @@ export async function confirmDeliveryWithAlternatives(
           throw ApiError.badRequest(`Ubicación elegida no válida para ${sf.productName}`);
         }
 
-        const qtyToTake = Math.min(choice.quantity, alt.availableQuantity, sf.shortfallQuantity);
-        if (qtyToTake <= 0) {
-          throw ApiError.badRequest(`Cantidad inválida para ${sf.productName}`);
+        const qtyToTake = choice.quantity;
+        if (!Number.isFinite(qtyToTake) || qtyToTake <= 0 || qtyToTake > alt.availableQuantity || qtyToTake > sf.shortfallQuantity) {
+          throw ApiError.conflict(`La cantidad elegida para ${sf.productName} supera el disponible o el faltante. Actualizá la disponibilidad y volvé a elegir.`);
         }
 
         pendingItems.push({
           productId: sf.productId,
-          quantityRequested: sf.shortfallQuantity,
+          quantityRequested: qtyToTake,
           sourceLocationId: choice.chosenLocationId,
           quantityReserved: qtyToTake,
         });
