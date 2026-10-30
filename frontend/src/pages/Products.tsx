@@ -168,6 +168,8 @@ export default function Products() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const loadRequestId = useRef(0);
   const [categoryId, setCategoryId] = useState('');
   const [active, setActive] = useState('true');
   const [categories, setCategories] = useState<Category[]>([]);
@@ -259,21 +261,31 @@ export default function Products() {
     }
   }
 
+  // Espera a que termine la escritura antes de consultar el catálogo.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
+
   const load = useCallback(async () => {
+    const requestId = ++loadRequestId.current;
     setLoading(true);
     try {
       const res = await api<{ products: Product[]; total: number }>(
-        `/products${qs({ q, categoryId, active, page, pageSize: 15 })}`
+        `/products${qs({ q: debouncedQ, categoryId, active, page, pageSize: 15 })}`
       );
-      setRows(res.products);
-      setTotal(res.total);
+      // Evita que una respuesta lenta de un filtro anterior pise la más reciente.
+      if (requestId === loadRequestId.current) {
+        setRows(res.products);
+        setTotal(res.total);
+      }
     } catch (e) {
-      toast.error((e as Error).message);
+      if (requestId === loadRequestId.current) toast.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestId.current) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, categoryId, active, page]);
+  }, [debouncedQ, categoryId, active, page]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
