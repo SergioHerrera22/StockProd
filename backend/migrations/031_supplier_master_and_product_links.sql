@@ -22,9 +22,9 @@ CREATE INDEX IF NOT EXISTS idx_stock_entries_supplier ON stock_entries(supplier_
 
 INSERT INTO suppliers (name)
 SELECT DISTINCT btrim(supplier) FROM stock_entries
-WHERE NULLIF(btrim(supplier), '') IS NOT NULL ON CONFLICT DO NOTHING;
+WHERE type = 'COMPRA' AND NULLIF(btrim(supplier), '') IS NOT NULL ON CONFLICT DO NOTHING;
 UPDATE stock_entries e SET supplier_id = s.id FROM suppliers s
-WHERE e.supplier_id IS NULL AND NULLIF(btrim(e.supplier), '') IS NOT NULL
+WHERE e.supplier_id IS NULL AND e.type = 'COMPRA' AND NULLIF(btrim(e.supplier), '') IS NOT NULL
 AND lower(btrim(e.supplier)) = lower(btrim(s.name));
 
 WITH latest_supplier_purchase AS (
