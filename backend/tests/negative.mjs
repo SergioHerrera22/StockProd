@@ -37,6 +37,15 @@ async function main() {
   ok(admin.status === 200, 'Login admin');
   const T = admin.json.token;
 
+  // El escenario usa un segundo usuario sin restricciones para confirmar
+  // documentos creados por el administrador. La base aislada no comparte
+  // usuarios con el smoke test, por eso se crea explícitamente aquí.
+  const unrestrictedUser = await api('POST', '/users', {
+    token: T,
+    body: { username: 'encargado_smoke', fullName: 'Encargado Smoke Negativo', role: 'ENCARGADO', password: 'encargado123' },
+  });
+  ok(unrestrictedUser.status === 201 || unrestrictedUser.status === 409, 'Encargado sin restricciones preparado');
+
   const locs = (await api('GET', '/locations', { token: T })).json.locations;
   const DEP = locs.find((l) => l.code === 'DEP');
   const SUC1 = locs.find((l) => l.code === 'SUC1');
