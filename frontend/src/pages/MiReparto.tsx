@@ -39,7 +39,8 @@ export default function MiReparto() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<Assignment | null>(null);
   const [completeOpen, setCompleteOpen] = useState(false);
-  const [completeNotes, setCompleteNotes] = useState('');\n  const [receivedBy, setReceivedBy] = useState('');
+  const [completeNotes, setCompleteNotes] = useState('');
+  const [receivedBy, setReceivedBy] = useState('');
   const [acting, setActing] = useState(false);
 
   async function load() {
