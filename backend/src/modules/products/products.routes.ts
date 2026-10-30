@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { query } from '../../db/pool';
+import { query, pool } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
@@ -35,17 +35,26 @@ router.get(
     const active = strParam(req.query.active);
     const { where, params } = buildFilters(q, categoryId, brand, active);
 
-    const count = await query<{ total: string }>(`SELECT COUNT(*) AS total FROM products p ${where}`, params);
-    const rows = await query(
-      `SELECT p.id, p.code, p.barcode, p.name, p.description, p.brand, p.category_id,
-              c.name AS category_name, p.unit, p.min_stock, p.cost, p.reference_price,
-              p.is_active, p.created_at, p.updated_at
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-       ${where}
-       ORDER BY p.name LIMIT ${pageSize} OFFSET ${offset}`,
-      params
-    );
-    res.json({ products: rows.rows, total: Number(count.rows[0].total), page, pageSize });
+    // Un SOLO round-trip (la BD esta en Supabase, cada query es un viaje de red):
+    // COUNT(*) OVER() viene en cada fila, sin la query de COUNT separada.
+    const c = await pool.connect();
+    try {
+      const rows = await c.query<{ total?: string }>(
+        `SELECT p.id, p.code, p.barcode, p.name, p.description, p.brand, p.category_id,
+                c.name AS category_name, p.unit, p.min_stock, p.cost, p.reference_price,
+                p.is_active, p.created_at, p.updated_at,
+                COUNT(*) OVER() AS total
+         FROM products p LEFT JOIN categories c ON c.id = p.category_id
+         ${where}
+         ORDER BY p.name LIMIT ${pageSize} OFFSET ${offset}`,
+        params
+      );
+      const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+      const products = rows.rows.map(({ total: _t, ...rest }) => rest);
+      res.json({ products, total, page, pageSize });
+    } finally {
+      c.release();
+    }
   })
 );
 
@@ -139,22 +148,28 @@ router.get(
   '/:id',
   asyncH(async (req, res) => {
     const id = pathId(req.params.id);
-    const r = await query(
-      `SELECT p.*, c.name AS category_name FROM products p
-       LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = $1`,
-      [id]
-    );
-    if (!r.rows[0]) throw ApiError.notFound('Producto no encontrado');
-    const stock = await query(
-      `SELECT l.id AS location_id, l.name AS location_name, l.type,
-              COALESCE(sb.quantity, 0) AS quantity
-       FROM locations l
-       LEFT JOIN stock_balances sb ON sb.location_id = l.id AND sb.product_id = $1
-       WHERE l.is_active
-       ORDER BY l.type DESC, l.code`,
-      [id]
-    );
-    res.json({ product: r.rows[0], stock: stock.rows });
+    // Ambas queries en un mismo cliente: 1 conexion, menor latencia
+    const c = await pool.connect();
+    try {
+      const r = await c.query(
+        `SELECT p.*, c.name AS category_name FROM products p
+         LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = $1`,
+        [id]
+      );
+      if (!r.rows[0]) throw ApiError.notFound('Producto no encontrado');
+      const stock = await c.query(
+        `SELECT l.id AS location_id, l.name AS location_name, l.type,
+                COALESCE(sb.quantity, 0) AS quantity
+         FROM locations l
+         LEFT JOIN stock_balances sb ON sb.location_id = l.id AND sb.product_id = $1
+         WHERE l.is_active
+         ORDER BY l.type DESC, l.code`,
+        [id]
+      );
+      res.json({ product: r.rows[0], stock: stock.rows });
+    } finally {
+      c.release();
+    }
   })
 );
 

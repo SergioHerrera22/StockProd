@@ -1,5 +1,5 @@
 import { PoolClient } from 'pg';
-import { query, withTx } from '../../db/pool';
+import { pool, query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { applyStockChange } from '../../services/stockEngine';
 import { nextDocNumber } from '../../services/numbering';
@@ -62,12 +62,17 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
       [number, input.locationId, input.type, input.supplier?.trim() || null, input.notes?.trim() || null, user.id, status]
     );
     const entryId = r.rows[0].id;
-    for (const it of input.items) {
-      await c.query(
-        `INSERT INTO stock_entry_items (entry_id, product_id, quantity, unit_cost) VALUES ($1,$2,$3,$4)`,
-        [entryId, it.productId, it.quantity, it.unitCost ?? null]
-      );
-    }
+    // Insercion de items en UNA sola query (unnest) en vez de N round-trips
+    await c.query(
+      `INSERT INTO stock_entry_items (entry_id, product_id, quantity, unit_cost)
+       SELECT $1, p, q, u FROM unnest($2::int[], $3::numeric[], $4::numeric[]) AS t(p, q, u)`,
+      [
+        entryId,
+        input.items.map((it) => it.productId),
+        input.items.map((it) => it.quantity),
+        input.items.map((it) => it.unitCost ?? null),
+      ]
+    );
 
     if (requiresApproval) {
       const rule = rules.find(r => r.action.require_approval)!;
@@ -119,22 +124,19 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
     }
   }
 
-  // Evaluar reglas al confirmar
-  const itemsPreview = await c.query<{ product_id: number; quantity: string }>(
-    'SELECT product_id, quantity FROM stock_entry_items WHERE entry_id = $1', [id]
+  // Evaluar reglas al confirmar + leer items en UNA sola query
+  // (antes se leian los items dos veces: para qtySum y para aplicar el stock)
+  const items = await c.query<{ product_id: number; quantity: string; unit_cost: string | null }>(
+    'SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]
   );
-  const qtySum = itemsPreview.rows.reduce((s, it) => s + Number(it.quantity), 0);
+  if (!items.rows.length) throw ApiError.badRequest('La entrada no tiene productos');
+  const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
   const context = { qty_sum: qtySum, location_id: entry.location_id, user_role: user.role };
   const rules = await evaluateBusinessRules('ENTRY', 'BEFORE_CONFIRM', context);
   const stillRequiresApproval = rules.some(r => r.action.require_approval);
   if (stillRequiresApproval && user.role === 'EMPLEADO') {
     throw ApiError.forbidden('Esta entrada requiere aprobador con rol ENCARGADO o superior');
   }
-
-  const items = await c.query<{ product_id: number; quantity: string; unit_cost: string | null }>(
-    'SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]
-  );
-  if (!items.rows.length) throw ApiError.badRequest('La entrada no tiene productos');
 
   // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
   const sortedItems = [...items.rows].sort((a, b) => a.product_id - b.product_id);
@@ -151,9 +153,16 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
       reason: `Ingreso de mercaderia ${entry.number}`,
       notes: it.unit_cost ? `Costo unitario: ${it.unit_cost}` : undefined,
     });
-    if (it.unit_cost) {
-      await c.query('UPDATE products SET cost = $1 WHERE id = $2 AND (cost IS NULL OR cost = 0)', [it.unit_cost, it.product_id]);
-    }
+  }
+  // Historico de costo: 1 query para todos los items con costo (antes N)
+  const withCost = sortedItems.filter((it) => it.unit_cost);
+  if (withCost.length) {
+    await c.query(
+      `UPDATE products p SET cost = v.cost
+       FROM unnest($1::int[], $2::numeric[]) AS v(id, cost)
+       WHERE p.id = v.id AND (p.cost IS NULL OR p.cost = 0)`,
+      [withCost.map((it) => it.product_id), withCost.map((it) => it.unit_cost)]
+    );
   }
 
   await c.query(
@@ -284,7 +293,9 @@ export async function voidEntry(user: AuthUser, ip: string | undefined, id: numb
 }
 
 export async function getEntry(id: number) {
-  return withTx(async (c) => {
+  // Lectura pura: no necesita transaccion ni BEGIN/COMMIT extra (antes withTx)
+  const c = await pool.connect();
+  try {
     const head = await c.query(
       `SELECT e.*, l.name AS location_name, cu.full_name AS created_by_name,
               confu.full_name AS confirmed_by_name, recu.full_name AS received_by_name,
@@ -304,7 +315,9 @@ export async function getEntry(id: number) {
        WHERE ei.entry_id = $1 ORDER BY ei.id`, [id]
     );
     return { ...head.rows[0], items: items.rows };
-  });
+  } finally {
+    c.release();
+  }
 }
 
 export async function listEntries(opts: { status?: string; locationId?: number; page: number; pageSize: number; offset: number }) {
@@ -313,11 +326,12 @@ export async function listEntries(opts: { status?: string; locationId?: number; 
   if (opts.status) { params.push(opts.status); where.push(`e.status = $${params.length}`); }
   if (opts.locationId) { params.push(opts.locationId); where.push(`e.location_id = $${params.length}`); }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM stock_entries e ${whereSql}`, params);
-  const rows = await query(
+  // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+  const rows = await query<{ total?: string }>(
     `SELECT e.id, e.number, e.status, e.type, e.supplier, e.location_id, l.name AS location_name,
             e.created_at, e.confirmed_at, e.received_at, cu.full_name AS created_by_name,
-            (SELECT COUNT(*) FROM stock_entry_items WHERE entry_id = e.id) AS line_count
+            (SELECT COUNT(*) FROM stock_entry_items WHERE entry_id = e.id) AS line_count,
+            COUNT(*) OVER() AS total
      FROM stock_entries e
      JOIN locations l ON l.id = e.location_id
      JOIN users cu ON cu.id = e.created_by
@@ -325,5 +339,7 @@ export async function listEntries(opts: { status?: string; locationId?: number; 
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params
   );
-  return { entries: rows.rows, total: Number(count.rows[0].total) };
+  const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+  const entries = rows.rows.map(({ total: _t, ...rest }) => rest);
+  return { entries, total };
 }

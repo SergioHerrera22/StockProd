@@ -281,13 +281,17 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
     );
     const deliveryId = r.rows[0].id;
 
-    for (const it of input.items) {
-      await c.query(
-        `INSERT INTO delivery_items (delivery_id, product_id, quantity, requested_quantity)
-         VALUES ($1,$2,$3,$4)`,
-        [deliveryId, it.productId, it.quantity, it.requestedQuantity ?? null]
-      );
-    }
+    // Insercion de items en UNA sola query (unnest) en vez de N round-trips
+    await c.query(
+      `INSERT INTO delivery_items (delivery_id, product_id, quantity, requested_quantity)
+       SELECT $1, p, q, rq FROM unnest($2::int[], $3::numeric[], $4::numeric[]) AS t(p, q, rq)`,
+      [
+        deliveryId,
+        input.items.map((it) => it.productId),
+        input.items.map((it) => it.quantity),
+        input.items.map((it) => it.requestedQuantity ?? null),
+      ]
+    );
 
     if (requiresApproval) {
       const rule = rules.find(r => r.action.require_approval)!;
@@ -358,13 +362,17 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
       ]
     );
     await c.query('DELETE FROM delivery_items WHERE delivery_id = $1', [id]);
-    for (const it of input.items) {
-      await c.query(
-        `INSERT INTO delivery_items (delivery_id, product_id, quantity, requested_quantity)
-         VALUES ($1,$2,$3,$4)`,
-        [id, it.productId, it.quantity, it.requestedQuantity ?? null]
-      );
-    }
+    // Reinsercion de items en UNA sola query (unnest)
+    await c.query(
+      `INSERT INTO delivery_items (delivery_id, product_id, quantity, requested_quantity)
+       SELECT $1, p, q, rq FROM unnest($2::int[], $3::numeric[], $4::numeric[]) AS t(p, q, rq)`,
+      [
+        id,
+        input.items.map((it) => it.productId),
+        input.items.map((it) => it.quantity),
+        input.items.map((it) => it.requestedQuantity ?? null),
+      ]
+    );
     await writeAudit(c, { userId: user.id, action: 'DELIVERY_UPDATE_DRAFT', entity: 'delivery', entityId: id, ip });
     return { id, number: d.rows[0].number };
   });
@@ -582,13 +590,14 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
   // este campo como "Entregado" y la reposicion por anulacion devuelta se
   // calcula con el (si quedara la cantidad cargada original, anular una entrega
   // parcial devolveria al stock unidades que nunca salieron).
-  for (const it of items.rows) {
-    const delivered = deliverNowMap.get(it.product_id) ?? 0;
-    await c.query(
-      `UPDATE delivery_items SET quantity_delivered = $1 WHERE delivery_id = $2 AND product_id = $3`,
-      [delivered, id, it.product_id]
-    );
-  }
+  // UPDATE multi-row con unnest: 1 query para todos los items.
+  const allAffected = items.rows.map(it => it.product_id);
+  await c.query(
+    `UPDATE delivery_items di SET quantity_delivered = v.qty
+     FROM unnest($2::int[], $3::numeric[]) AS v(pid, qty)
+     WHERE di.delivery_id = $1 AND di.product_id = v.pid`,
+    [id, allAffected, items.rows.map(it => deliverNowMap.get(it.product_id) ?? 0)]
+  );
 
   const finalStatus = shortfalls.length > 0 || unresolved.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
   await c.query(
@@ -777,14 +786,15 @@ export async function confirmDeliveryWithAlternatives(
       );
     }
 
-    // Registrar lo EFECTIVAMENTE entregado (comprobante + reposición por anulación)
-    for (const it of items.rows) {
-      const delivered = deliverNowMap.get(it.product_id) ?? 0;
-      await c.query(
-        `UPDATE delivery_items SET quantity_delivered = $1 WHERE delivery_id = $2 AND product_id = $3`,
-        [delivered, id, it.product_id]
-      );
-    }
+    // Registrar lo EFECTIVAMENTE entregado (comprobante + reposición por anulación):
+    // un solo UPDATE multi-row con unnest en vez de N queries
+    const affected = items.rows.filter(it => deliverNowMap.has(it.product_id));
+    await c.query(
+      `UPDATE delivery_items di SET quantity_delivered = v.qty
+       FROM unnest($2::int[], $3::numeric[]) AS v(pid, qty)
+       WHERE di.delivery_id = $1 AND di.product_id = v.pid`,
+      [id, affected.map(it => it.product_id), affected.map(it => deliverNowMap.get(it.product_id) ?? 0)]
+    );
 
     const finalStatus = shortfalls.length > 0 || unresolved.length > 0 ? 'PARCIAL' : 'CONFIRMADO';
     await c.query(
@@ -1302,15 +1312,16 @@ export async function listDeliveries(opts: {
     where.push(`(d.number ILIKE $${n} OR d.invoice_number ILIKE $${n})`);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM deliveries d ${whereSql}`, params);
-  const rows = await query(
+  // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+  const rows = await query<{ id: number; total?: string }>(
     `SELECT d.id, d.number, d.status, d.invoice_number, d.location_id, l.name AS location_name,
             d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
             d.delivery_type, d.customer_name, d.delivery_address, d.driver_user_id, d.driver_assigned_at,
             d.delivered_at, d.delivery_started_at, d.due_at,
             du.full_name AS driver_name,
             (SELECT COALESCE(SUM(quantity),0) FROM delivery_items WHERE delivery_id = d.id) AS total_items,
-            (SELECT COUNT(*) FROM delivery_items WHERE delivery_id = d.id) AS line_count
+            (SELECT COUNT(*) FROM delivery_items WHERE delivery_id = d.id) AS line_count,
+            COUNT(*) OVER() AS total
      FROM deliveries d
      JOIN locations l ON l.id = d.location_id
      JOIN users cu ON cu.id = d.created_by
@@ -1320,6 +1331,7 @@ export async function listDeliveries(opts: {
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params
   );
+  const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
 
   // Faltantes por entrega (solo significativos en CONFIRMADO/PARCIAL): por
   // item, objetivo = max(cargado, facturado) y quedó por entregar = objetivo -
@@ -1353,11 +1365,11 @@ export async function listDeliveries(opts: {
     const byDelivery = new Map(agg.rows.map(r => [r.delivery_id, r]));
     for (const r of rows.rows) {
       const a = byDelivery.get(r.id);
-      r.shortfall_lines = a ? Number(a.shortfall_lines) : 0;
-      r.shortfall_units = a ? Number(a.shortfall_units) : 0;
+      (r as Record<string, unknown>).shortfall_lines = a ? Number(a.shortfall_lines) : 0;
+      (r as Record<string, unknown>).shortfall_units = a ? Number(a.shortfall_units) : 0;
     }
   }
-  return { deliveries: rows.rows, total: Number(count.rows[0].total) };
+  return { deliveries: rows.rows, total };
 }
 
 /**

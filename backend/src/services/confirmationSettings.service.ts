@@ -1,6 +1,7 @@
 import { PoolClient } from 'pg';
 import { query } from '../db/pool';
 import { writeAudit } from './audit.service';
+import { cached, cacheInvalidate } from '../lib/memCache';
 
 export type ConfModule = 'ENTRY' | 'DELIVERY' | 'TRANSFER' | 'COUNT' | 'VOID';
 export type ConfAction = 'CONFIRM' | 'APPROVE' | 'APPLY' | 'RECEIVE' | 'VERIFY' | 'VOID';
@@ -23,13 +24,17 @@ export async function getConfirmationSetting(
   module: ConfModule,
   action: ConfAction
 ): Promise<ConfirmationSetting | null> {
-  const r = await c.query<ConfirmationSetting>(
-    `SELECT module, action, allow_same_user, require_different_user, require_min_role, require_dual_auth, enabled, notes, updated_by, updated_at
-     FROM system_confirmation_settings
-     WHERE module = $1 AND action = $2`,
-    [module, action]
-  );
-  return r.rows[0] ?? null;
+  // Config cambiante solo en el panel admin (023 system_confirmation_settings):
+  // se cachea 30s para evitar un round-trip mas en cada confirm/approve/void.
+  return cached(`confirm-setting:${module}:${action}`, 30_000, async () => {
+    const r = await c.query<ConfirmationSetting>(
+      `SELECT module, action, allow_same_user, require_different_user, require_min_role, require_dual_auth, enabled, notes, updated_by, updated_at
+       FROM system_confirmation_settings
+       WHERE module = $1 AND action = $2`,
+      [module, action]
+    );
+    return r.rows[0] ?? null;
+  });
 }
 
 export async function listConfirmationSettings(): Promise<ConfirmationSetting[]> {
@@ -76,15 +81,17 @@ export async function upsertConfirmationSetting(
   );
 
   // Audit
+  cacheInvalidate('confirm-setting:');
   try {
-    const client: any = await (await import('../db/pool')).getClient();
+    const poolMod = await import('../db/pool');
+    const client: PoolClient = await poolMod.pool.connect();
     try {
       await writeAudit(client, {
         userId,
         action: 'SYSTEM_CONFIRMATION_SETTINGS_UPDATE',
         entity: 'system_confirmation_settings',
         entityId: null as any,
-        details: { module: input.module, action: input.action, ...input },
+        details: { ...input, module: input.module, action: input.action },
         ip,
       });
     } finally {

@@ -1,5 +1,5 @@
 import { PoolClient } from 'pg';
-import { query, withTx } from '../../db/pool';
+import { pool, query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { applyStockChange } from '../../services/stockEngine';
 import { nextDocNumber } from '../../services/numbering';
@@ -104,13 +104,12 @@ export async function createTransfer(user: AuthUser, ip: string | undefined, inp
     );
     const transferId = t.rows[0].id;
 
-    // Insertar items
-    for (const it of input.items) {
-      await c.query(
-        'INSERT INTO transfer_items (transfer_id, product_id, quantity_sent) VALUES ($1,$2,$3)',
-        [transferId, it.productId, it.quantity]
-      );
-    }
+    // Insertar items en UNA sola query (unnest)
+    await c.query(
+      `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent)
+       SELECT $1, p, q FROM unnest($2::int[], $3::numeric[]) AS t(p, q)`,
+      [transferId, input.items.map(it => it.productId), input.items.map(it => it.quantity)]
+    );
 
     // Si requiere aprobación, crear solicitud y NO reservar/consumir aún
     if (requiresApproval) {
@@ -356,9 +355,13 @@ export async function receiveTransfer(
       });
     }
 
-    for (const u of updates) {
-      await c.query('UPDATE transfer_items SET quantity_received = $1 WHERE id = $2', [u.qty, u.itemId]);
-    }
+    // Todos los items en una sola query (unnest) en vez de N round-trips
+    await c.query(
+      `UPDATE transfer_items ti SET quantity_received = v.qty
+       FROM unnest($2::int[], $3::numeric[]) AS v(iid, qty)
+       WHERE ti.id = v.iid AND ti.transfer_id = $1`,
+      [id, updates.map(u => u.itemId), updates.map(u => u.qty)]
+    );
 
     const status = allComplete ? 'RECIBIDO' : 'RECIBIDO_CON_DIF';
     await c.query(
@@ -510,7 +513,9 @@ export async function voidTransfer(user: AuthUser, ip: string | undefined, id: n
 }
 
 export async function getTransfer(id: number) {
-  return withTx(async (c) => {
+  // Lectura pura: sin transaccion (antes withTx = BEGIN/COMMIT de regalo)
+  const c = await pool.connect();
+  try {
     const head = await c.query(
       `SELECT t.*, lo.name AS origin_name, ld.name AS destination_name,
               cu.full_name AS created_by_name, ru.full_name AS received_by_name,
@@ -536,7 +541,9 @@ export async function getTransfer(id: number) {
        WHERE ti.transfer_id = $1 ORDER BY ti.id`, [id]
     );
     return { ...head.rows[0], items: items.rows };
-  });
+  } finally {
+    c.release();
+  }
 }
 
 export async function listTransfers(opts: { status?: string; locationId?: number; page: number; pageSize: number; offset: number }) {
@@ -545,15 +552,16 @@ export async function listTransfers(opts: { status?: string; locationId?: number
   if (opts.status) { params.push(opts.status); where.push(`t.status = $${params.length}`); }
   if (opts.locationId) { params.push(opts.locationId); where.push(`(t.origin_location_id = $${params.length} OR t.destination_location_id = $${params.length})`); }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM transfers t ${whereSql}`, params);
-  const rows = await query(
+  // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+  const rows = await query<{ total?: string }>(
     `SELECT t.id, t.number, t.status, t.origin_location_id, t.destination_location_id,
             lo.name AS origin_name, ld.name AS destination_name,
             t.created_at, t.dispatched_at, t.received_at, t.verified_at,
             t.driver_user_id, t.driver_assigned_at, t.delivery_address, t.delivered_at, t.delivery_started_at, t.due_at,
             drv.full_name AS driver_name,
             cu.full_name AS created_by_name,
-            (SELECT COUNT(*) FROM transfer_items WHERE transfer_id = t.id) AS line_count
+            (SELECT COUNT(*) FROM transfer_items WHERE transfer_id = t.id) AS line_count,
+            COUNT(*) OVER() AS total
      FROM transfers t
      JOIN locations lo ON lo.id = t.origin_location_id
      JOIN locations ld ON ld.id = t.destination_location_id
@@ -563,5 +571,6 @@ export async function listTransfers(opts: { status?: string; locationId?: number
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params
   );
-  return { transfers: rows.rows, total: Number(count.rows[0].total) };
+  const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+  return { transfers: rows.rows.map(({ total: _t, ...rest }) => rest), total };
 }
