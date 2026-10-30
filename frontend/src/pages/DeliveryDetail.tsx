@@ -27,7 +27,7 @@ export default function DeliveryDetail() {
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [deriving, setDeriving] = useState(false);
-  const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);
+  const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);\n  const [receiptOpen, setReceiptOpen] = useState(false);\n  const [receivedBy, setReceivedBy] = useState('');\n  const [receiptNotes, setReceiptNotes] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -141,6 +141,27 @@ export default function DeliveryDetail() {
     }
   }
 
+  async function registerReceipt() {
+    if (!delivery) return;
+    if (receivedBy.trim().length < 2) {
+      toast.error('Ingresá el nombre de quien recibió la mercadería');
+      return;
+    }
+    setSaving(true);
+    try {
+      await markDeliveryDelivered(delivery.id, { receivedBy: receivedBy.trim(), notes: receiptNotes.trim() || null });
+      toast.success('Recepción a domicilio registrada');
+      setReceiptOpen(false);
+      setReceivedBy('');
+      setReceiptNotes('');
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function voidDelivery() {
     if (!delivery) return;
     setSaving(true);
@@ -245,11 +266,32 @@ export default function DeliveryDetail() {
               🔄 Re-derivar entrega
             </Button>
           )}
+          {delivery.delivery_type === 'DOMICILIO' && ['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && !delivery.delivered_at && can('deliveries.confirm') && (
+            <Button variant="success" onClick={() => setReceiptOpen(true)}>Registrar recepción</Button>
+          )}
           {delivery.status !== 'ANULADO' && can('deliveries.void') && (
             <Button variant="danger" onClick={() => setVoidOpen(true)}>Anular</Button>
           )}
         </div>
       </div>
+
+      {receiptOpen && (
+        <Modal open onClose={() => setReceiptOpen(false)} title="Registrar recepción a domicilio" width="sm"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setReceiptOpen(false)}>Cancelar</Button>
+              <Button variant="success" loading={saving} disabled={receivedBy.trim().length < 2} onClick={() => void registerReceipt()}>Confirmar recepción</Button>
+            </>
+          }>
+          <p className="mb-3 text-sm text-slate-500">Esta acción registra la entrega física al cliente. No genera movimientos de stock.</p>
+          <Field label="Nombre de quien recibe" required>
+            <Input value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} maxLength={150} placeholder="Nombre y apellido" />
+          </Field>
+          <Field label="Observaciones (opcional)">
+            <Input value={receiptNotes} onChange={(e) => setReceiptNotes(e.target.value)} maxLength={1000} placeholder="Ej. recibió encargado de obra" />
+          </Field>
+        </Modal>
+      )}
 
       {/* Comprobante */}
       <Card className="print-area p-6">
@@ -281,6 +323,12 @@ export default function DeliveryDetail() {
           </div>
         </div>
 
+        {delivery.delivered_at && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            <strong>Recepción confirmada:</strong> {delivery.delivered_to || 'Receptor sin identificar'} · {fmtDateTime(delivery.delivered_at)}
+            {delivery.delivery_proof_notes && <div className="mt-1">Observaciones: {delivery.delivery_proof_notes}</div>}
+          </div>
+        )}
         <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
           <div><span className="text-slate-400">Fecha:</span> {fmtDateTime(delivery.created_at)}</div>
           <div><span className="text-slate-400">Sale de:</span> <strong>{delivery.location_name}</strong></div>
