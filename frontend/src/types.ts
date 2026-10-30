@@ -103,6 +103,15 @@ export interface Delivery {
   // retiro abierta. El backend puede devolver este estado al confirmar.
   status: 'BORRADOR' | 'CONFIRMADO' | 'PARCIAL' | 'ANULADO';
   is_pending_delivery?: boolean;
+  delivery_type?: 'LOCAL' | 'DOMICILIO';
+  delivered_at?: string | null;
+  delivered_to?: string | null;
+  delivered_by?: number | null;
+  delivery_proof_notes?: string | null;
+  delivery_started_at?: string | null;
+  due_at?: string | null;
+  driver_user_id?: number | null;
+  driver_name?: string | null;
   location_id: number;
   location_name?: string;
   location_code?: string;
