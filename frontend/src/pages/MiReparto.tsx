@@ -39,7 +39,7 @@ export default function MiReparto() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<Assignment | null>(null);
   const [completeOpen, setCompleteOpen] = useState(false);
-  const [completeNotes, setCompleteNotes] = useState('');
+  const [completeNotes, setCompleteNotes] = useState('');\n  const [receivedBy, setReceivedBy] = useState('');
   const [acting, setActing] = useState(false);
 
   async function load() {
@@ -76,14 +76,19 @@ export default function MiReparto() {
   async function openComplete(a: Assignment) {
     setDetail(a);
     setCompleteNotes('');
+    setReceivedBy('');
     setCompleteOpen(true);
   }
 
   async function handleComplete() {
     if (!detail) return;
+    if (detail.type === 'DELIVERY' && receivedBy.trim().length < 2) {
+      toast.error('Ingresá el nombre de quien recibió la mercadería');
+      return;
+    }
     setActing(true);
     try {
-      await completeDriverDelivery(detail.type, detail.delivery_id, completeNotes.trim() || undefined);
+      await completeDriverDelivery(detail.type, detail.delivery_id, completeNotes.trim() || undefined, receivedBy.trim() || undefined);
       toast.success('Entrega finalizada');
       setCompleteOpen(false);
       setDetail(null);
@@ -186,12 +191,17 @@ export default function MiReparto() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Cancelar</Button>
-            <Button variant="success" loading={acting} onClick={handleComplete}>Confirmar entrega</Button>
+            <Button variant="success" loading={acting} disabled={detail?.type === 'DELIVERY' && receivedBy.trim().length < 2} onClick={handleComplete}>Confirmar entrega</Button>
           </>
         }
       >
+        {detail?.type === 'DELIVERY' && (
+          <Field label="Nombre de quien recibe" required>
+            <Input value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} maxLength={150} placeholder="Nombre y apellido del receptor" />
+          </Field>
+        )}
         <Field label="Observaciones de entrega">
-          <Textarea rows={3} value={completeNotes} onChange={(e) => setCompleteNotes(e.target.value)} placeholder="Quién recibió, observaciones..." />
+          <Textarea rows={3} value={completeNotes} onChange={(e) => setCompleteNotes(e.target.value)} placeholder="Observaciones de entrega..." />
         </Field>
       </Modal>
     </div>
