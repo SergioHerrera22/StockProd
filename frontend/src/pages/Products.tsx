@@ -156,6 +156,8 @@ const emptyForm = {
   cost: '',
   referencePrice: '',
   isActive: true,
+  supplierIds: [] as number[],
+  primarySupplierId: '',
 };
 
 export default function Products() {
@@ -173,6 +175,7 @@ export default function Products() {
   const [categoryId, setCategoryId] = useState('');
   const [active, setActive] = useState('true');
   const [categories, setCategories] = useState<Category[]>([]);
+  const [supplierOptions, setSupplierOptions] = useState<{ id: number; name: string }[]>([]);
 
   const [form, setForm] = useState<typeof emptyForm>(emptyForm);
   const [modalOpen, setModalOpen] = useState(false);
@@ -290,6 +293,7 @@ export default function Products() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     api<{ categories: Category[] }>('/categories').then((r) => setCategories(r.categories)).catch(() => {});
+    api<{ suppliers: { id: number; name: string }[] }>('/suppliers').then((r) => setSupplierOptions(r.suppliers)).catch(() => {});
   }, []);
 
   // Duplicados: se consulta mientras se completa el nombre/código
@@ -313,7 +317,15 @@ export default function Products() {
     setModalOpen(true);
   }
 
-  function openEdit(p: Product) {
+  async function openEdit(p: Product) {
+    let linkedSuppliers: { id: number; is_primary: boolean }[] = [];
+    try {
+      const linked = await api<{ suppliers: { id: number; is_primary: boolean }[] }>(`/products/${p.id}/suppliers`);
+      linkedSuppliers = linked.suppliers;
+    } catch (error) {
+      toast.error(`No se pudieron cargar los proveedores: ${(error as Error).message}`);
+      return;
+    }
     setForm({
       id: p.id,
       code: p.code,
@@ -327,6 +339,8 @@ export default function Products() {
       cost: p.cost === null || p.cost === undefined ? '' : String(p.cost),
       referencePrice: p.reference_price === null || p.reference_price === undefined ? '' : String(p.reference_price),
       isActive: p.is_active,
+      supplierIds: linkedSuppliers.map((s) => s.id),
+      primarySupplierId: String(linkedSuppliers.find((s) => s.is_primary)?.id ?? ''),
     });
     setDuplicates([]);
     setScanOpen(false);
@@ -387,6 +401,8 @@ export default function Products() {
       cost: form.cost === '' ? null : Number(form.cost),
       referencePrice: form.referencePrice === '' ? null : Number(form.referencePrice),
       isActive: form.isActive,
+      supplierIds: form.supplierIds,
+      primarySupplierId: form.primarySupplierId ? Number(form.primarySupplierId) : null,
     };
     try {
       if (form.id) {
@@ -781,6 +797,25 @@ export default function Products() {
           </Field>
           <Field label="Stock mínimo" hint="Dispara alertas de stock bajo">
             <Input type="number" min="0" step="0.001" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} />
+          </Field>
+          <Field label="Proveedores asociados" className="sm:col-span-2">
+            {supplierOptions.length === 0 ? <p className="text-sm text-slate-500">No hay proveedores activos. Cargalos desde Proveedores.</p> : (
+              <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-3">
+                {supplierOptions.map((item) => <label key={item.id} className="flex items-center gap-2 py-1 text-sm text-slate-700">
+                  <input type="checkbox" checked={form.supplierIds.includes(item.id)} onChange={(e) => setForm((current) => {
+                    const ids = e.target.checked ? [...current.supplierIds, item.id] : current.supplierIds.filter((id) => id !== item.id);
+                    const primary = e.target.checked ? (current.primarySupplierId || String(item.id)) : (current.primarySupplierId === String(item.id) ? String(ids[0] ?? '') : current.primarySupplierId);
+                    return { ...current, supplierIds: ids, primarySupplierId: primary };
+                  })} />{item.name}
+                </label>)}
+              </div>
+            )}
+            <div className="mt-2"><Field label="Proveedor principal">
+              <Select value={form.primarySupplierId} disabled={!form.supplierIds.length} onChange={(e) => setForm((current) => ({ ...current, primarySupplierId: e.target.value }))}>
+                <option value="">Sin proveedor principal</option>
+                {supplierOptions.filter((item) => form.supplierIds.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </Select>
+            </Field></div>
           </Field>
           <Field label="Descripción" className="sm:col-span-2">
             <Textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
