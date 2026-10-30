@@ -233,6 +233,28 @@ async function main() {
   const last = movs.movements[0];
   ok(last.type === 'AJUSTE_NEG' && last.balance_after === 14, 'Último movimiento: ajuste con saldo anterior y posterior');
 
+  // ---------- Entrega pendiente: reserva sin descontar hasta efectivizar ----------
+  console.log('[8b] Entrega pendiente');
+  const pendingDraft = await api('POST', '/deliveries', {
+    token: T,
+    body: {
+      locationId: dep.id,
+      invoiceNumber: '0001-PEND-0001',
+      pendingDelivery: true,
+      items: [{ productId: pid, quantity: 2 }],
+    },
+  });
+  ok(pendingDraft.status === 201, 'Entrega pendiente creada');
+  const beforePendingConfirm = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
+  const depBeforePendingConfirm = Number(beforePendingConfirm.find((s) => s.location_id === dep.id)?.quantity);
+  ok(depBeforePendingConfirm === 77, 'La reserva no descuenta stock físico antes de la entrega efectiva');
+  const pendingConfirm = await api('POST', `/deliveries/${pendingDraft.json.id}/confirm`, { token: TE });
+  ok(pendingConfirm.status === 200, 'Entrega pendiente efectivizada correctamente');
+  const afterPendingConfirm = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
+  ok(Number(afterPendingConfirm.find((s) => s.location_id === dep.id)?.quantity) === 75, 'El stock se descuenta al efectivizar la entrega pendiente');
+  const pendingDoubleConfirm = await api('POST', `/deliveries/${pendingDraft.json.id}/confirm`, { token: TE });
+  ok(pendingDoubleConfirm.status === 409, 'La entrega pendiente no puede efectivizarse dos veces');
+
   // ---------- Validación de permisos ----------
   console.log('[9] Permisos');
   // Crear (o reactivar) usuario empleado para la prueba
