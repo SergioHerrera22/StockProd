@@ -55,6 +55,10 @@ export default function DeliveryDetail() {
    */
   async function confirmDraft() {
     if (!delivery || !id) return;
+    if (delivery.is_pending_delivery) {
+      await doConfirmDirect();
+      return;
+    }
     setSaving(true);
     try {
       const avail = await checkDeliveryAvailability(delivery.id);
@@ -234,7 +238,7 @@ export default function DeliveryDetail() {
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => window.print()}>🖨 Imprimir comprobante</Button>
           {delivery.status === 'BORRADOR' && can('deliveries.confirm') && (
-            <Button variant="success" loading={saving} onClick={confirmDraft}>✅ Confirmar entrega</Button>
+            <Button variant="success" loading={saving} onClick={confirmDraft}>{delivery.is_pending_delivery ? '📦 Registrar entrega efectiva' : '✅ Confirmar entrega'}</Button>
           )}
           {(delivery.status === 'PARCIAL' || delivery.status === 'CONFIRMADO') && can('deliveries.confirm') && (
             <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock en otras sucursales para los faltantes que quedaron sin derivar">
@@ -262,6 +266,7 @@ export default function DeliveryDetail() {
           <div className="flex flex-col items-end text-right">
             <div className="font-mono text-lg font-bold text-brand-700">{delivery.number}</div>
             <Badge color={status.color}>{status.label}</Badge>
+            {delivery.is_pending_delivery && <Badge color="amber">Pendiente · stock reservado</Badge>}
             <div className="mt-1 print:mt-2">
               <Barcode value={delivery.number} height={40} width={1.3} />
             </div>

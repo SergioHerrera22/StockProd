@@ -30,7 +30,7 @@ const itemSchema = z.object({
 
 const draftSchema = z.object({
   locationId: z.number().int().positive(),
-  invoiceNumber: z.string().max(150).nullable().optional(),
+  invoiceNumber: z.string().trim().min(1, 'El número de factura es obligatorio').max(150),
   notes: z.string().max(2000).nullable().optional(),
   items: z.array(itemSchema).min(1),
   deliveryType: z.enum(['LOCAL', 'DOMICILIO']).optional(),
@@ -43,6 +43,7 @@ const draftSchema = z.object({
   driverId: z.number().int().positive().nullable().optional(),
   dueAt: z.string().nullable().optional(),
   deliveryObservations: z.string().nullable().optional(),
+  pendingDelivery: z.boolean().optional().default(false),
 });
 
 router.get(

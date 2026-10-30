@@ -192,6 +192,7 @@ export default function Deliveries() {
       return <span className="text-slate-300">—</span>;
     } },
     { key: 'status', label: 'Estado', render: (d) => {
+      if (d.is_pending_delivery && d.status === 'BORRADOR') return <Badge color="amber">Pendiente de entrega</Badge>;
       const s = deliveryStatusStyle(d.status);
       return <Badge color={s.color}>{s.label}</Badge>;
     } },

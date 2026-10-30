@@ -175,12 +175,12 @@ export async function scanDuplicates(): Promise<DuplicateGroup[]> {
     `SELECT p.id, p.code, p.name, p.brand, p.unit, p.is_active
      FROM products p
      WHERE p.is_active = true
-     ORDER BY lower(p.name), p.code`
+     ORDER BY lower(p.name), p.id`
   );
 
   const groups = new Map<string, DuplicateGroup>();
   for (const row of r.rows) {
-    const key = normalizeName(row.name);
+    const key = [normalizeName(row.name), normalizeName(row.brand ?? ''), String(row.unit).toUpperCase()].join('|');
     if (!key) continue;
     if (!groups.has(key)) {
       groups.set(key, { key, count: 0, products: [] });
