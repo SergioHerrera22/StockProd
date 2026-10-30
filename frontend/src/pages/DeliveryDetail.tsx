@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   api, getDeliveryPendingDeliveries, checkDeliveryAvailability, confirmDeliveryWithAlternatives,
-  rederiveDeliveryShortfalls,
+  rederiveDeliveryShortfalls, markDeliveryDelivered,
 } from '../lib/api';
 import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
