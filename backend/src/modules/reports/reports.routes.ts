@@ -16,9 +16,8 @@ router.get(
     const where: string[] = ['p.is_active'];
     if (locationId) { params.push(locationId); where.push(`sb.location_id = $${params.length}`); }
     const rows = await query(
-      `SELECT p.code, p.name AS product_name, p.brand, p.unit, p.min_stock, p.cost,
-              l.name AS location_name, l.code AS location_code, sb.quantity,
-              (sb.quantity * COALESCE(p.cost, 0)) AS value
+      `SELECT p.code, p.name AS product_name, p.brand, p.unit, p.min_stock,
+              l.name AS location_name, l.code AS location_code, sb.quantity
        FROM stock_balances sb
        JOIN products p ON p.id = sb.product_id
        JOIN locations l ON l.id = sb.location_id
@@ -30,6 +29,51 @@ router.get(
   })
 );
 
+// Proveedores activos del maestro de datos.
+router.get(
+  '/suppliers',
+  asyncH(async (_req, res) => {
+    const rows = await query<{ id: number; name: string }>(
+`SELECT id, name FROM suppliers WHERE is_active ORDER BY name`
+    );
+    res.json({ suppliers: rows.rows });
+  })
+);
+
+// Productos bajo mínimo agrupados por cada proveedor relacionado en el maestro.
+// El mínimo se compara contra stock disponible (físico menos reservas activas).
+router.get(
+  '/low-stock-by-supplier',
+  asyncH(async (req, res) => {
+    const locationId = intParam(req.query.locationId);
+    const supplierId = intParam(req.query.supplierId);
+    const rows = await query(
+      `WITH stock_summary AS (
+         SELECT product_id, SUM(quantity - COALESCE(reserved_quantity, 0)) AS available_qty
+         FROM stock_balances
+         WHERE ($1::int IS NULL OR location_id = $1)
+         GROUP BY product_id
+       )
+       SELECT COALESCE(s.name, '(Sin proveedor asociado)') AS supplier,
+              p.code, p.name, p.brand, p.unit, p.min_stock,
+              COALESCE(selected_location.name, 'Todas las ubicaciones') AS location_name,
+              COALESCE(stock_summary.available_qty, 0) AS total_qty
+       FROM products p
+       LEFT JOIN stock_summary ON stock_summary.product_id = p.id
+       LEFT JOIN product_suppliers ps ON ps.product_id = p.id
+         AND EXISTS (SELECT 1 FROM suppliers active_supplier WHERE active_supplier.id = ps.supplier_id AND active_supplier.is_active)
+       LEFT JOIN suppliers s ON s.id = ps.supplier_id AND s.is_active
+       LEFT JOIN locations selected_location ON selected_location.id = $1
+       WHERE p.is_active AND p.min_stock > 0
+         AND COALESCE(stock_summary.available_qty, 0) <= p.min_stock
+         AND ($2::int IS NULL OR s.id = $2)
+       ORDER BY supplier, total_qty ASC, p.name`,
+      [locationId ?? null, supplierId ?? null]
+    );
+    res.json({ rows: rows.rows.map((row: Record<string, unknown>) => ({ ...row, total_qty: Number(row.total_qty) })) });
+  })
+);
+
 // Productos con bajo stock
 router.get(
   '/low-stock',
@@ -38,13 +82,13 @@ router.get(
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
     const rows = await query(
       `SELECT p.code, p.name, p.brand, p.unit, p.min_stock,
-              COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty
+              COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) AS total_qty
        FROM products p
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
        WHERE p.is_active
        GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock
-       HAVING COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) > 0
-          AND COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) <= p.min_stock
+       HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) > 0
+          AND COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) <= p.min_stock
        ORDER BY p.name`
     );
     res.json({ rows: rows.rows.map((r: Record<string, unknown>) => ({ ...r, total_qty: Number(r.total_qty) })) });
@@ -59,12 +103,12 @@ router.get(
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
     const rows = await query(
       `SELECT p.code, p.name, p.brand, p.unit, p.min_stock,
-              COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty
+              COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) AS total_qty
        FROM products p
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
        WHERE p.is_active
        GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock
-       HAVING COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) = 0
+       HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) = 0
        ORDER BY p.name`
     );
     res.json({ rows: rows.rows.map((r: Record<string, unknown>) => ({ ...r, total_qty: Number(r.total_qty) })) });
@@ -191,45 +235,9 @@ router.get(
   })
 );
 
-// Valorizacion del inventario
-router.get(
-  '/inventory-value',
-  asyncH(async (_req, res) => {
-    const total = await query<{ value: string | null; products: string }>(
-      `SELECT COALESCE(SUM(sb.quantity * p.cost), 0) AS value,
-              COUNT(DISTINCT sb.product_id) AS products
-       FROM stock_balances sb JOIN products p ON p.id = sb.product_id
-       WHERE p.cost IS NOT NULL AND sb.quantity > 0`
-    );
-    const byLocation = await query(
-      `SELECT l.name AS location_name,
-              COALESCE(SUM(sb.quantity * p.cost), 0) AS value,
-              COALESCE(SUM(sb.quantity), 0) AS units
-       FROM locations l
-       LEFT JOIN stock_balances sb ON sb.location_id = l.id
-       LEFT JOIN products p ON p.id = sb.product_id AND p.cost IS NOT NULL
-       WHERE l.is_active
-       GROUP BY l.name ORDER BY l.name`
-    );
-    const withoutCost = await query<{ total: string }>(
-      `SELECT COUNT(*) total FROM products p
-       WHERE p.is_active AND p.cost IS NULL
-         AND EXISTS (SELECT 1 FROM stock_balances sb WHERE sb.product_id = p.id AND sb.quantity > 0)`
-    );
-    res.json({
-      totalValue: Number(total.rows[0].value ?? 0),
-      productsWithValue: Number(total.rows[0].products),
-      withoutCost: Number(withoutCost.rows[0].total),
-      byLocation: byLocation.rows.map((r: Record<string, unknown>) => ({
-        ...r, value: Number(r.value), units: Number(r.units),
-      })),
-    });
-  })
-);
-
 /**
  * Rotación de productos (mejora 13): qué productos se mueven, por sucursal,
- * en un período. Salidas por venta (SALIDA: entregas y retiros) y trasvasos
+ * en un período. Salidas por venta (SALIDA: entregas y retiros) y transferencias
  * (TRANS_SALIDA entre sucursales). Los AJUSTE_NEG quedan excluidos a
  * propósito: son mermas/inventariado, no rotación de mercadería.
  */

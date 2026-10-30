@@ -56,7 +56,7 @@ function documentLink(r: ApprovalRequestRow): { to: string; label: string } | nu
 const CONTEXT_FIELDS: Record<string, string> = {
   qty_sum: 'Cantidad total',
   adjustments_count: 'Ajustes',
-  lines_count: 'Líneas',
+  lines_count: 'Productos',
   location_id: 'Ubicación',
   reason: 'Motivo',
 };

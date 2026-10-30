@@ -10,6 +10,7 @@ import sessionRoutes from './modules/sessions/sessions.routes';
 import userRoutes from './modules/users/users.routes';
 import locationRoutes from './modules/locations/locations.routes';
 import categoryRoutes from './modules/categories/categories.routes';
+import supplierRoutes from './modules/suppliers/suppliers.routes';
 import productRoutes from './modules/products/products.routes';
 import stockRoutes from './modules/stock/stock.routes';
 import deliveryRoutes from './modules/deliveries/deliveries.routes';
@@ -71,6 +72,7 @@ export function createApp() {
   app.use('/api/users', userRoutes);
   app.use('/api/locations', locationRoutes);
   app.use('/api/categories', categoryRoutes);
+  app.use('/api/suppliers', supplierRoutes);
   app.use('/api/products', productRoutes);
   app.use('/api/stock', stockRoutes);
   app.use('/api/deliveries', deliveryRoutes);

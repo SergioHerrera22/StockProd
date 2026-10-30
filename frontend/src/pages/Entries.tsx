@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
-import { fmtDateTime, fmtMoney, fmtQty } from '../lib/format';
+import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
-import type { Entry, EntryItem, Location, StockRow } from '../types';
+import type { Entry, EntryItem, Location, StockRow, Supplier } from '../types';
 import {
   Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Textarea, useConfirm,
 } from '../components/ui';
@@ -21,7 +21,6 @@ interface DraftLine {
   code: string;
   name: string;
   quantity: number;
-  unitCost: string;
 }
 
 export default function Entries() {
@@ -35,6 +34,7 @@ export default function Entries() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
   const [locations, setLocations] = useState<Location[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   const [detail, setDetail] = useState<Entry | null>(null);
   const [voidOpen, setVoidOpen] = useState(false);
@@ -45,7 +45,7 @@ export default function Entries() {
   const [newOpen, setNewOpen] = useState(false);
   const [newLocation, setNewLocation] = useState('');
   const [newType, setNewType] = useState('COMPRA');
-  const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -70,18 +70,20 @@ export default function Entries() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     api<{ locations: Location[] }>('/locations').then((r) => setLocations(r.locations)).catch(() => {});
+    api<{ suppliers: Supplier[] }>('/suppliers').then((r) => setSuppliers(r.suppliers)).catch(() => {});
   }, []);
 
   function openNew() {
     setNewOpen(true);
     setLines([]);
-    setSupplier(''); setNotes('');
+    setSupplierId(''); setNotes('');
     setNewLocation(String(locations[0]?.id ?? ''));
   }
 
   async function saveNew(confirmNow: boolean) {
     if (!newLocation) { toast.error('Elegí la ubicación de destino'); return; }
     if (!lines.length) { toast.error('Agregá al menos un producto'); return; }
+    if (newType === 'COMPRA' && !supplierId) { toast.error('Seleccioná un proveedor registrado'); return; }
     setCreating(true);
     try {
       const res = await api<{ id: number; number: string }>(`/entries${confirmNow ? '?confirm=true' : ''}`, {
@@ -89,12 +91,11 @@ export default function Entries() {
         body: {
           locationId: Number(newLocation),
           type: newType,
-          supplier: supplier.trim() || null,
+          supplierId: supplierId ? Number(supplierId) : null,
           notes: notes.trim() || null,
           items: lines.map((l) => ({
             productId: l.productId,
             quantity: l.quantity,
-            unitCost: l.unitCost === '' ? null : Number(l.unitCost),
           })),
         },
       });
@@ -155,7 +156,7 @@ export default function Entries() {
     { key: 'location_name', label: 'Destino', render: (e) => e.location_name },
     { key: 'type', label: 'Tipo', render: (e) => <Badge color="blue">{e.type}</Badge> },
     { key: 'supplier', label: 'Proveedor', render: (e) => e.supplier ?? '—' },
-    { key: 'line_count', label: 'Líneas', align: 'right', render: (e) => e.line_count ?? '—' },
+    { key: 'line_count', label: 'Productos', align: 'right', render: (e) => e.line_count ?? '—' },
     { key: 'status', label: 'Estado', render: (e) => {
       const s = ENTRY_STATUS[e.status];
       return <Badge color={s.color}>{s.label}</Badge>;
@@ -219,14 +220,18 @@ export default function Entries() {
             </Select>
           </Field>
           <Field label="Tipo de movimiento" required>
-            <Select value={newType} onChange={(e) => setNewType(e.target.value)}>
+            <Select value={newType} onChange={(e) => { setNewType(e.target.value); if (e.target.value !== 'COMPRA') setSupplierId(''); }}>
               <option value="COMPRA">Compra a proveedor</option>
               <option value="DEVOLUCION">Devolución recibida</option>
               <option value="OTRO">Otro ingreso autorizado</option>
             </Select>
           </Field>
-          <Field label="Proveedor / referencia">
-            <Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Opcional" />
+          <Field label="Proveedor" required={newType === 'COMPRA'}>
+            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              <option value="">{newType === 'COMPRA' ? 'Seleccionar proveedor' : 'Sin proveedor'}</option>
+              {suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </Select>
+            {newType === 'COMPRA' && <span className="mt-1 block text-xs text-slate-500">La compra vinculará automáticamente sus productos con este proveedor. Si no aparece, primero registralo en Proveedores.</span>}
           </Field>
         </div>
 
@@ -243,7 +248,6 @@ export default function Entries() {
                 <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
                   <th className="py-1.5">Producto</th>
                   <th className="py-1.5 text-center">Cantidad</th>
-                  <th className="py-1.5 text-center">Costo unit.</th>
                   <th className="py-1.5"></th>
                 </tr>
               </thead>
@@ -262,16 +266,8 @@ export default function Entries() {
                         className="w-24 text-center"
                       />
                     </td>
-                    <td className="py-1.5 text-center">
-                      <Input
-                        type="number" min="0" step="0.01" placeholder="—"
-                        value={l.unitCost}
-                        onChange={(e) => setLines((prev) => prev.map((x) => x.productId === l.productId ? { ...x, unitCost: e.target.value } : x))}
-                        className="w-28 text-center"
-                      />
-                    </td>
                     <td className="py-1.5 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
+                      <Button size="lg" variant="ghost" className="!h-10 !w-10 !min-w-10 !p-0 text-xl leading-none" aria-label="Eliminar producto de la entrada" title="Eliminar producto" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
                     </td>
                   </tr>
                 ))}
@@ -293,7 +289,7 @@ export default function Entries() {
           setLines((prev) =>
             prev.some((l) => l.productId === p.id)
               ? prev.map((l) => l.productId === p.id ? { ...l, quantity: l.quantity + 1 } : l)
-              : [...prev, { productId: p.id, code: p.code, name: p.name, quantity: 1, unitCost: p.cost ? String(p.cost) : '' }]
+              : [...prev, { productId: p.id, code: p.code, name: p.name, quantity: 1 }]
           )
         }
       />
@@ -326,7 +322,6 @@ export default function Entries() {
                 <tr className="border-y border-slate-200 text-left text-xs uppercase text-slate-400">
                   <th className="py-1.5">Producto</th>
                   <th className="py-1.5 text-right">Cantidad</th>
-                  <th className="py-1.5 text-right">Costo unit.</th>
                 </tr>
               </thead>
               <tbody>
@@ -337,7 +332,6 @@ export default function Entries() {
                       <div className="font-mono text-xs text-slate-400">{it.code}</div>
                     </td>
                     <td className="py-1.5 text-right font-semibold">{fmtQty(it.quantity)}</td>
-                    <td className="py-1.5 text-right text-slate-500">{fmtMoney(it.unit_cost)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -144,6 +144,18 @@ router.get(
   })
 );
 
+router.get('/:id/suppliers', asyncH(async (req, res) => {
+  const id = pathId(req.params.id);
+  const product = await query('SELECT id FROM products WHERE id = $1', [id]);
+  if (!product.rows[0]) throw ApiError.notFound('Producto no encontrado');
+  const result = await query(
+    `SELECT s.id, s.name, ps.is_primary, ps.supplier_product_code, ps.notes
+     FROM product_suppliers ps JOIN suppliers s ON s.id = ps.supplier_id
+     WHERE ps.product_id = $1 ORDER BY ps.is_primary DESC, s.name`, [id]
+  );
+  res.json({ suppliers: result.rows });
+}));
+
 router.get(
   '/:id',
   asyncH(async (req, res) => {
@@ -185,6 +197,8 @@ const productSchema = z.object({
   cost: z.number().min(0).nullable().optional(),
   referencePrice: z.number().min(0).nullable().optional(),
   isActive: z.boolean().optional(),
+  supplierIds: z.array(z.number().int().positive()).optional(),
+  primarySupplierId: z.number().int().positive().nullable().optional(),
 });
 
 router.post(
@@ -192,6 +206,9 @@ router.post(
   requirePerm('products.write'),
   asyncH(async (req, res) => {
     const input = productSchema.parse(req.body) as ProductInput;
+    if (input.primarySupplierId != null && !input.supplierIds?.includes(input.primarySupplierId)) {
+      throw ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+    }
     const id = await createProduct(req.user!, req.ip, input);
     res.status(201).json({ id });
   })
@@ -203,6 +220,9 @@ router.put(
   asyncH(async (req, res) => {
     const id = pathId(req.params.id);
     const input = productSchema.partial().parse(req.body);
+    if (input.primarySupplierId != null && !input.supplierIds?.includes(input.primarySupplierId)) {
+      throw ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+    }
     const result = await updateProduct(req.user!, req.ip, id, input);
     res.json(result);
   })

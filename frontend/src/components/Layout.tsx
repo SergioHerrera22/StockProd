@@ -23,6 +23,7 @@ const NAV: NavItem[] = [
   { to: '/reservas', label: 'Reservas / Retiros', icon: '📋', perm: 'deliveries.read' },
   { to: '/stock', label: 'Stock', icon: '🏷️', perm: 'stock.read' },
   { to: '/productos', label: 'Productos', icon: '🧴', perm: 'products.read' },
+  { to: '/proveedores', label: 'Proveedores', icon: '🏭', perm: 'suppliers.manage' },
   { to: '/entradas', label: 'Entradas', icon: '📥', perm: 'entries.read' },
   { to: '/transferencias', label: 'Transferencias', icon: '🚚', perm: 'transfers.read' },
   { to: '/repartos', label: 'Repartos', icon: '🗺️', perm: 'tracking.read' },
