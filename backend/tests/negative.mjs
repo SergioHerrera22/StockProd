@@ -200,7 +200,7 @@ async function main() {
   ok(r1.status === 403, 'Empleado restringido: entrega desde el Depósito → 403');
   const r2 = await api('POST', '/deliveries', { token: TE, body: { locationId: SUC1.id, items: [{ productId: pid, quantity: 1 }] } });
   ok(r2.status === 201, 'Empleado restringido: entrega desde SU ubicación → OK');
-  const r3 = await api('POST', '/entries?confirm=true', { token: TC, body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 1 }] } });
+  const r3 = await api('POST', '/entries?confirm=true', { token: TC, body: { locationId: DEP.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 1 }] } });
   ok(r3.status === 403, 'Encargado restringido: entrada al Depósito → 403');
   const r4 = await api('POST', '/entries', { token: TC, body: { locationId: SUC1.id, type: 'DEVOLUCION', items: [{ productId: pid, quantity: 2 }] } });
   ok(r4.status === 201, 'Encargado restringido: entrada en SU ubicación → OK');
