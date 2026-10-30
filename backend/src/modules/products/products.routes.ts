@@ -144,6 +144,18 @@ router.get(
   })
 );
 
+router.get('/:id/suppliers', asyncH(async (req, res) => {
+  const id = pathId(req.params.id);
+  const product = await query('SELECT id FROM products WHERE id = $1', [id]);
+  if (!product.rows[0]) throw ApiError.notFound('Producto no encontrado');
+  const result = await query(
+    `SELECT s.id, s.name, ps.is_primary, ps.supplier_product_code, ps.notes
+     FROM product_suppliers ps JOIN suppliers s ON s.id = ps.supplier_id
+     WHERE ps.product_id = $1 ORDER BY ps.is_primary DESC, s.name`, [id]
+  );
+  res.json({ suppliers: result.rows });
+}));
+
 router.get(
   '/:id',
   asyncH(async (req, res) => {
@@ -185,6 +197,12 @@ const productSchema = z.object({
   cost: z.number().min(0).nullable().optional(),
   referencePrice: z.number().min(0).nullable().optional(),
   isActive: z.boolean().optional(),
+  supplierIds: z.array(z.number().int().positive()).optional(),
+  primarySupplierId: z.number().int().positive().nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.primarySupplierId != null && value.supplierIds && !value.supplierIds.includes(value.primarySupplierId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['primarySupplierId'], message: 'El proveedor principal debe estar seleccionado' });
+  }
 });
 
 router.post(

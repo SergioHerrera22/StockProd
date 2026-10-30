@@ -16,6 +16,8 @@ export interface ProductInput {
   cost?: number | null;
   referencePrice?: number | null;
   isActive?: boolean;
+  supplierIds?: number[];
+  primarySupplierId?: number | null;
 }
 
 const UNIT_ENUM = ['UNIDAD', 'LITRO', 'KG', 'METRO', 'OTRO'];
@@ -40,12 +42,36 @@ export async function createProduct(user: AuthUser, ip: string | undefined, inpu
         input.unit, input.minStock ?? 0, input.cost ?? null, input.referencePrice ?? null, user.id,
       ]
     );
+    if (input.supplierIds !== undefined) await syncProductSuppliers(c, r.rows[0].id, input.supplierIds, input.primarySupplierId ?? null);
     await writeAudit(c, {
       userId: user.id, action: 'PRODUCT_CREATE', entity: 'product',
       entityId: r.rows[0].id, details: { code: input.code, name: input.name }, ip,
     });
     return r.rows[0].id;
   });
+}
+
+async function syncProductSuppliers(c: PoolClient, productId: number, supplierIds: number[], primarySupplierId: number | null) {
+  const ids = [...new Set(supplierIds)];
+  if (primarySupplierId !== null && !ids.includes(primarySupplierId)) {
+    throw ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+  }
+  if (ids.length) {
+    const active = await c.query<{ id: number }>('SELECT id FROM suppliers WHERE id = ANY($1::int[]) AND is_active', [ids]);
+    if (active.rows.length !== ids.length) throw ApiError.badRequest('Uno o más proveedores no existen o están inactivos');
+  }
+  await c.query('UPDATE product_suppliers SET is_primary = false WHERE product_id = $1', [productId]);
+  if (!ids.length) {
+    await c.query('DELETE FROM product_suppliers WHERE product_id = $1', [productId]);
+    return;
+  }
+  await c.query(
+    `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+     SELECT $1, supplier_id, COALESCE(supplier_id = $3, false)
+     FROM unnest($2::int[]) AS supplier_ids(supplier_id)
+     ON CONFLICT (product_id, supplier_id) DO UPDATE SET is_primary = EXCLUDED.is_primary`,
+    [productId, ids, primarySupplierId]
+  );
 }
 
 async function findDuplicates(c: PoolClient, input: Partial<ProductInput>) {
@@ -274,6 +300,8 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
       ]
     );
     if (result.rows.length === 0) throw ApiError.notFound('Producto no encontrado');
+
+    if (input.supplierIds !== undefined) await syncProductSuppliers(c, id, input.supplierIds, input.primarySupplierId ?? null);
 
     if (input.barcode) {
       const dup = await c.query('SELECT id FROM products WHERE barcode = $1 AND id <> $2', [input.barcode.trim(), id]);
