@@ -141,10 +141,7 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
   if (entry.type === 'COMPRA' && entry.supplier_id) {
     await c.query(
       `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
-       SELECT products.product_id, $2, NOT EXISTS (
-         SELECT 1 FROM product_suppliers existing
-         WHERE existing.product_id = products.product_id AND existing.is_primary
-       )
+       SELECT products.product_id, $2, false
        FROM unnest($1::int[]) AS products(product_id)
        ON CONFLICT (product_id, supplier_id) DO NOTHING`,
       [items.rows.map((item) => item.product_id), entry.supplier_id]

@@ -83,6 +83,7 @@ export default function Entries() {
   async function saveNew(confirmNow: boolean) {
     if (!newLocation) { toast.error('Elegí la ubicación de destino'); return; }
     if (!lines.length) { toast.error('Agregá al menos un producto'); return; }
+    if (newType === 'COMPRA' && !supplierId) { toast.error('Seleccioná un proveedor registrado'); return; }
     setCreating(true);
     try {
       const res = await api<{ id: number; number: string }>(`/entries${confirmNow ? '?confirm=true' : ''}`, {
@@ -230,7 +231,7 @@ export default function Entries() {
               <option value="">{newType === 'COMPRA' ? 'Seleccionar proveedor' : 'Sin proveedor'}</option>
               {suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </Select>
-            {newType === 'COMPRA' && <span className="mt-1 block text-xs text-slate-500">La compra vinculará automáticamente sus productos con este proveedor.</span>}
+            {newType === 'COMPRA' && <span className="mt-1 block text-xs text-slate-500">La compra vinculará automáticamente sus productos con este proveedor. Si no aparece, primero registralo en Proveedores.</span>}
           </Field>
         </div>
 
