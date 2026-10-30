@@ -23,16 +23,16 @@ router.get(
       recent,
       byLocation,
       series,
-      debtPickupsCount,
-      debtPickupsOverdue,
-      debtPickupList,
-      debtUnderived,
       lowStockItems,
       outOfStockItems,
       purchaseSuggestions,
       productRankings,
       lowRotationProducts,
       stockoutStats,
+      debtPickupsCount,
+      debtPickupsOverdue,
+      debtPickupList,
+      debtUnderived,
     ] = await Promise.all([
       query<{ active_products: string; inventory_value: string; low_stock: string; out_of_stock: string }>(
         `WITH available AS (
