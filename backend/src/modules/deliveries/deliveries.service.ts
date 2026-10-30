@@ -1112,13 +1112,15 @@ export async function confirmDelivery(user: AuthUser, ip: string | undefined, id
   // Checklist de picking (mejora 10): el operador marca producto por producto
   // con lo que efectivamente recibió. pick = undefined  ->  comportamiento
   // histórico (entregar todo el stock disponible de la sucursal principal).
-  const pickMap = new Map<number, number>();
+  // Sin checklist se mantiene el flujo histórico (undefined).
+  // Un Map vacío representa un checklist explícito inválido, no ausencia de checklist.
+  const pickMap = pick === undefined ? undefined : new Map<number, number>();
   if (pick !== undefined) {
     if (pick.length === 0) throw ApiError.badRequest('El checklist debe incluir todos los productos, aunque la cantidad sea cero.');
     for (const p of pick) {
-      if (pickMap.has(p.productId)) throw ApiError.badRequest('El checklist contiene productos duplicados.');
+      if (pickMap!.has(p.productId)) throw ApiError.badRequest('El checklist contiene productos duplicados.');
       if (!Number.isFinite(p.quantity) || p.quantity < 0) throw ApiError.badRequest('Cantidad de picking inválida.');
-      pickMap.set(Number(p.productId), Number(p.quantity));
+      pickMap!.set(Number(p.productId), Number(p.quantity));
     }
   }
   const result = await withTx(async (c) => {
