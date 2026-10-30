@@ -118,7 +118,7 @@ export default function Dashboard() {
             <StatCard label="Rotura de stock" value={`${data.stockInsights.stockoutRate.toFixed(1)}%`} icon="📉" tone={data.stockInsights.stockoutRate > 0 ? 'warn' : 'good'} />
           </div>
           <p className="text-xs text-slate-400">
-            En los últimos 30 días: {data.stockInsights.stockoutEvents} solicitudes con faltantes sobre {data.stockInsights.requestedLines} líneas de entrega registradas.
+            En los últimos 30 días: {data.stockInsights.stockoutEvents} líneas con faltantes sobre {data.stockInsights.requestedLines} líneas de entrega registradas.
           </p>
 
           {/* Gráficos */}
