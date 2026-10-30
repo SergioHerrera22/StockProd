@@ -139,15 +139,28 @@ export async function startDelivery(user: AuthUser, ip: string | undefined, type
   });
 }
 
-export async function completeDelivery(user: AuthUser, ip: string | undefined, type: 'DELIVERY' | 'TRANSFER', id: number, notes?: string) {
+export async function completeDelivery(user: AuthUser, ip: string | undefined, type: 'DELIVERY' | 'TRANSFER', id: number, notes?: string, receivedBy?: string) {
   return withTx(async (c) => {
     if (type === 'DELIVERY') {
       const d = await c.query('SELECT id, driver_user_id, delivered_at FROM deliveries WHERE id = $1 FOR UPDATE', [id]);
       if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
       if (d.rows[0].driver_user_id !== user.id && user.role !== 'ADMIN') throw ApiError.forbidden('No autorizado');
       if (d.rows[0].delivered_at) throw ApiError.conflict('Ya fue entregado');
-      await c.query('UPDATE deliveries SET delivered_at = now(), delivery_notes = COALESCE($2, delivery_notes) WHERE id = $1', [id, notes?.trim() || null]);
-      await writeAudit(c, { userId: user.id, action: 'DRIVER_COMPLETE_DELIVERY', entity: 'delivery', entityId: id, ip });
+      if (!receivedBy?.trim() || receivedBy.trim().length < 2) {
+        throw ApiError.badRequest('Ingresá el nombre de quien recibió la mercadería.');
+      }
+      await c.query(
+        `UPDATE deliveries
+         SET delivered_at = now(), delivered_by = $2, delivered_to = $3,
+             delivery_proof_notes = $4,
+             delivery_notes = COALESCE($4, delivery_notes)
+         WHERE id = $1`,
+        [id, user.id, receivedBy.trim(), notes?.trim() || null]
+      );
+      await writeAudit(c, {
+        userId: user.id, action: 'DRIVER_COMPLETE_DELIVERY', entity: 'delivery', entityId: id,
+        details: { receivedBy: receivedBy.trim(), notes: notes?.trim() || null }, ip,
+      });
       return { ok: true };
     } else {
       const t = await c.query('SELECT id, driver_user_id, delivered_at FROM transfers WHERE id = $1 FOR UPDATE', [id]);
