@@ -225,7 +225,10 @@ async function main() {
 
   const voidRes = await api('POST', `/deliveries/${draft2.json.id}/void`, {
     token: TE,
-    body: { reason: 'Anulacion del escenario de prueba', voidApprovedBy: 1 },
+    body: {
+      reason: 'Anulacion del escenario de prueba',
+      approver: { username: 'admin', password: process.env.SMOKE_ADMIN_PASSWORD ?? 'robles2026' },
+    },
   });
   ok(voidRes.status === 200, 'Anulacion de la entrega PARCIAL aceptada (doble autorizacion)');
 
