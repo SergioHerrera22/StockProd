@@ -368,91 +368,177 @@ export async function importProducts(
   let duplicatesInFile = 0;
   const errors: ImportError[] = [];
 
-  await withTx(async (c) => {
-    // Mapa de categorias existentes + cache para crear al vuelo
-    const catRows = await c.query<{ id: number; name: string }>('SELECT id, name FROM categories');
-    const catMap = new Map(catRows.rows.map((r) => [r.name.toLowerCase(), r.id]));
-    const seenCodes = new Set<string>();
-    // Códigos existentes precargados en 1 query (antes: 1 SELECT por fila)
-    const existingRows = await c.query<{ id: number; code: string }>('SELECT id, lower(code) AS code FROM products');
-    const existingMap = new Map(existingRows.rows.map((r) => [r.code, r.id]));
+  type PreparedRow = {
+    line: number; code: string; barcode: string | null; name: string;
+    brand: string | null; categoryId: number | null; unit: string;
+    minStock: number; cost: number | null; referencePrice: number | null;
+    existingId: number | null;
+  };
 
+  await withTx(async (c) => {
+    // Precarga de referencias en dos consultas, sin SELECT por producto.
+    const [catRows, existingRows] = await Promise.all([
+      c.query<{ id: number; name: string }>('SELECT id, name FROM categories'),
+      c.query<{ id: number; code: string }>('SELECT id, lower(code) AS code FROM products'),
+    ]);
+    const catMap = new Map(catRows.rows.map((r) => [r.name.toLowerCase(), r.id]));
+    const existingMap = new Map(existingRows.rows.map((r) => [r.code, r.id]));
+    const seenCodes = new Set<string>();
+    const prepared: PreparedRow[] = [];
+
+    // Primera pasada: normalización y validaciones puras en memoria.
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const line = i + 2; // +2: encabezado y base 1
-
+      const line = i + 2;
       const code = cleanCodeValue(row.code);
       const name = cleanNameValue(row.name);
-
-      // Fila totalmente vacia (o solo espacios): se ignora en silencio
       if (!code && !name) { skippedBlank++; continue; }
-      // Encabezado repetido dentro de los datos
       if (!name && isHeaderLikeRow(code)) { skippedBlank++; continue; }
+      if (!code) { errors.push({ row: line, message: 'Falta el codigo interno' }); continue; }
 
-      if (!code) {
-        errors.push({ row: line, message: 'Falta el codigo interno' });
-        continue;
-      }
-
-      // Duplicado dentro del mismo archivo: se procesa solo la primera aparicion
       const codeKey = code.toLowerCase();
       if (seenCodes.has(codeKey)) { duplicatesInFile++; continue; }
       seenCodes.add(codeKey);
 
-      const finalName = name || code; // sin columna de nombre: usa el codigo como nombre
-
       let unit = cleanText(row.unit).toUpperCase();
-      const unitAliases: Record<string, string> = { 'UN': 'UNIDAD', 'UNIDADES': 'UNIDAD', 'L': 'LITRO', 'LT': 'LITRO', 'LITROS': 'LITRO', 'KG': 'KG', 'KILOS': 'KG', 'M': 'METRO', 'MTS': 'METRO' };
+      const unitAliases: Record<string, string> = {
+        'UN': 'UNIDAD', 'UNIDADES': 'UNIDAD', 'L': 'LITRO', 'LT': 'LITRO',
+        'LITROS': 'LITRO', 'KG': 'KG', 'KILOS': 'KG', 'M': 'METRO', 'MTS': 'METRO',
+      };
       unit = unitAliases[unit] ?? unit;
       if (!UNIT_ENUM.includes(unit)) unit = 'UNIDAD';
 
-      const minStock = parseNumberFlexible(row.minStock) ?? 0;
-      const cost = parseNumberFlexible(row.cost);
-      const referencePrice = parseNumberFlexible(row.referencePrice);
+      prepared.push({
+        line, code, barcode: cleanCodeValue(row.barcode) || null,
+        name: name || code, brand: cleanText(row.brand) || null,
+        categoryId: null, unit,
+        minStock: parseNumberFlexible(row.minStock) ?? 0,
+        cost: parseNumberFlexible(row.cost),
+        referencePrice: parseNumberFlexible(row.referencePrice),
+        existingId: existingMap.get(codeKey) ?? null,
+      });
+    }
 
-      let categoryId: number | null = null;
-      const catName = cleanText(row.category);
-      if (catName) {
-        const key = catName.toLowerCase();
-        if (catMap.has(key)) {
-          categoryId = catMap.get(key)!;
-        } else {
-          const inserted = await c.query<{ id: number }>(
-            'INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET is_active = true RETURNING id',
-            [catName]
-          );
-          categoryId = inserted.rows[0].id;
-          catMap.set(key, categoryId);
-        }
-      }
-
-      const existingId = existingMap.get(code.toLowerCase());
-      if (existingId) {
-        if (updateExisting) {
-          await c.query(
-            `UPDATE products SET name = $1, brand = $2, category_id = $3, unit = $4, min_stock = $5,
-             cost = COALESCE($6, cost), reference_price = COALESCE($7, reference_price) WHERE id = $8`,
-            [finalName, cleanText(row.brand) || null, categoryId, unit, minStock, cost, referencePrice, existingId]
-          );
-          updated++;
-        } else {
-          errors.push({ row: line, code, message: 'El codigo ya existe (no se actualizo)' });
-        }
-        continue;
-      }
-
-      try {
-        await c.query(
-          `INSERT INTO products (code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [code, cleanCodeValue(row.barcode) || null, finalName, cleanText(row.brand) || null,
-           categoryId, unit, minStock, cost, referencePrice, user.id]
+    // Crea categorías faltantes en bloque (normalmente son pocas).
+    const missingCategories = new Map<string, string>();
+    for (let i = 0; i < prepared.length; i++) {
+      const original = rows[prepared[i].line - 2];
+      const categoryName = cleanText(original.category);
+      if (!categoryName) continue;
+      const key = categoryName.toLowerCase();
+      if (!catMap.has(key) && !missingCategories.has(key)) missingCategories.set(key, categoryName);
+    }
+    if (missingCategories.size > 0) {
+      const names = [...missingCategories.values()];
+      const inserted = await c.query<{ id: number; name: string }>(
+        `INSERT INTO categories (name)
+         SELECT value FROM unnest($1::text[]) AS value
+         ON CONFLICT (name) DO UPDATE SET is_active = true
+         RETURNING id, name`,
+        [names]
+      );
+      for (const category of inserted.rows) catMap.set(category.name.toLowerCase(), category.id);
+      // Recupera también posibles categorías preexistentes por diferencia de mayúsculas.
+      const unresolved = names.filter((name) => !catMap.has(name.toLowerCase()));
+      if (unresolved.length > 0) {
+        const found = await c.query<{ id: number; name: string }>(
+          'SELECT id, name FROM categories WHERE lower(name) = ANY($1::text[])',
+          [unresolved.map((name) => name.toLowerCase())]
         );
-        created++;
-        // Deduplica por código dentro del archivo: si reaparece en una fila
-        // posterior, seenCodes lo salta; el mapa precargado no cambia.
-      } catch (err) {
-        errors.push({ row: line, code, message: `Error: ${(err as Error).message}` });
+        for (const category of found.rows) catMap.set(category.name.toLowerCase(), category.id);
+      }
+    }
+
+    for (const item of prepared) {
+      const categoryName = cleanText(rows[item.line - 2].category);
+      item.categoryId = categoryName ? (catMap.get(categoryName.toLowerCase()) ?? null) : null;
+    }
+
+    const updates = prepared.filter((item) => item.existingId !== null);
+    const inserts = prepared.filter((item) => item.existingId === null);
+
+    if (!updateExisting) {
+      for (const item of updates) {
+        errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (no se actualizo)' });
+      }
+    } else {
+      // UPDATE set-based por bloques: 1 round-trip por hasta 500 productos.
+      for (let offset = 0; offset < updates.length; offset += 500) {
+        const batch = updates.slice(offset, offset + 500);
+        await c.query(
+          `UPDATE products AS p SET
+             name = v.name, brand = v.brand, category_id = v.category_id,
+             unit = v.unit::unit_type, min_stock = v.min_stock,
+             cost = COALESCE(v.cost, p.cost),
+             reference_price = COALESCE(v.reference_price, p.reference_price)
+           FROM unnest(
+             $1::int[], $2::text[], $3::text[], $4::int[],
+             $5::text[], $6::numeric[], $7::numeric[], $8::numeric[]
+           ) AS v(id, name, brand, category_id, unit, min_stock, cost, reference_price)
+           WHERE p.id = v.id`,
+          [
+            batch.map((x) => x.existingId), batch.map((x) => x.name),
+            batch.map((x) => x.brand), batch.map((x) => x.categoryId),
+            batch.map((x) => x.unit), batch.map((x) => x.minStock),
+            batch.map((x) => x.cost), batch.map((x) => x.referencePrice),
+          ]
+        );
+        updated += batch.length;
+      }
+    }
+
+    // INSERT set-based. Si una fila tiene un barcode conflictivo, se reintenta
+    // individualmente ese bloque para conservar el reporte preciso por fila.
+    const insertOne = async (item: PreparedRow) => {
+      const result = await c.query<{ code: string }>(
+        `INSERT INTO products
+           (code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6::unit_type,$7,$8,$9,$10)
+         ON CONFLICT (code) DO NOTHING
+         RETURNING code`,
+        [item.code, item.barcode, item.name, item.brand, item.categoryId,
+         item.unit, item.minStock, item.cost, item.referencePrice, user.id]
+      );
+      if (result.rows.length) created++;
+      else errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (posible alta concurrente)' });
+    };
+
+    for (let offset = 0; offset < inserts.length; offset += 300) {
+      const batch = inserts.slice(offset, offset + 300);
+      try {
+        const result = await c.query<{ code: string }>(
+          `INSERT INTO products
+             (code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price, created_by)
+           SELECT v.code, v.barcode, v.name, v.brand, v.category_id,
+                  v.unit::unit_type, v.min_stock, v.cost, v.reference_price, $10
+           FROM unnest(
+             $1::text[], $2::text[], $3::text[], $4::text[], $5::int[],
+             $6::text[], $7::numeric[], $8::numeric[], $9::numeric[]
+           ) AS v(code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price)
+           ON CONFLICT (code) DO NOTHING
+           RETURNING code`,
+          [
+            batch.map((x) => x.code), batch.map((x) => x.barcode),
+            batch.map((x) => x.name), batch.map((x) => x.brand),
+            batch.map((x) => x.categoryId), batch.map((x) => x.unit),
+            batch.map((x) => x.minStock), batch.map((x) => x.cost),
+            batch.map((x) => x.referencePrice), user.id,
+          ]
+        );
+        const inserted = new Set(result.rows.map((r) => r.code.toLowerCase()));
+        created += inserted.size;
+        for (const item of batch) {
+          if (!inserted.has(item.code.toLowerCase())) {
+            errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (posible alta concurrente)' });
+          }
+        }
+      } catch {
+        // Un barcode duplicado invalida el INSERT set-based completo. El fallback
+        // mantiene el comportamiento anterior de informar el error de cada fila.
+        for (const item of batch) {
+          try { await insertOne(item); }
+          catch (err) { errors.push({ row: item.line, code: item.code, message: `Error: ${(err as Error).message}` }); }
+        }
       }
     }
 
