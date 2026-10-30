@@ -186,7 +186,7 @@ export default function Transfers() {
     { key: 'created_at', label: 'Fecha', render: (t) => fmtDateTime(t.created_at) },
     { key: 'origin_name', label: 'Origen', render: (t) => t.origin_name },
     { key: 'destination_name', label: 'Destino', render: (t) => t.destination_name },
-    { key: 'line_count', label: 'Líneas', align: 'right', render: (t) => t.line_count ?? '—' },
+    { key: 'line_count', label: 'Productos', align: 'right', render: (t) => t.line_count ?? '—' },
     { key: 'status', label: 'Estado', render: (t) => {
       const s = TRANSFER_STATUS[t.status];
       return <Badge color={s.color}>{s.label}</Badge>;
@@ -313,7 +313,7 @@ export default function Transfers() {
                       />
                     </td>
                     <td className="py-1.5 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
+                      <Button size="lg" variant="ghost" className="!h-10 !w-10 !min-w-10 !p-0 text-xl leading-none" aria-label="Eliminar producto de la transferencia" title="Eliminar producto" onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}>🗑</Button>
                     </td>
                   </tr>
                 ))}

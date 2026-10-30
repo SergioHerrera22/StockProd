@@ -29,7 +29,7 @@ const SEVERITY_META: Record<string, { label: string; color: 'blue' | 'amber' | '
 const METRIC_LABEL: Record<string, string> = {
   qty_sum: 'Cantidad total',
   value_sum: 'Valor total',
-  lines_count: 'Cantidad de líneas',
+  lines_count: 'Cantidad de productos',
   days_in_transit: 'Días en tránsito',
   pending_hours: 'Horas pendientes',
   stock_below_min: 'Stock por debajo del mínimo',
@@ -467,7 +467,7 @@ export default function BusinessRules() {
                 <Field label="Campo">
                   <Select value={form.field} onChange={(e) => setForm({ ...form, field: e.target.value as RuleForm['field'] })}>
                     <option value="qty_sum">Cantidad total</option>
-                    <option value="lines_count">Líneas</option>
+                    <option value="lines_count">Productos</option>
                     <option value="value_sum">Valor total</option>
                   </Select>
                 </Field>

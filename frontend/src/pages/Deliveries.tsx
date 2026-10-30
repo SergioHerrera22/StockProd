@@ -176,7 +176,7 @@ export default function Deliveries() {
     { key: 'created_at', label: 'Fecha', sortable: true, render: (d) => fmtDateTime(d.created_at) },
     { key: 'location_name', label: 'Sale de', render: (d) => d.location_name },
     { key: 'invoice_number', label: 'Factura ref.', render: (d) => d.invoice_number ?? '—' },
-    { key: 'line_count', label: 'Líneas', align: 'right', render: (d) => d.line_count ?? '—' },
+    { key: 'line_count', label: 'Productos', align: 'right', render: (d) => d.line_count ?? '—' },
     { key: 'total_items', label: 'Unidades', align: 'right', render: (d) => fmtQty(d.total_items ?? 0) },
     { key: 'shortfall_units', label: 'Faltan', align: 'right', render: (d) => {
       if ((d.shortfall_lines ?? 0) > 0) {
