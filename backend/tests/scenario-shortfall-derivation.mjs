@@ -203,7 +203,7 @@ async function main() {
   // ---------- Anulacion de la entrega PARCIAL ----------
   console.log('[10] Anular la entrega PARCIAL cancela la orden de retiro');
   // Producto aparte: el anterior ya tiene el stock de SUC1 consumido por el retiro.
-  const pid2 = await createProductWithStock(T, TE, dep, suc1, stamp + 1, 98, 10);
+  const pid2 = await createProductWithStock(T, TE, dep, suc1, stamp + 1, 98, 10, supplierId);
   ok(true, 'Producto nuevo con 98 en DEP y 10 en SUC1');
 
   const draft2 = await api('POST', '/deliveries', {
