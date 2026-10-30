@@ -125,7 +125,7 @@ const REPORTS: ReportDef[] = [
     desc: 'Productos por debajo del stock mínimo, agrupados por última compra confirmada',
     needsLocation: true,
     needsSupplier: true,
-    headers: () => ['Proveedor', 'Código', 'Producto', 'Marca', 'Ubicación', 'Stock actual', 'Stock mínimo'],
+    headers: () => ['Proveedor', 'Código', 'Producto', 'Marca', 'Ubicación', 'Stock disponible', 'Stock mínimo'],
     rowToCells: (r) => [r.supplier, r.code, r.name, r.brand, r.location_name, fmtQty(Number(r.total_qty)), fmtQty(Number(r.min_stock))],
   },
   {

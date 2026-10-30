@@ -49,7 +49,7 @@ router.get(
 );
 
 // Productos bajo mínimo agrupados por el proveedor de su última compra confirmada.
-// El filtro de ubicación usa el stock físico registrado, igual que los reportes actuales.
+// El mínimo se compara contra stock disponible (físico menos reservas activas).
 router.get(
   '/low-stock-by-supplier',
   asyncH(async (req, res) => {
@@ -68,7 +68,7 @@ router.get(
        SELECT COALESCE(ls.supplier, '(Sin proveedor registrado)') AS supplier,
               p.code, p.name, p.brand, p.unit, p.min_stock,
               COALESCE(selected_location.name, 'Todas las ubicaciones') AS location_name,
-              COALESCE(SUM(sb.quantity), 0) AS total_qty
+              COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)), 0) AS total_qty
        FROM products p
        LEFT JOIN latest_supplier ls ON ls.product_id = p.id
        LEFT JOIN locations selected_location ON selected_location.id = $1
@@ -76,7 +76,7 @@ router.get(
          AND ($1::int IS NULL OR sb.location_id = $1)
        WHERE p.is_active AND p.min_stock > 0
        GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, ls.supplier, selected_location.name
-       HAVING COALESCE(SUM(sb.quantity), 0) <= p.min_stock
+       HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)), 0) <= p.min_stock
           AND ($2::text IS NULL OR LOWER(COALESCE(ls.supplier, '(Sin proveedor registrado)')) = LOWER($2))
        ORDER BY supplier, total_qty ASC, p.name`,
       [locationId ?? null, supplier?.trim() || null]
@@ -93,13 +93,13 @@ router.get(
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
     const rows = await query(
       `SELECT p.code, p.name, p.brand, p.unit, p.min_stock,
-              COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty
+              COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) AS total_qty
        FROM products p
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
        WHERE p.is_active
        GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock
-       HAVING COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) > 0
-          AND COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) <= p.min_stock
+       HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) > 0
+          AND COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) <= p.min_stock
        ORDER BY p.name`
     );
     res.json({ rows: rows.rows.map((r: Record<string, unknown>) => ({ ...r, total_qty: Number(r.total_qty) })) });
@@ -114,12 +114,12 @@ router.get(
     const locFilter = locationId ? 'AND sb.location_id = ' + locationId : '';
     const rows = await query(
       `SELECT p.code, p.name, p.brand, p.unit, p.min_stock,
-              COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) AS total_qty
+              COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) AS total_qty
        FROM products p
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
        WHERE p.is_active
        GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock
-       HAVING COALESCE(SUM(sb.quantity) FILTER (WHERE true ${locFilter}), 0) = 0
+       HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)) FILTER (WHERE true ${locFilter}), 0) = 0
        ORDER BY p.name`
     );
     res.json({ rows: rows.rows.map((r: Record<string, unknown>) => ({ ...r, total_qty: Number(r.total_qty) })) });
