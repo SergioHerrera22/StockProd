@@ -1,4 +1,5 @@
 import { PoolClient } from 'pg';
+import bcrypt from 'bcryptjs';
 import { query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { applyStockChange } from '../../services/stockEngine';
@@ -1296,7 +1297,13 @@ export async function getPendingDeliveryForDelivery(deliveryId: number, user: Au
 /**
  * Anulacion con DOBLE AUTORIZACION para entregas confirmadas
  */
-export async function voidDelivery(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
+export async function voidDelivery(
+  user: AuthUser,
+  ip: string | undefined,
+  id: number,
+  reason: string,
+  approverCredentials?: { username: string; password: string }
+) {
   return withTx(async (c) => {
     const d = await c.query<{ status: string; number: string; location_id: number; void_approved_by: number | null }>(
       'SELECT status, number, location_id, void_approved_by FROM deliveries WHERE id = $1 FOR UPDATE',
@@ -1308,13 +1315,23 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
     if (delivery.status === 'ANULADO') throw ApiError.conflict('La entrega ya esta anulada');
 
     const requiresDualAuth = ['CONFIRMADO', 'PARCIAL'].includes(delivery.status);
+    let voidApprovedBy: number | null = null;
     if (requiresDualAuth) {
-      if (!voidApprovedBy) throw ApiError.badRequest('Anulación de entrega confirmada requiere segundo autorizador (voidApprovedBy)');
-      if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
-      const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
-      if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
-        throw ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+      if (!approverCredentials?.username?.trim() || !approverCredentials.password) {
+        throw ApiError.badRequest('La anulación confirmada requiere credenciales de un segundo autorizador.');
       }
+      const approver = await c.query<{ id: number; role_code: string; password_hash: string; is_active: boolean }>(
+        'SELECT id, role_code, password_hash, is_active FROM users WHERE lower(username) = lower($1)',
+        [approverCredentials.username.trim()]
+      );
+      const account = approver.rows[0];
+      if (!account || !account.is_active || !['ENCARGADO', 'ADMIN'].includes(account.role_code)) {
+        throw ApiError.forbidden('Credenciales o rol del segundo autorizador inválidos.');
+      }
+      if (account.id === user.id) throw ApiError.forbidden('El segundo autorizador debe ser otra persona.');
+      const validPassword = await bcrypt.compare(approverCredentials.password, account.password_hash);
+      if (!validPassword) throw ApiError.forbidden('Credenciales o rol del segundo autorizador inválidos.');
+      voidApprovedBy = account.id;
     }
 
     // Evaluar reglas
