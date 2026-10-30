@@ -89,6 +89,14 @@ const IDEMPOTENT_PATTERNS: RegExp[] = [
 /** Claves en "vuelo": si la red se cae, el reintento reusa la misma clave. */
 const inFlightKeys = new Map<string, string>();
 
+/**
+ * Coalesce identical GET requests while they are in flight.
+ * This avoids duplicate network/DB work when multiple components mount or
+ * refresh the same resource at the same time. Responses are not cached:
+ * stock and operational reads always reach the server on the next call.
+ */
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
+
 function idempotencyKeyFor(path: string): string | null {
   if (IDEMPOTENT_PATTERNS.some((re) => re.test(path))) {
     let key = inFlightKeys.get(path);
@@ -125,6 +133,23 @@ export async function api<T = unknown>(path: string, options: Options = {}): Pro
   // vencida": tratarlo igual recargaba la página de login sobre sí misma,
   // borraba lo tipeado y desconectaba otras pestañas con sesión válida.
   const isAuthCall = path.startsWith('/auth/login');
+
+  // GET idénticos simultáneos comparten una única petición. No se cachea
+  // el resultado: la siguiente lectura vuelve a consultar el estado real.
+  if ((options.method ?? 'GET') === 'GET') {
+    const requestToken = currentToken();
+    const requestKey = `${requestToken ?? 'anonymous'}:${path}`;
+    const existing = inFlightGetRequests.get(requestKey);
+    if (existing) return existing as Promise<T>;
+
+    const request = rawApi<T>(path, options, isAuthCall, null).finally(() => {
+      if (inFlightGetRequests.get(requestKey) === request) {
+        inFlightGetRequests.delete(requestKey);
+      }
+    });
+    inFlightGetRequests.set(requestKey, request);
+    return request;
+  }
 
   // Clave de idempotencia solo para POST críticos
   const idempKey = options.method === 'POST' ? idempotencyKeyFor(path.replace(/\?.*$/, '')) : null;
