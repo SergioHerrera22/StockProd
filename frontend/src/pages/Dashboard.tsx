@@ -24,6 +24,16 @@ interface Summary {
   }[];
   byLocation: { id: number; code: string; name: string; type: string; units: number; skus: number; value: number }[];
   series: { day: string; entradas: number; salidas: number }[];
+  stockInsights: {
+    lowStockItems: { id: number; code: string; name: string; unit: string; min_stock: number; available_qty: number }[];
+    outOfStockItems: { id: number; code: string; name: string; unit: string; min_stock: number; available_qty: number }[];
+    purchaseSuggestions: { id: number; code: string; name: string; unit: string; available_qty: number; sold_30d: number; suggested_qty: number }[];
+    topProducts: { id: number; code: string; name: string; unit: string; sold_30d: number; available_qty: number }[];
+    lowRotation: { id: number; code: string; name: string; unit: string; sold_30d: number; available_qty: number }[];
+    stockoutEvents: number;
+    requestedLines: number;
+    stockoutRate: number;
+  };
   debts: {
     pickupsPending: number;
     pickupsOverdue: number;
@@ -105,6 +115,7 @@ export default function Dashboard() {
             <StatCard label="Sin existencias" value={data.outOfStock} icon="🚫" tone={data.outOfStock > 0 ? 'danger' : 'default'} />
             <StatCard label="Entradas hoy" value={fmtQty(data.entriesToday)} icon="📥" tone="good" />
             <StatCard label="Salidas hoy" value={fmtQty(data.exitsToday)} icon="📤" tone="info" />
+            <StatCard label="Rotura de stock" value={`${data.stockInsights.stockoutRate.toFixed(1)}%`} icon="📉" tone={data.stockInsights.stockoutRate > 0 ? 'warn' : 'good'} />
           </div>
 
           {/* Gráficos */}
@@ -131,6 +142,81 @@ export default function Dashboard() {
                 }))}
                 valueFormat={(v) => `${fmtQty(v)} u.`}
               />
+            </Card>
+          </div>
+
+          {/* Inteligencia de inventario */}
+          <div className="grid gap-4 xl:grid-cols-3">
+            <Card>
+              <CardHeader title={`Artículos bajo mínimo (${data.lowStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
+              {data.stockInsights.lowStockItems.length === 0 ? (
+                <p className="px-4 py-5 text-center text-sm text-slate-400">No hay artículos por debajo del mínimo.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {data.stockInsights.lowStockItems.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                      <div className="min-w-0"><div className="truncate font-medium text-slate-700">{p.name}</div><div className="text-xs text-slate-400">{p.code} · Mín. {fmtQty(p.min_stock)}</div></div>
+                      <Badge color="amber">{fmtQty(p.available_qty)} {p.unit?.toLowerCase()}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+            <Card>
+              <CardHeader title={`Productos agotados (${data.outOfStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
+              {data.stockInsights.outOfStockItems.length === 0 ? (
+                <p className="px-4 py-5 text-center text-sm text-slate-400">No hay productos agotados.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {data.stockInsights.outOfStockItems.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                      <div className="min-w-0"><div className="truncate font-medium text-slate-700">{p.name}</div><div className="text-xs text-slate-400">{p.code}</div></div>
+                      <Badge color="red">0 {p.unit?.toLowerCase()}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+            <Card>
+              <CardHeader title="Sugerencias de compra" />
+              <p className="px-4 pb-2 text-xs text-slate-400">Reposición estimada para recuperar una cobertura equivalente a las ventas de los últimos 30 días.</p>
+              {data.stockInsights.purchaseSuggestions.length === 0 ? (
+                <p className="px-4 py-5 text-center text-sm text-slate-400">No hay reposiciones sugeridas por rotación.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {data.stockInsights.purchaseSuggestions.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                      <div className="min-w-0"><div className="truncate font-medium text-slate-700">{p.name}</div><div className="text-xs text-slate-400">{p.code} · Vendido 30d: {fmtQty(p.sold_30d)}</div></div>
+                      <Badge color="blue">Comprar {fmtQty(p.suggested_qty)}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader title="Productos más vendidos (30 días)" />
+              {data.stockInsights.topProducts.length === 0 ? <p className="px-4 py-5 text-center text-sm text-slate-400">Sin ventas registradas.</p> : (
+                <ul className="divide-y divide-slate-100">{data.stockInsights.topProducts.map((p, i) => (
+                  <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                    <div className="min-w-0"><span className="mr-2 text-xs font-bold text-slate-400">#{i + 1}</span><span className="font-medium text-slate-700">{p.name}</span><div className="ml-6 text-xs text-slate-400">{p.code}</div></div>
+                    <strong>{fmtQty(p.sold_30d)} {p.unit?.toLowerCase()}</strong>
+                  </li>
+                ))}</ul>
+              )}
+            </Card>
+            <Card>
+              <CardHeader title="Productos de baja rotación (30 días)" />
+              {data.stockInsights.lowRotation.length === 0 ? <p className="px-4 py-5 text-center text-sm text-slate-400">Sin productos para analizar.</p> : (
+                <ul className="divide-y divide-slate-100">{data.stockInsights.lowRotation.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                    <div className="min-w-0"><div className="font-medium text-slate-700">{p.name}</div><div className="text-xs text-slate-400">{p.code} · Disponible: {fmtQty(p.available_qty)}</div></div>
+                    <strong>{fmtQty(p.sold_30d)} {p.unit?.toLowerCase()}</strong>
+                  </li>
+                ))}</ul>
+              )}
             </Card>
           </div>
 
