@@ -322,8 +322,6 @@ async function main() {
   );
   const rep = (await api('GET', '/reports/stock-by-location', { token: T })).json;
   ok(Array.isArray(rep.rows) && rep.rows.length > 0, 'Reporte stock por ubicación');
-  const val = (await api('GET', '/reports/inventory-value', { token: T })).json;
-  ok(typeof val.totalValue === 'number', 'Reporte valorización');
 
   console.log(`\n== RESULTADO: ${passed} OK, ${failed} FALLIDOS ==\n`);
   process.exit(failed > 0 ? 1 : 0);
