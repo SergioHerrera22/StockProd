@@ -115,7 +115,7 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
         if (caps?.focusMode?.includes('continuous')) {
           try {
             await track.applyConstraints({
-              advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet],
+              advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet],
             });
           } catch { /* el navegador puede anunciar y no implementar la capacidad */ }
         }
@@ -134,7 +134,7 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
             const activeTrack = streamRef.current?.getVideoTracks()[0];
             if (!activeTrack || cancelled) return;
             void activeTrack.applyConstraints({
-              advanced: [{ focusMode: 'single-shot' } as MediaTrackConstraintSet],
+              advanced: [{ focusMode: 'single-shot' } as unknown as MediaTrackConstraintSet],
             }).catch(() => undefined);
           }, 2500);
         }
@@ -173,7 +173,8 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
         const video = videoRef.current;
         if (!video) throw new Error('No se pudo inicializar la vista previa de la cámara.');
 
-        await reader.decodeFromStream(stream, video, (result: Result | undefined) => {
+        await reader.decodeFromStream(stream, video, (result: Result | undefined, _decodeError, controls) => {
+          if (controls) controlsRef.current = controls as unknown as { stop: () => void };
           if (cancelled) return;
           const now = Date.now();
 
@@ -241,7 +242,7 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
       const track = streamRef.current?.getVideoTracks()[0];
       if (track) {
         await track.applyConstraints({
-          advanced: [{ zoom: value } as MediaTrackConstraintSet],
+          advanced: [{ zoom: value } as unknown as MediaTrackConstraintSet],
         });
       }
     } catch { /* zoom no soportado o rechazado */ }
@@ -253,7 +254,7 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
       const track = streamRef.current?.getVideoTracks()[0];
       if (!track) return;
       await track.applyConstraints({
-        advanced: [{ torch: next } as MediaTrackConstraintSet],
+        advanced: [{ torch: next } as unknown as MediaTrackConstraintSet],
       });
       setTorchOn(next);
     } catch { /* linterna no soportada o rechazada */ }
@@ -272,12 +273,12 @@ export function CameraScanner({ onScan, onClose, hint = 'Apuntá al código de b
       const caps = track.getCapabilities?.() as TrackCaps | undefined;
       if (caps?.focusMode?.includes('single-shot')) {
         await track.applyConstraints({
-          advanced: [{ focusMode: 'single-shot' } as MediaTrackConstraintSet],
+          advanced: [{ focusMode: 'single-shot' } as unknown as MediaTrackConstraintSet],
         });
         await new Promise((resolve) => window.setTimeout(resolve, 700));
         if (caps.focusMode.includes('continuous')) {
           await track.applyConstraints({
-            advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet],
+            advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet],
           });
         }
         const settings = track.getSettings() as MediaTrackSettings & { focusMode?: string };
