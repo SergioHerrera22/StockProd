@@ -219,7 +219,7 @@ export default function Reports() {
       setRows(res.rows);
       const filterSummary = [
         report.needsLocation ? `Ubicación: ${locations.find((l) => String(l.id) === locationId)?.name ?? 'Todas'}` : '',
-        report.needsSupplier ? `Proveedor: ${supplier || 'Todos'}` : '',
+        report.needsSupplier ? `Proveedor: ${suppliers.find((item) => String(item.id) === supplier)?.name ?? 'Todos'}` : '',
         report.needsPeriod ? `Período: ${from} a ${to}` : '',
       ].filter(Boolean).join(' · ');
       if (reportWindow) writePrintableReport(reportWindow, report, res.rows, locations, filterSummary);

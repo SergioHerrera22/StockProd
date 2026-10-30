@@ -37,6 +37,10 @@ router.put('/:id',requirePerm('suppliers.manage'),asyncH(async(req,res)=>{
  await withTx(async(c)=>{
   const found=await c.query('SELECT id FROM suppliers WHERE id=$1 FOR UPDATE',[id]);
   if(!found.rows[0]) throw ApiError.notFound('Proveedor no encontrado');
+  if(d.isActive===false){
+   const linked=await c.query('SELECT 1 FROM product_suppliers WHERE supplier_id=$1 LIMIT 1',[id]);
+   if(linked.rows[0]) throw ApiError.conflict('No se puede desactivar un proveedor asociado a productos. Primero reasigná esas relaciones.');
+  }
   await c.query(`UPDATE suppliers SET name=COALESCE($1,name),
    tax_id=CASE WHEN $2::boolean THEN $3 ELSE tax_id END,
    contact_name=CASE WHEN $4::boolean THEN $5 ELSE contact_name END,
