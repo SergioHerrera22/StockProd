@@ -161,6 +161,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    env:
+      HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -228,7 +230,7 @@ jobs:
             *.md
 
       - name: Run database migrations on Hostinger (via SSH)
-        if: secrets.HOSTINGER_SSH_HOST != ''
+        if: ${{ env.HOSTINGER_SSH_HOST != '' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOSTINGER_SSH_HOST }}
