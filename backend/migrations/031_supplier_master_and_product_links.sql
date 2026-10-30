@@ -26,14 +26,16 @@ UPDATE stock_entries e SET supplier_id = s.id FROM suppliers s
 WHERE e.supplier_id IS NULL AND NULLIF(btrim(e.supplier), '') IS NOT NULL
 AND lower(btrim(e.supplier)) = lower(btrim(s.name));
 
-WITH pairs AS (
- SELECT ei.product_id,e.supplier_id,MAX(COALESCE(e.confirmed_at,e.created_at)) AS last_purchase_at,MAX(e.id) AS last_entry_id
+WITH latest_supplier_purchase AS (
+ SELECT DISTINCT ON (ei.product_id,e.supplier_id)
+        ei.product_id,e.supplier_id,COALESCE(e.confirmed_at,e.created_at) AS purchased_at,e.id AS entry_id
  FROM stock_entry_items ei JOIN stock_entries e ON e.id=ei.entry_id
  WHERE e.status='CONFIRMADO' AND e.type='COMPRA' AND e.supplier_id IS NOT NULL
- GROUP BY ei.product_id,e.supplier_id
+ ORDER BY ei.product_id,e.supplier_id,COALESCE(e.confirmed_at,e.created_at) DESC,e.id DESC
 ), ranked AS (
- SELECT product_id,supplier_id,row_number() OVER(PARTITION BY product_id ORDER BY last_purchase_at DESC,last_entry_id DESC) AS supplier_rank
- FROM pairs
+ SELECT product_id,supplier_id,
+        row_number() OVER(PARTITION BY product_id ORDER BY purchased_at DESC,entry_id DESC) AS supplier_rank
+ FROM latest_supplier_purchase
 )
 INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
 SELECT product_id,supplier_id,supplier_rank=1 FROM ranked

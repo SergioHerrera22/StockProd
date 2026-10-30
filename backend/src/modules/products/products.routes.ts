@@ -199,10 +199,6 @@ const productSchema = z.object({
   isActive: z.boolean().optional(),
   supplierIds: z.array(z.number().int().positive()).optional(),
   primarySupplierId: z.number().int().positive().nullable().optional(),
-}).superRefine((value, ctx) => {
-  if (value.primarySupplierId != null && value.supplierIds && !value.supplierIds.includes(value.primarySupplierId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['primarySupplierId'], message: 'El proveedor principal debe estar seleccionado' });
-  }
 });
 
 router.post(
@@ -210,6 +206,9 @@ router.post(
   requirePerm('products.write'),
   asyncH(async (req, res) => {
     const input = productSchema.parse(req.body) as ProductInput;
+    if (input.primarySupplierId != null && !input.supplierIds?.includes(input.primarySupplierId)) {
+      throw ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+    }
     const id = await createProduct(req.user!, req.ip, input);
     res.status(201).json({ id });
   })
@@ -221,6 +220,9 @@ router.put(
   asyncH(async (req, res) => {
     const id = pathId(req.params.id);
     const input = productSchema.partial().parse(req.body);
+    if (input.primarySupplierId != null && !input.supplierIds?.includes(input.primarySupplierId)) {
+      throw ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+    }
     const result = await updateProduct(req.user!, req.ip, id, input);
     res.json(result);
   })
