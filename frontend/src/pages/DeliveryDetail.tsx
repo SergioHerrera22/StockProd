@@ -24,7 +24,7 @@ export default function DeliveryDetail() {
   const [pendingOrders, setPendingOrders] = useState<DeliveryPendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [voidOpen, setVoidOpen] = useState(false);
-  const [reason, setReason] = useState('');
+  const [reason, setReason] = useState('');\n  const [approverUsername, setApproverUsername] = useState('');\n  const [approverPassword, setApproverPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [deriving, setDeriving] = useState(false);
   const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);\n  const [receiptOpen, setReceiptOpen] = useState(false);\n  const [receivedBy, setReceivedBy] = useState('');\n  const [receiptNotes, setReceiptNotes] = useState('');
@@ -166,7 +166,14 @@ export default function DeliveryDetail() {
     if (!delivery) return;
     setSaving(true);
     try {
-      await api(`/deliveries/${delivery.id}/void`, { method: 'POST', body: { reason } });
+      const requiresSecondApprover = ['CONFIRMADO', 'PARCIAL'].includes(delivery.status);
+      await api(`/deliveries/${delivery.id}/void`, {
+        method: 'POST',
+        body: {
+          reason,
+          ...(requiresSecondApprover ? { approver: { username: approverUsername.trim(), password: approverPassword } } : {}),
+        },
+      });
       toast.success('Entrega anulada con movimientos compensatorios');
       setVoidOpen(false);
       setReason('');
@@ -274,6 +281,34 @@ export default function DeliveryDetail() {
           )}
         </div>
       </div>
+
+      {voidOpen && (
+        <Modal open onClose={() => setVoidOpen(false)} title="Anular entrega" width="sm"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setVoidOpen(false)}>Cancelar</Button>
+              <Button variant="danger" loading={saving}
+                disabled={reason.trim().length < 5 || (['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && (!approverUsername.trim() || !approverPassword))}
+                onClick={() => void voidDelivery()}>Confirmar anulación</Button>
+            </>
+          }>
+          <Field label="Motivo de anulación" required>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={255} placeholder="Motivo (mínimo 5 caracteres)" />
+          </Field>
+          {['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="mb-2 text-sm font-semibold text-amber-900">Autorización de un segundo responsable</p>
+              <p className="mb-3 text-xs text-amber-800">El encargado o administrador debe ingresar sus propias credenciales. No se acepta un ID de usuario como autorización.</p>
+              <Field label="Usuario del autorizador" required>
+                <Input value={approverUsername} onChange={(e) => setApproverUsername(e.target.value)} autoComplete="username" />
+              </Field>
+              <Field label="Contraseña del autorizador" required>
+                <Input type="password" value={approverPassword} onChange={(e) => setApproverPassword(e.target.value)} autoComplete="current-password" />
+              </Field>
+            </div>
+          )}
+        </Modal>
+      )}
 
       {receiptOpen && (
         <Modal open onClose={() => setReceiptOpen(false)} title="Registrar recepción a domicilio" width="sm"
