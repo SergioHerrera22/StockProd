@@ -376,13 +376,10 @@ export async function importProducts(
   };
 
   await withTx(async (c) => {
-    // Precarga de referencias en dos consultas, sin SELECT por producto.
-    const [catRows, existingRows] = await Promise.all([
-      c.query<{ id: number; name: string }>('SELECT id, name FROM categories'),
-      c.query<{ id: number; code: string }>('SELECT id, lower(code) AS code FROM products'),
-    ]);
-    const catMap = new Map(catRows.rows.map((r) => [r.name.toLowerCase(), r.id]));
-    const existingMap = new Map(existingRows.rows.map((r) => [r.code, r.id]));
+    // Las referencias se consultan después de normalizar el archivo, solo
+    // para los códigos y categorías que realmente aparecen en esta importación.
+    const catMap = new Map<string, number>();
+    const existingMap = new Map<string, number>();
     const seenCodes = new Set<string>();
     const prepared: PreparedRow[] = [];
 
@@ -415,8 +412,38 @@ export async function importProducts(
         minStock: parseNumberFlexible(row.minStock) ?? 0,
         cost: parseNumberFlexible(row.cost),
         referencePrice: parseNumberFlexible(row.referencePrice),
-        existingId: existingMap.get(codeKey) ?? null,
+        existingId: null,
       });
+    }
+
+    const categoryNames = [...new Set(
+      prepared.map((item) => cleanText(rows[item.line - 2].category).toLowerCase()).filter(Boolean)
+    )];
+    const codeKeys = prepared.map((item) => item.code.toLowerCase());
+
+    const references = await c.query<{
+      categories: Array<{ id: number; name: string }>;
+      products: Array<{ id: number; code: string }>;
+    }>(
+      `SELECT
+         COALESCE((
+           SELECT json_agg(json_build_object('id', id, 'name', name))
+           FROM categories WHERE lower(name) = ANY($1::text[])
+         ), '[]'::json) AS categories,
+         COALESCE((
+           SELECT json_agg(json_build_object('id', id, 'code', lower(code)))
+           FROM products WHERE lower(code) = ANY($2::text[])
+         ), '[]'::json) AS products`,
+      [categoryNames, codeKeys]
+    );
+    for (const category of references.rows[0].categories) {
+      catMap.set(category.name.toLowerCase(), category.id);
+    }
+    for (const product of references.rows[0].products) {
+      existingMap.set(product.code, product.id);
+    }
+    for (const item of prepared) {
+      item.existingId = existingMap.get(item.code.toLowerCase()) ?? null;
     }
 
     // Crea categorías faltantes en bloque (normalmente son pocas).
