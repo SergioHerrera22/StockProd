@@ -66,6 +66,10 @@ async function syncProductSuppliers(c: PoolClient, productId: number, supplierId
     return;
   }
   await c.query(
+    'DELETE FROM product_suppliers WHERE product_id = $1 AND NOT (supplier_id = ANY($2::int[]))',
+    [productId, ids]
+  );
+  await c.query(
     `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
      SELECT $1, supplier_id, COALESCE(supplier_id = $3, false)
      FROM unnest($2::int[]) AS supplier_ids(supplier_id)
