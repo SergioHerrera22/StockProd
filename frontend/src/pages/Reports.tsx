@@ -149,6 +149,7 @@ function writePrintableReport(
   report: ReportDef,
   rows: Record<string, unknown>[],
   locations: Location[],
+  filterSummary: string,
 ) {
   const headers = report.headers(locations);
   const body = rows.length
@@ -171,7 +172,7 @@ tr{break-inside:avoid}.empty{text-align:center;padding:30px;color:#64748b}
 @media print{body{margin:12mm}button{display:none}header{margin-bottom:12px}}
 </style></head><body>
 <header><div><h1>${escapeReportHtml(report.title)}</h1><p>${escapeReportHtml(report.desc)}</p>
-<div class="meta">Generado: ${escapeReportHtml(new Date().toLocaleString('es-AR',{hourCycle:'h23'}))} · Registros: ${rows.length}</div></div>
+<div class="meta">Filtros: ${escapeReportHtml(filterSummary || 'Sin filtros')}<br>Generado: ${escapeReportHtml(new Date().toLocaleString('es-AR',{hourCycle:'h23'}))} · Registros: ${rows.length}</div></div>
 <button onclick="window.print()">Imprimir reporte</button></header>
 <table><thead><tr>${headers.map((h)=>`<th>${escapeReportHtml(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>
 </body></html>`;
@@ -216,7 +217,12 @@ export default function Reports() {
       if (report.needsSupplier && supplier) params.supplier = supplier;
       const res = await api<{ rows: Record<string, unknown>[] }>(`/reports/${report.key}${qs(params)}`);
       setRows(res.rows);
-      if (reportWindow) writePrintableReport(reportWindow, report, res.rows, locations);
+      const filterSummary = [
+        report.needsLocation ? `Ubicación: ${locations.find((l) => String(l.id) === locationId)?.name ?? 'Todas'}` : '',
+        report.needsSupplier ? `Proveedor: ${supplier || 'Todos'}` : '',
+        report.needsPeriod ? `Período: ${from} a ${to}` : '',
+      ].filter(Boolean).join(' · ');
+      if (reportWindow) writePrintableReport(reportWindow, report, res.rows, locations, filterSummary);
     } catch (e) {
       const message = (e as Error).message;
       toast.error(message);
