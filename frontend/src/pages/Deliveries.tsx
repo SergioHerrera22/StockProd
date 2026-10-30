@@ -145,11 +145,14 @@ export default function Deliveries() {
    *  como PARCIAL: deuda con orden de retiro o unidad sin derivar. */
   async function acceptPicked() {
     if (!scanned) return;
-    const pick = scanned.items
-      .map((it) => ({ productId: it.productId, quantity: Number(pickQty[it.productId] ?? it.quantity) }))
-      .filter((p) => p.quantity > 0);
-    if (pick.length === 0) {
-      toast.error('El checklist está vacío: cargá al menos una cantidad recibida');
+    // Enviar TODAS las líneas: 0 significa explícitamente "no recibido".
+    // Omitir una línea no puede interpretarse como autorización para despacharla.
+    const pick = scanned.items.map((it) => ({
+      productId: it.productId,
+      quantity: Number(pickQty[it.productId] ?? it.quantity),
+    }));
+    if (pick.some((p) => !Number.isFinite(p.quantity) || p.quantity < 0)) {
+      toast.error('Hay cantidades de picking inválidas');
       return;
     }
     const reduced = scanned.items.filter(
