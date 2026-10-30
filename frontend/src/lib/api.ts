@@ -385,6 +385,14 @@ export interface DeliveryConfirmResponse {
   unresolvedShortfalls?: { productId: number; productName: string; quantity: number }[];
 }
 
+/** Registra quién recibió físicamente un reparto a domicilio. No mueve stock. */
+export async function markDeliveryDelivered(
+  deliveryId: number,
+  input: { receivedBy: string; notes?: string | null }
+): Promise<{ ok: boolean; deliveryId: number; deliveredAt: string }> {
+  return api(`/deliveries/${deliveryId}/mark-delivered`, { method: 'POST', body: input });
+}
+
 /** Re-deriva faltantes pendientes de una entrega ya confirmada */
 export async function rederiveDeliveryShortfalls(
   deliveryId: number
@@ -585,6 +593,6 @@ export async function getMyDriverAssignments(){const r=await api<{assignments:an
 export async function getMyDriverHistory(){const r=await api<{history:any[]}>('/drivers/my-history');return r.history;} 
 export async function assignDriverTo(type:string,id:number,driverUserId:number){return api('/drivers/assign',{method:'POST',body:{type,id,driverUserId}});} 
 export async function startDriverDelivery(type:string,id:number){return api('/drivers/start',{method:'POST',body:{type,id}});} 
-export async function completeDriverDelivery(type:string,id:number,notes?:string){return api('/drivers/complete',{method:'POST',body:{type,id,notes}});} 
+export async function completeDriverDelivery(type:string,id:number,notes?:string,receivedBy?:string){return api('/drivers/complete',{method:'POST',body:{type,id,notes,receivedBy}});} 
 export async function getDeliveryDelays(){return api('/drivers/delays');} 
 export async function geocodeAddressApi(address:string){return api('/drivers/geocode',{method:'POST',body:{address}});}

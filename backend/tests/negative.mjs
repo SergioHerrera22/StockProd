@@ -125,11 +125,11 @@ async function main() {
 
   // ---------- [C] Anulación de entrega confirmada ----------
   console.log('\n[C] Anulación de entrega confirmada (movimientos compensatorios)');
-  const voided = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Anulación de prueba controlada', voidApprovedBy: admin.json.user.id } });
+  const voided = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Anulación de prueba controlada', approver: { username: 'admin', password: process.env.SMOKE_ADMIN_PASSWORD ?? 'robles2026' } } });
   ok(voided.status === 200, `Anulación aceptada [${voided.status} ${voided.json?.error ?? ''}]`);
   const stC = await stockOf(T, pid);
   ok(stC[DEP.id] === 100, `Stock repuesto por la anulación (DEP=${stC[DEP.id]}, esperado 100)`);
-  const voidAgain = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Segunda anulación', voidApprovedBy: admin.json.user.id } });
+  const voidAgain = await api('POST', `/deliveries/${draft.json.id}/void`, { token: TX, body: { reason: 'Segunda anulación', approver: { username: 'admin', password: process.env.SMOKE_ADMIN_PASSWORD ?? 'robles2026' } } });
   ok(voidAgain.status === 409, 'Segunda anulación bloqueada (409)');
 
   // ---------- [D] Anulación de entrada confirmada ----------

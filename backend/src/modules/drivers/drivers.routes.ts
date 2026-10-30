@@ -50,9 +50,10 @@ router.post('/complete', requirePerm('tracking.gps'), asyncH(async (req, res) =>
   const body = z.object({
     type: z.enum(['DELIVERY', 'TRANSFER']),
     id: z.number().int().positive(),
-    notes: z.string().optional(),
+    notes: z.string().max(1000).optional(),
+    receivedBy: z.string().trim().min(2).max(150).optional(),
   }).parse(req.body);
-  res.json(await completeDelivery(req.user!, req.ip, body.type, body.id, body.notes));
+  res.json(await completeDelivery(req.user!, req.ip, body.type, body.id, body.notes, body.receivedBy));
 }));
 
 router.get('/delays', requirePerm('tracking.read'), asyncH(async (_req, res) => {

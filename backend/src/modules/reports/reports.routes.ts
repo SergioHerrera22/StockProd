@@ -7,6 +7,26 @@ import { intParam, strParam } from '../../lib/pagination';
 const router = Router();
 router.use(authRequired, requirePerm('reports.read'));
 
+// Valorización del inventario: costo unitario por stock disponible
+// (stock físico menos reservas activas), consistente con el dashboard.
+router.get(
+  '/inventory-value',
+  asyncH(async (req, res) => {
+    const locationId = intParam(req.query.locationId);
+    const result = await query<{ total_value: string }>(
+      `SELECT COALESCE(
+         SUM(gs.available_quantity * p.cost) FILTER (WHERE p.cost IS NOT NULL),
+         0
+       )::numeric AS total_value
+       FROM get_available_stock(NULL, $1::integer) gs
+       JOIN products p ON p.id = gs.product_id
+       WHERE p.is_active`,
+      [locationId ?? null]
+    );
+    res.json({ totalValue: Number(result.rows[0]?.total_value ?? 0) });
+  })
+);
+
 // Stock actual por producto y ubicacion (consolidado + detalle)
 router.get(
   '/stock-by-location',

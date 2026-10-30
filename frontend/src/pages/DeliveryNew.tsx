@@ -36,6 +36,7 @@ export default function DeliveryNew() {
   const [locationId, setLocationId] = useState<string>(user?.locationId ? String(user.locationId) : '');
   const [lines, setLines] = useState<Line[]>([]);
   const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [pendingDelivery, setPendingDelivery] = useState(false);
   const [notes, setNotes] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -49,7 +50,7 @@ export default function DeliveryNew() {
   const [draftDeliveryId, setDraftDeliveryId] = useState<number | null>(null);
 
   // Home delivery / driver
-  const [deliveryType, setDeliveryType] = useState<'NORMAL' | 'DOMICILIO'>('NORMAL');
+  const [deliveryType, setDeliveryType] = useState<'LOCAL' | 'DOMICILIO'>('LOCAL');
   const [drivers, setDrivers] = useState<any[]>([]);
   const [driverUserId, setDriverUserId] = useState('');
   const [customerName, setCustomerName] = useState('');
@@ -149,7 +150,8 @@ export default function DeliveryNew() {
 
   const body = {
     locationId: Number(locationId),
-    invoiceNumber: invoiceNumber.trim() || null,
+    invoiceNumber: invoiceNumber.trim(),
+    pendingDelivery,
     notes: notes.trim() || null,
     items: lines.map((l) => ({
       productId: l.productId,
@@ -169,6 +171,7 @@ export default function DeliveryNew() {
 
   function validate(): string | null {
     if (!locationId) return 'Elegí la ubicación de salida';
+    if (!invoiceNumber.trim()) return 'Ingresá el número de factura';
     if (lines.length === 0) return 'Agregá al menos un producto';
     for (const l of lines) {
       if (!Number.isFinite(l.quantity) || l.quantity <= 0) return `Cantidad inválida en ${l.code}`;
@@ -177,12 +180,12 @@ export default function DeliveryNew() {
   }
 
   async function saveDraft() {
-    const err = lines.length === 0 ? 'Agregá al menos un producto' : null;
+    const err = validate();
     if (err) { toast.error(err); return; }
     setSaving(true);
     try {
       const res = await api<{ id: number; number: string }>('/deliveries', { method: 'POST', body });
-      toast.success(`Borrador ${res.number} guardado (el stock no cambió)`);
+      toast.success(pendingDelivery ? `Entrega ${res.number} creada como pendiente: stock reservado, sin descontar` : `Borrador ${res.number} guardado (el stock no cambió)`);
       navigate(`/entregas/${res.id}`);
     } catch (e) {
       toast.error((e as Error).message);
@@ -252,9 +255,9 @@ export default function DeliveryNew() {
   /** Confirmar entrega directa (todo en local) */
   async function confirmDeliveryDirect(deliveryId: number) {
     try {
-      const res = await api<{ id: number; number: string }>(`/deliveries/${deliveryId}/confirm`, { method: 'POST' });
-      toast.success(`Entrega ${res.number} confirmada: stock actualizado`);
-      navigate(`/entregas/${res.id}`);
+      const res = await api<{ deliveryId: number; deliveryNumber: string }>(`/deliveries/${deliveryId}/confirm`, { method: 'POST' });
+      toast.success(`Entrega ${res.deliveryNumber} confirmada: stock actualizado`);
+      navigate(`/entregas/${res.deliveryId}`);
     } catch (e: any) {
       toast.error('Error confirmando: ' + e.message);
     }
@@ -310,13 +313,17 @@ export default function DeliveryNew() {
               {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </Select>
           </Field>
-          <Field label="Factura de referencia" hint="Opcional (Tiempo Gestión)">
-            <Input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="0001-00012345" />
+          <Field label="Factura de referencia" required hint="Número obligatorio para trazabilidad">
+            <Input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="0001-00012345" required />
           </Field>
           <Field label="Observaciones">
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Opcional" />
           </Field>
         </FormRow>
+        <label className="mt-3 flex items-start gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={pendingDelivery} onChange={(e) => setPendingDelivery(e.target.checked)} className="mt-0.5 rounded border-slate-300" />
+          <span><strong>Pendiente de entrega</strong><span className="block text-xs text-slate-500">Reserva las unidades disponibles sin descontarlas. El stock se descuenta al registrar la entrega efectiva.</span></span>
+        </label>
       </Card>
 
       <Card className="mb-4 p-4">
@@ -326,7 +333,7 @@ export default function DeliveryNew() {
         <FormRow cols={3}>
           <Field label="Tipo de entrega">
             <Select value={deliveryType} onChange={(e) => setDeliveryType(e.target.value as any)}>
-              <option value="NORMAL">Normal</option>
+              <option value="LOCAL">Normal</option>
               <option value="DOMICILIO">Enviar a domicilio</option>
             </Select>
           </Field>
@@ -462,7 +469,7 @@ export default function DeliveryNew() {
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-4 shadow-sm">
         <div className="text-sm text-slate-500">
-          {lines.length} producto(s) · <strong className="text-slate-700">{fmtQty(totalUnits)}</strong> unidad(es) a entregar
+          ({lines.length} PRODUCTO(S) - {fmtQty(totalUnits)} UNIDAD(ES) A ENTREGAR)
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={saveDraft} loading={saving} disabled={!lines.length}>
@@ -471,11 +478,11 @@ export default function DeliveryNew() {
           <Button
             variant="success"
             size="lg"
-            onClick={checkAvailabilityAndProceed}
+            onClick={pendingDelivery ? saveDraft : checkAvailabilityAndProceed}
             disabled={!lines.length || saving || checkingAvailability || !hasPermission(user?.role, 'deliveries.confirm')}
             title={!hasPermission(user?.role, 'deliveries.confirm') ? 'No tenés permiso para confirmar entregas' : undefined}
           >
-            {checkingAvailability ? '⏳ Verificando stock...' : '✅ Confirmar entrega'}
+            {pendingDelivery ? '📦 Crear entrega pendiente' : (checkingAvailability ? '⏳ Verificando stock...' : '✅ Confirmar entrega')}
           </Button>
         </div>
       </div>

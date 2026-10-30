@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   api, getDeliveryPendingDeliveries, checkDeliveryAvailability, confirmDeliveryWithAlternatives,
-  rederiveDeliveryShortfalls,
+  rederiveDeliveryShortfalls, markDeliveryDelivered,
 } from '../lib/api';
 import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
@@ -25,9 +25,14 @@ export default function DeliveryDetail() {
   const [loading, setLoading] = useState(true);
   const [voidOpen, setVoidOpen] = useState(false);
   const [reason, setReason] = useState('');
+  const [approverUsername, setApproverUsername] = useState('');
+  const [approverPassword, setApproverPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [deriving, setDeriving] = useState(false);
   const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receivedBy, setReceivedBy] = useState('');
+  const [receiptNotes, setReceiptNotes] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +60,10 @@ export default function DeliveryDetail() {
    */
   async function confirmDraft() {
     if (!delivery || !id) return;
+    if (delivery.is_pending_delivery) {
+      await doConfirmDirect();
+      return;
+    }
     setSaving(true);
     try {
       const avail = await checkDeliveryAvailability(delivery.id);
@@ -127,9 +136,30 @@ export default function DeliveryDetail() {
       if (res.created.length > 0) {
         toast.success(`Re-derivados: ${res.created.length} retiro(s) creado(s)`);
       } else {
-        toast.info(res.message ?? 'No hay faltantes con stock disponible en otras sucursales');
+        toast.info(res.message ?? 'No hay stock existente en otras sucursales.');
       }
       void load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function registerReceipt() {
+    if (!delivery) return;
+    if (receivedBy.trim().length < 2) {
+      toast.error('Ingresá el nombre de quien recibió la mercadería');
+      return;
+    }
+    setSaving(true);
+    try {
+      await markDeliveryDelivered(delivery.id, { receivedBy: receivedBy.trim(), notes: receiptNotes.trim() || null });
+      toast.success('Recepción a domicilio registrada');
+      setReceiptOpen(false);
+      setReceivedBy('');
+      setReceiptNotes('');
+      await load();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -141,7 +171,14 @@ export default function DeliveryDetail() {
     if (!delivery) return;
     setSaving(true);
     try {
-      await api(`/deliveries/${delivery.id}/void`, { method: 'POST', body: { reason } });
+      const requiresSecondApprover = ['CONFIRMADO', 'PARCIAL'].includes(delivery.status);
+      await api(`/deliveries/${delivery.id}/void`, {
+        method: 'POST',
+        body: {
+          reason,
+          ...(requiresSecondApprover ? { approver: { username: approverUsername.trim(), password: approverPassword } } : {}),
+        },
+      });
       toast.success('Entrega anulada con movimientos compensatorios');
       setVoidOpen(false);
       setReason('');
@@ -234,18 +271,67 @@ export default function DeliveryDetail() {
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => window.print()}>🖨 Imprimir comprobante</Button>
           {delivery.status === 'BORRADOR' && can('deliveries.confirm') && (
-            <Button variant="success" loading={saving} onClick={confirmDraft}>✅ Confirmar entrega</Button>
+            <Button variant="success" loading={saving} onClick={confirmDraft}>{delivery.is_pending_delivery ? '📦 Registrar entrega efectiva' : '✅ Confirmar entrega'}</Button>
           )}
           {(delivery.status === 'PARCIAL' || delivery.status === 'CONFIRMADO') && can('deliveries.confirm') && (
-            <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock en otras sucursales para los faltantes que quedaron sin derivar">
-              🔄 Re-derivar faltantes
+            <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock existente en otras sucursales para completar la entrega">
+              🔄 Re-derivar entrega
             </Button>
+          )}
+          {delivery.delivery_type === 'DOMICILIO' && ['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && !delivery.delivered_at && can('deliveries.confirm') && (
+            <Button variant="success" onClick={() => setReceiptOpen(true)}>Registrar recepción</Button>
           )}
           {delivery.status !== 'ANULADO' && can('deliveries.void') && (
             <Button variant="danger" onClick={() => setVoidOpen(true)}>Anular</Button>
           )}
         </div>
       </div>
+
+      {voidOpen && (
+        <Modal open onClose={() => setVoidOpen(false)} title="Anular entrega" width="sm"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setVoidOpen(false)}>Cancelar</Button>
+              <Button variant="danger" loading={saving}
+                disabled={reason.trim().length < 5 || (['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && (!approverUsername.trim() || !approverPassword))}
+                onClick={() => void voidDelivery()}>Confirmar anulación</Button>
+            </>
+          }>
+          <Field label="Motivo de anulación" required>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={255} placeholder="Motivo (mínimo 5 caracteres)" />
+          </Field>
+          {['CONFIRMADO', 'PARCIAL'].includes(delivery.status) && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="mb-2 text-sm font-semibold text-amber-900">Autorización de un segundo responsable</p>
+              <p className="mb-3 text-xs text-amber-800">El encargado o administrador debe ingresar sus propias credenciales. No se acepta un ID de usuario como autorización.</p>
+              <Field label="Usuario del autorizador" required>
+                <Input value={approverUsername} onChange={(e) => setApproverUsername(e.target.value)} autoComplete="username" />
+              </Field>
+              <Field label="Contraseña del autorizador" required>
+                <Input type="password" value={approverPassword} onChange={(e) => setApproverPassword(e.target.value)} autoComplete="current-password" />
+              </Field>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {receiptOpen && (
+        <Modal open onClose={() => setReceiptOpen(false)} title="Registrar recepción a domicilio" width="sm"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setReceiptOpen(false)}>Cancelar</Button>
+              <Button variant="success" loading={saving} disabled={receivedBy.trim().length < 2} onClick={() => void registerReceipt()}>Confirmar recepción</Button>
+            </>
+          }>
+          <p className="mb-3 text-sm text-slate-500">Esta acción registra la entrega física al cliente. No genera movimientos de stock.</p>
+          <Field label="Nombre de quien recibe" required>
+            <Input value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} maxLength={150} placeholder="Nombre y apellido" />
+          </Field>
+          <Field label="Observaciones (opcional)">
+            <Input value={receiptNotes} onChange={(e) => setReceiptNotes(e.target.value)} maxLength={1000} placeholder="Ej. recibió encargado de obra" />
+          </Field>
+        </Modal>
+      )}
 
       {/* Comprobante */}
       <Card className="print-area p-6">
@@ -262,6 +348,7 @@ export default function DeliveryDetail() {
           <div className="flex flex-col items-end text-right">
             <div className="font-mono text-lg font-bold text-brand-700">{delivery.number}</div>
             <Badge color={status.color}>{status.label}</Badge>
+            {delivery.is_pending_delivery && delivery.status === 'BORRADOR' && <Badge color="amber">Pendiente · stock reservado</Badge>}
             <div className="mt-1 print:mt-2">
               <Barcode value={delivery.number} height={40} width={1.3} />
             </div>
@@ -276,6 +363,12 @@ export default function DeliveryDetail() {
           </div>
         </div>
 
+        {delivery.delivered_at && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            <strong>Recepción confirmada:</strong> {delivery.delivered_to || 'Receptor sin identificar'} · {fmtDateTime(delivery.delivered_at)}
+            {delivery.delivery_proof_notes && <div className="mt-1">Observaciones: {delivery.delivery_proof_notes}</div>}
+          </div>
+        )}
         <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
           <div><span className="text-slate-400">Fecha:</span> {fmtDateTime(delivery.created_at)}</div>
           <div><span className="text-slate-400">Sale de:</span> <strong>{delivery.location_name}</strong></div>
@@ -323,8 +416,7 @@ export default function DeliveryDetail() {
           <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">
             <div className="text-xs font-bold uppercase tracking-wide">⚠️ Faltantes en esta orden</div>
             <p>
-              Faltan <strong>{shortfallSummary.products}</strong> producto(s) ·{' '}
-              <strong>{fmtQty(shortfallSummary.units)}</strong> unidades sin entregar todavía.
+              FALTAN ENTREGAR ({shortfallSummary.products}) PRODUCTO(S), NO EXISTE STOCK DISPONIBLE EN LAS SUCURSALES PARA LA ENTREGA. ({fmtQty(shortfallSummary.units)} UNIDAD(ES)).
               {shortfallSummary.derivedUnits > 0 && (
                 <> De ellas, <strong>{fmtQty(shortfallSummary.derivedUnits)}</strong> u. quedaron derivadas
                 para retiro en otra sucursal (ver Pendientes de entrega).</>
@@ -411,7 +503,7 @@ export default function DeliveryDetail() {
             <div className="mb-1 font-bold uppercase tracking-wide">⏳ Pendiente sin derivar</div>
             Estos montos no pudieron derivarse por falta de stock en ninguna sucursal:{' '}
             <strong>{underived.map((u) => `${u.name} x${fmtQty(u.qty)}`).join(' · ')}</strong>.
-            Usá «🔄 Re-derivar faltantes» cuando llegue mercadería.
+            ESTOS PRODUCTOS NO SE PUDIERON DERIVAR A OTRA SUCURSAL POR FALTA DE STOCK EN LAS SUCURSALES. USÁ «RE-DERIVAR ENTREGA» CUANDO LLEGUE LA MERCADERÍA.
           </div>
         )}
 

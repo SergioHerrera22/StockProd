@@ -160,25 +160,26 @@ async function main() {
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 100, 'El borrador NO descuenta stock');
 
   const confirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TE });
-  ok(confirm.status === 200, 'Entrega confirmada por encargado');
+  ok(confirm.status === 200, `Entrega confirmada por encargado (HTTP ${confirm.status}: ${JSON.stringify(confirm.json)})`);
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 97, 'Confirmación descontó 3 (de 8 facturadas, entregar 3)');
 
   const doubleConfirm = await api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TE });
-  ok(doubleConfirm.status === 409, 'Doble confirmación bloqueada (409)');
+  ok(doubleConfirm.status === 409, `Doble confirmación bloqueada (HTTP ${doubleConfirm.status}: ${JSON.stringify(doubleConfirm.json)})`);
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 97, 'Doble confirmación NO volvió a descontar');
 
   // ---------- Entrega sin stock suficiente ----------
-  const tooMuch = await api('POST', '/deliveries?confirm=true', {
-    token: TE,
-    body: { locationId: dep.id, items: [{ productId: pid, quantity: 99999 }] },
+  const noStockDraft = await api('POST', '/deliveries', {
+    token: T,
+    body: { locationId: dep.id, invoiceNumber: `SMOKE-NOSTOCK-${stamp}`, items: [{ productId: pid, quantity: 99999 }] },
   });
-  // Hoy el confirm sin stock en NINGUNA ubicacion devuelve 409 de negocio
-  // ("Sin stock disponible ... en ninguna ubicacion"); el 403 quedo obsoleto.
-  ok(tooMuch.status === 409, 'Entrega sin stock devuelta como conflicto (409)');
+  ok(noStockDraft.status === 201, 'Borrador de entrega sin stock creado por admin');
+  const tooMuch = await api('POST', `/deliveries/${noStockDraft.json.id}/confirm`, { token: TE });
+  // El administrador crea y el encargado confirma: se respeta segregación de funciones.
+  ok(tooMuch.status === 409, `Entrega sin disponibilidad suficiente devuelve conflicto (HTTP ${tooMuch.status}: ${JSON.stringify(tooMuch.json)})`);
 
   // ---------- Transferencia ----------
   console.log('[6] Transferencia entre ubicaciones');
@@ -186,10 +187,10 @@ async function main() {
     token: T,
     body: { originLocationId: dep.id, destinationLocationId: suc1.id, items: [{ productId: pid, quantity: 20 }] },
   });
-  ok(transfer.status === 201 && transfer.json.number.startsWith('T-'), `Transferencia ${transfer.json?.number} enviada`);
+  ok(transfer.status === 201 && transfer.json.number.startsWith('T-'), `Transferencia enviada (HTTP ${transfer.status}: ${JSON.stringify(transfer.json)})`);
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
-  ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 77, 'Origen descontó 20');
+  ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 77, `Origen descontó 20 (saldo: ${JSON.stringify(stockNow.find((s) => s.location_id === dep.id))})`);
   ok(Number(stockNow.find((s) => s.location_id === suc1.id)?.quantity) === 0, 'Destino NO tiene stock aún (en tránsito)');
 
   const tDetail = (await api('GET', `/transfers/${transfer.json.id}`, { token: T })).json.transfer;
@@ -229,7 +230,7 @@ async function main() {
   // ---------- Movimientos ----------
   console.log('[8] Historial de movimientos');
   const movs = (await api('GET', `/movements?productId=${pid}&pageSize=100`, { token: T })).json;
-  ok(movs.total === 5, `Historial completo y consistente (${movs.total} movimientos)`);
+  ok(movs.total === 5, `Historial completo y consistente (${movs.total} movimientos: ${JSON.stringify(movs.movements?.map(m => ({type:m.type,quantity:m.quantity,reference_type:m.reference_type,reference_number:m.reference_number})))})`);
   const last = movs.movements[0];
   ok(last.type === 'AJUSTE_NEG' && last.balance_after === 14, 'Último movimiento: ajuste con saldo anterior y posterior');
 
@@ -263,7 +264,11 @@ async function main() {
     ok(empEntry.status === 403, 'Empleado NO puede registrar entradas (403)');
     const empDelivery = await api('POST', '/deliveries', {
       token: empLogin.json.token,
-      body: { locationId: dep.id, items: [{ productId: pid, quantity: 1 }] },
+      body: {
+        locationId: dep.id,
+        invoiceNumber: `SMOKE-EMP-${stamp}`,
+        items: [{ productId: pid, quantity: 1 }],
+      },
     });
     ok(empDelivery.status === 201, 'Empleado SÍ puede registrar entregas');
   } else {

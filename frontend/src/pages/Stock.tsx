@@ -165,6 +165,12 @@ export default function StockPage() {
     }
   }
 
+  function selectSafeDuplicateCandidates() {
+    const ids = dupGroups.flatMap((group) => group.products.slice(1).filter((product) => Number(product.total_qty) <= 0).map((product) => product.id));
+    setDupSelected(new Set(ids));
+    if (ids.length === 0) toast.info('No hay duplicados adicionales sin stock para desactivar automáticamente');
+  }
+
   async function bulkDeleteFromDup() {
     if (!isAdmin || dupSelected.size === 0) return;
     const ok = await confirm({
@@ -275,7 +281,7 @@ export default function StockPage() {
       <Modal
         open={dupOpen}
         onClose={() => { if (deleting) return; setDupOpen(false); }}
-        title="Duplicados detectados por nombre"
+        title="Duplicados por nombre, marca y unidad"
         width="xl"
         footer={
           <>
@@ -292,6 +298,10 @@ export default function StockPage() {
           <p className="text-sm text-slate-500">No se encontraron duplicados activos.</p>
         ) : (
           <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 p-3">
+              <p className="text-xs text-slate-600">Se conserva el registro más antiguo de cada grupo. Solo se seleccionan duplicados sin stock; los que tienen existencias requieren revisión y fusión controlada.</p>
+              <Button size="sm" variant="secondary" onClick={selectSafeDuplicateCandidates}>Seleccionar duplicados seguros</Button>
+            </div>
             {dupGroups.map((g) => (
               <div key={g.key} className="rounded-lg border border-slate-200">
                 <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">

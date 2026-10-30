@@ -86,10 +86,9 @@ export async function createPendingDelivery(
   const run = async (c: PoolClient) => {
     // Validaciones básicas
     if (!input.items.length) throw ApiError.badRequest('La orden debe tener al menos un producto');
-    if (input.saleLocationId === input.pickupLocationId) {
-      throw ApiError.badRequest('La sucursal de venta y retiro deben ser distintas para órdenes pendientes');
-    }
-
+    // El retiro puede realizarse en la misma sucursal de venta (por ejemplo,
+    // cuando el picking detectó unidades no preparadas pero repuestas/localizadas
+    // en esa sucursal). En ese caso también se reserva y consume por este flujo.
     // Validar productos y ubicaciones
     const productIds = input.items.map(i => i.productId);
     const locationIds = [...new Set(input.items.map(i => i.sourceLocationId))];

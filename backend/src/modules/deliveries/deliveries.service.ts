@@ -1,4 +1,5 @@
 import { PoolClient } from 'pg';
+import bcrypt from 'bcryptjs';
 import { query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { applyStockChange } from '../../services/stockEngine';
@@ -40,6 +41,7 @@ export interface DeliveryDraftInput {
   driverId?: number | null; // alias
   dueAt?: string | null;
   deliveryObservations?: string | null;
+  pendingDelivery?: boolean;
 }
 
 export interface DeliveryConfirmResult {
@@ -142,6 +144,11 @@ async function createPendingOrdersForShortfalls(
  * no alcanza para todo el faltante, el sobrante queda reportado en
  * `unresolved` (deuda de mercadería sin destino posible).
  */
+/**
+ * Distribuye cada faltante entre TODAS las sucursales con disponibilidad.
+ * Una orden de retiro por ubicación; cada línea refleja únicamente la cantidad
+ * asignada a esa ubicación. El remanente queda como deuda sin derivar.
+ */
 function autoAssignShortfalls(shortfalls: DeliveryShortfall[]): {
   pendingItems: PendingItemInput[];
   unresolved: { productId: number; productName: string; quantity: number }[];
@@ -150,32 +157,35 @@ function autoAssignShortfalls(shortfalls: DeliveryShortfall[]): {
   const unresolved: { productId: number; productName: string; quantity: number }[] = [];
 
   for (const sf of shortfalls) {
-    if (sf.alternativeLocations.length === 0) continue; // se maneja como unresolved por el llamador
+    let remaining = sf.shortfallQuantity;
+    const locations = [...sf.alternativeLocations]
+      .filter((loc) => Number.isFinite(loc.availableQuantity) && loc.availableQuantity > 0)
+      .sort((a, b) => b.availableQuantity - a.availableQuantity || a.locationId - b.locationId);
 
-    const best = sf.alternativeLocations.reduce((bestLoc, cur) =>
-      cur.availableQuantity > bestLoc.availableQuantity ? cur : bestLoc
-    );
-    const reservedQty = Math.min(sf.shortfallQuantity, best.availableQuantity);
-    if (reservedQty <= 0) continue; // nada reservable: queda en unresolved
+    for (const loc of locations) {
+      if (remaining <= 0) break;
+      const allocated = Math.min(remaining, loc.availableQuantity);
+      if (allocated <= 0) continue;
+      pendingItems.push({
+        productId: sf.productId,
+        quantityRequested: allocated,
+        sourceLocationId: loc.locationId,
+        quantityReserved: allocated,
+      });
+      remaining -= allocated;
+    }
 
-    pendingItems.push({
-      productId: sf.productId,
-      quantityRequested: sf.shortfallQuantity,
-      sourceLocationId: best.locationId,
-      quantityReserved: reservedQty,
-    });
-    if (reservedQty < sf.shortfallQuantity) {
+    if (remaining > 0) {
       unresolved.push({
         productId: sf.productId,
         productName: sf.productName,
-        quantity: sf.shortfallQuantity - reservedQty,
+        quantity: remaining,
       });
     }
   }
 
   return { pendingItems, unresolved };
 }
-
 async function validateItems(c: PoolClient, items: DeliveryItemInput[]) {
   if (!items.length) throw ApiError.badRequest('La entrega debe tener al menos un producto');
   for (const it of items) {
@@ -237,6 +247,7 @@ async function loadDelivery(client: PoolClient, id: number) {
 
 export async function createDelivery(user: AuthUser, ip: string | undefined, input: DeliveryDraftInput, confirm: boolean) {
   assertLocationAccess(user, input.locationId);
+  if (!input.invoiceNumber?.trim()) throw ApiError.badRequest('El número de factura es obligatorio');
   return withTx(async (c) => {
     await validateItems(c, input.items);
     const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
@@ -257,8 +268,8 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
     const r = await c.query<{ id: number }>(
       `INSERT INTO deliveries (number, location_id, invoice_number, notes, barcode, created_by, status,
                                delivery_type, customer_name, customer_phone, delivery_address, delivery_lat, delivery_lng,
-                               driver_user_id, driver_assigned_at, due_at, delivery_observations)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+                               driver_user_id, driver_assigned_at, due_at, delivery_observations, is_pending_delivery)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
       [
         number,
         input.locationId,
@@ -277,6 +288,7 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
         driverUserId ? new Date() : null,
         input.dueAt ? new Date(input.dueAt) : null,
         input.deliveryObservations?.trim() || null,
+        Boolean(input.pendingDelivery),
       ]
     );
     const deliveryId = r.rows[0].id;
@@ -293,6 +305,15 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
       ]
     );
 
+    // Reserva disponibilidad sin descontar stock físico hasta la entrega efectiva.
+    if (input.pendingDelivery) {
+      await reserveStockBatch(c, input.items.map((it) => ({
+        referenceType: 'DELIVERY' as const, referenceId: deliveryId, productId: it.productId,
+        sourceLocationId: input.locationId, quantity: Math.max(it.quantity, it.requestedQuantity ?? 0),
+        reservedBy: user.id, expiresAt: null,
+      })));
+    }
+
     if (requiresApproval) {
       const rule = rules.find(r => r.action.require_approval)!;
       await createApprovalRequest({
@@ -303,31 +324,46 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
         requestedBy: user.id,
         context: { ...context, items: input.items },
       }, c);
-      await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_PENDING_APPROVAL', entity: 'delivery', entityId: deliveryId, details: { number, requiresApproval: true }, ip });
+      await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_PENDING_APPROVAL', entity: 'delivery', entityId: deliveryId, details: { number, requiresApproval: true, pendingDelivery: Boolean(input.pendingDelivery) }, ip });
       return { id: deliveryId, number, status: 'BORRADOR', requiresApproval: true };
     }
 
-    if (confirm) {
-      await confirmDeliveryTx(c, deliveryId, user);
+    let confirmation: DeliveryConfirmResult | undefined;
+    if (confirm && !input.pendingDelivery) {
+      confirmation = await confirmDeliveryTx(c, deliveryId, user);
+      await writeAudit(c, {
+        userId: user.id, action: 'DELIVERY_CONFIRM', entity: 'delivery', entityId: deliveryId,
+        details: { createdAndConfirmed: true, result: confirmation }, ip,
+      });
     } else {
-      await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_DRAFT', entity: 'delivery', entityId: deliveryId, details: { number }, ip });
+      await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_DRAFT', entity: 'delivery', entityId: deliveryId, details: { number, pendingDelivery: Boolean(input.pendingDelivery) }, ip });
     }
 
-    return { id: deliveryId, number, status: confirm ? 'CONFIRMADO' : 'BORRADOR', requiresApproval: false };
+    const persisted = await c.query<{ status: string }>('SELECT status FROM deliveries WHERE id = $1', [deliveryId]);
+    return {
+      id: deliveryId,
+      number,
+      status: input.pendingDelivery ? 'PENDIENTE_ENTREGA' : persisted.rows[0]?.status ?? 'BORRADOR',
+      pendingDelivery: Boolean(input.pendingDelivery),
+      requiresApproval: false,
+      ...(confirmation ? confirmation : {}),
+    };
   });
 }
 
 export async function updateDelivery(user: AuthUser, ip: string | undefined, id: number, input: DeliveryDraftInput) {
   assertLocationAccess(user, input.locationId);
   return withTx(async (c) => {
-    const d = await c.query<{ status: string; number: string }>(
-      'SELECT status, number FROM deliveries WHERE id = $1 FOR UPDATE',
+    const d = await c.query<{ status: string; number: string; is_pending_delivery: boolean }>(
+      'SELECT status, number, is_pending_delivery FROM deliveries WHERE id = $1 FOR UPDATE',
       [id]
     );
     if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     if (d.rows[0].status !== 'BORRADOR') {
       throw ApiError.conflict('Solo se pueden modificar entregas en borrador');
     }
+    if (d.rows[0].is_pending_delivery) throw ApiError.conflict('La entrega ya tiene stock reservado. Anulala y creá una nueva para cambiar sus productos.');
+    if (!input.invoiceNumber?.trim()) throw ApiError.badRequest('El número de factura es obligatorio');
     await validateItems(c, input.items);
 
     const driverUserId = input.driverUserId ?? input.driverId ?? null;
@@ -380,8 +416,8 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
 
 /** Confirmacion transaccional con manejo de faltantes multi-sucursal. */
 async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pickMap?: Map<number, number>): Promise<DeliveryConfirmResult> {
-  const d = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; location_name: string; location_code: string }>(
-    `SELECT d.id, d.number, d.status, d.location_id, d.created_by, l.name AS location_name, l.code AS location_code
+  const d = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; location_name: string; location_code: string; is_pending_delivery: boolean }>(
+    `SELECT d.id, d.number, d.status, d.location_id, d.created_by, d.is_pending_delivery, l.name AS location_name, l.code AS location_code
      FROM deliveries d JOIN locations l ON l.id = d.location_id
      WHERE d.id = $1 FOR UPDATE`,
     [id]
@@ -399,6 +435,15 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
   }
   if (delivery.status === 'ANULADO') throw ApiError.conflict(`La entrega ${delivery.number} esta anulada`);
 
+  // La segregación de funciones debe ser idéntica en todas las rutas de
+  // confirmación (directa, con alternativas, picking y creación+confirmación).
+  const confirmationSetting = await getConfirmationSetting(c, 'DELIVERY', 'CONFIRM');
+  if (confirmationSetting?.enabled && confirmationSetting.require_different_user && !confirmationSetting.allow_same_user) {
+    if (delivery.created_by === user.id) {
+      throw ApiError.forbidden('No podés confirmar una entrega que cargaste vos: debe confirmarla otra persona.');
+    }
+  }
+
   const items = await c.query<{ product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string }>(
     `SELECT di.product_id, di.quantity, di.requested_quantity, p.name, p.code
      FROM delivery_items di JOIN products p ON p.id = di.product_id
@@ -406,16 +451,85 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
     [id]
   );
   if (!items.rows.length) throw ApiError.badRequest('La entrega no tiene productos');
+  if (pickMap !== undefined) {
+    const itemIds = new Set(items.rows.map((it) => Number(it.product_id)));
+    if (pickMap.size !== itemIds.size || [...pickMap.keys()].some((productId) => !itemIds.has(productId))) {
+      throw ApiError.badRequest('El checklist debe contener exactamente todos los productos de la entrega.');
+    }
+    for (const it of items.rows) {
+      const picked = pickMap.get(Number(it.product_id));
+      if (picked === undefined || picked > Number(it.quantity)) {
+        throw ApiError.badRequest(`La cantidad preparada de ${it.name} debe estar entre 0 y ${it.quantity}.`);
+      }
+    }
+  }
+
+  const pendingQtySum = items.rows.reduce((sum, it) => sum + Number(it.quantity), 0);
+  const pendingRules = await evaluateBusinessRules('DELIVERY', 'BEFORE_CONFIRM', {
+    qty_sum: pendingQtySum, location_id: delivery.location_id, user_role: user.role,
+  });
+  if (pendingRules.some(r => r.action.require_approval) && user.role === 'EMPLEADO') {
+    throw ApiError.forbidden('Esta entrega requiere aprobador con rol ENCARGADO o superior');
+  }
+
+  if (delivery.is_pending_delivery) {
+    const active = await c.query<{
+      reservation_id: number; product_id: number; quantity_reserved: string; quantity_consumed: string;
+    }>(
+      `SELECT id AS reservation_id, product_id, quantity_reserved, quantity_consumed
+       FROM stock_reservations
+       WHERE reference_type = 'DELIVERY' AND reference_id = $1
+         AND status IN ('ACTIVA', 'PARCIAL')
+       ORDER BY product_id, source_location_id, id FOR UPDATE`,
+      [id]
+    );
+    const reservedByProduct = new Map<number, number>();
+    for (const r of active.rows) {
+      const remaining = Number(r.quantity_reserved) - Number(r.quantity_consumed);
+      reservedByProduct.set(r.product_id, (reservedByProduct.get(r.product_id) ?? 0) + remaining);
+    }
+    for (const it of items.rows) {
+      const target = Math.max(Number(it.quantity), Number(it.requested_quantity ?? 0));
+      const reserved = reservedByProduct.get(it.product_id) ?? 0;
+      if (Math.abs(reserved - target) > 0.000001) {
+        throw ApiError.conflict(`La reserva de ${it.name} no coincide con la cantidad prevista (${reserved} reservadas, ${target} requeridas).`);
+      }
+    }
+    const fullyDelivered: { productId: number; quantity: number }[] = [];
+    for (const r of active.rows) {
+      const remaining = Number(r.quantity_reserved) - Number(r.quantity_consumed);
+      if (remaining <= 0) continue;
+      const consumed = await consumeReservation(c, {
+        reservationId: r.reservation_id, quantity: remaining, consumedBy: user.id,
+        movementType: 'SALIDA', reason: `Entrega pendiente efectivizada ${delivery.number}`,
+      });
+      if (!consumed.success) throw ApiError.conflict(`No se pudo consumir la reserva: ${consumed.message}`);
+      const existing = fullyDelivered.find(x => x.productId === r.product_id);
+      if (existing) existing.quantity += remaining;
+      else fullyDelivered.push({ productId: r.product_id, quantity: remaining });
+    }
+    await c.query(
+      `UPDATE delivery_items SET quantity_delivered = GREATEST(quantity, COALESCE(requested_quantity, quantity))
+       WHERE delivery_id = $1`, [id]
+    );
+    await c.query(
+      `UPDATE deliveries SET status = 'CONFIRMADO', confirmed_by = $1, confirmed_at = now(),
+                              packed_by = $1, packed_at = now() WHERE id = $2`,
+      [user.id, id]
+    );
+    return { success: true, deliveryId: delivery.id, deliveryNumber: delivery.number,
+      fullyDelivered, shortfalls: [], pendingDeliveries: [] };
+  }
 
   // Disponibilidad global: si un producto no tiene stock en ninguna ubicación
   // no hay nada que derivar ni reservar, así que se responde 409 con el motivo
   // real antes de cualquier otra validación.
   const zeroStock = await c.query<{ product_id: number; name: string; code: string }>(
     `SELECT p.id AS product_id, p.name, p.code
-     FROM unnest($1::integer[]) AS pid
-     JOIN products p ON p.id = pid
+     FROM unnest($1::integer[]) AS requested(product_id)
+     JOIN products p ON p.id = requested.product_id
      WHERE COALESCE((SELECT SUM(sb.quantity - sb.reserved_quantity)
-                     FROM stock_balances sb WHERE sb.product_id = pid), 0) <= 0`,
+                     FROM stock_balances sb WHERE sb.product_id = requested.product_id), 0) <= 0`,
     [items.rows.map((it) => it.product_id)]
   );
   if (zeroStock.rows.length) {
@@ -498,12 +612,12 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
     }
 
     if (shortfallQty > 0) {
-      const alternatives = (avail?.otherLocations || [])
+      const alternatives: DeliveryShortfall['alternativeLocations'] = (avail?.otherLocations || [])
         .filter((loc: any) => Number(loc.availableQty) > 0)
         .map((loc: any) => ({
-          locationId: loc.locationId,
-          locationCode: loc.locationCode,
-          locationName: loc.locationName,
+          locationId: Number(loc.locationId),
+          locationCode: String(loc.locationCode),
+          locationName: String(loc.locationName),
           availableQuantity: Number(loc.availableQty),
         }));
 
@@ -630,13 +744,14 @@ export async function confirmDeliveryWithAlternatives(
   choices: UserAlternativeChoice[]
 ) {
   const result = await withTx(async (c) => {
-    const delivery = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
-      'SELECT id, number, status, location_id, created_by FROM deliveries WHERE id = $1 FOR UPDATE',
+    const delivery = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; is_pending_delivery: boolean }>(
+      'SELECT id, number, status, location_id, created_by, is_pending_delivery FROM deliveries WHERE id = $1 FOR UPDATE',
       [id]
     );
     if (!delivery.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     const del = delivery.rows[0];
     if (del.status !== 'BORRADOR') throw ApiError.conflict('Solo se pueden confirmar entregas en borrador');
+    if (del.is_pending_delivery) throw ApiError.conflict('Esta entrega ya reservó stock; usá la confirmación directa.');
     assertLocationAccess(user, del.location_id);
     const cfgConfAlt = await getConfirmationSetting(c, 'DELIVERY', 'CONFIRM');
     if (cfgConfAlt?.enabled && cfgConfAlt.require_different_user && !cfgConfAlt.allow_same_user) {
@@ -744,6 +859,10 @@ export async function confirmDeliveryWithAlternatives(
 
     if (shortfalls.length > 0) {
       const choicesMap = new Map(choices.map(ch => [ch.productId, ch]));
+      if (choicesMap.size !== choices.length) throw ApiError.badRequest('Hay elecciones duplicadas para un mismo producto.');
+      if (choicesMap.size !== shortfalls.length || shortfalls.some(sf => !choicesMap.has(sf.productId))) {
+        throw ApiError.badRequest('Debe elegirse una ubicación para cada producto con faltante, sin agregar productos ajenos.');
+      }
 
       const pendingItems: PendingItemInput[] = [];
 
@@ -758,14 +877,14 @@ export async function confirmDeliveryWithAlternatives(
           throw ApiError.badRequest(`Ubicación elegida no válida para ${sf.productName}`);
         }
 
-        const qtyToTake = Math.min(choice.quantity, alt.availableQuantity, sf.shortfallQuantity);
-        if (qtyToTake <= 0) {
-          throw ApiError.badRequest(`Cantidad inválida para ${sf.productName}`);
+        const qtyToTake = choice.quantity;
+        if (!Number.isFinite(qtyToTake) || qtyToTake <= 0 || qtyToTake > alt.availableQuantity || qtyToTake > sf.shortfallQuantity) {
+          throw ApiError.conflict(`La cantidad elegida para ${sf.productName} supera el disponible o el faltante. Actualizá la disponibilidad y volvé a elegir.`);
         }
 
         pendingItems.push({
           productId: sf.productId,
-          quantityRequested: sf.shortfallQuantity,
+          quantityRequested: qtyToTake,
           sourceLocationId: choice.chosenLocationId,
           quantityReserved: qtyToTake,
         });
@@ -892,14 +1011,31 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
       if (owed <= 0) continue;
 
       const avail = availability.find(a => a.productId === it.product_id);
-      const alternatives = (avail?.otherLocations || [])
+      const alternatives: DeliveryShortfall['alternativeLocations'] = (avail?.otherLocations || [])
         .filter((loc: any) => Number(loc.availableQty) > 0)
         .map((loc: any) => ({
-          locationId: loc.locationId,
-          locationCode: loc.locationCode,
-          locationName: loc.locationName,
+          locationId: Number(loc.locationId),
+          locationCode: String(loc.locationCode),
+          locationName: String(loc.locationName),
           availableQuantity: Number(loc.availableQty),
         }));
+      // La propia sucursal de venta también puede cubrir una deuda pendiente
+      // (por ejemplo, un producto repuesto después del picking parcial).
+      const mainAvailable = Number(avail?.saleLocationQty || 0);
+      if (mainAvailable > 0) {
+        const main = await c.query<{ id: number; code: string; name: string }>(
+          'SELECT id, code, name FROM locations WHERE id = $1',
+          [del.location_id]
+        );
+        if (main.rows[0] && !alternatives.some((loc) => loc.locationId === del.location_id)) {
+          alternatives.unshift({
+            locationId: del.location_id,
+            locationCode: main.rows[0].code,
+            locationName: main.rows[0].name,
+            availableQuantity: mainAvailable,
+          });
+        }
+      }
       if (alternatives.length === 0) continue; // nada nuevo para derivar
 
       newShortfalls.push({
@@ -914,12 +1050,13 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
     }
 
     if (newShortfalls.length === 0) {
-      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay stock existente en otras sucursales.' };
     }
 
-    const { pendingItems } = autoAssignShortfalls(newShortfalls);
+    const allocation = autoAssignShortfalls(newShortfalls);
+    const { pendingItems } = allocation;
     if (pendingItems.length === 0) {
-      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], unresolved: allocation.unresolved, message: 'No hay stock disponible para derivar.' };
     }
 
     const pendingOrders = await createPendingOrdersForShortfalls(
@@ -929,10 +1066,10 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
 
     await writeAudit(c, {
       userId: user.id, action: 'DELIVERY_REDERIVE_SHORTFALLS', entity: 'delivery', entityId: id,
-      details: { pendingDeliveries: pendingOrders.map(o => o.number), shortfalls: newShortfalls }, ip,
+      details: { pendingDeliveries: pendingOrders.map(o => o.number), shortfalls: newShortfalls, unresolved: allocation.unresolved }, ip,
     });
 
-    return { ok: true, created: pendingOrders };
+    return { ok: true, created: pendingOrders, unresolved: allocation.unresolved };
   });
   return result;
 }
@@ -975,12 +1112,15 @@ export async function confirmDelivery(user: AuthUser, ip: string | undefined, id
   // Checklist de picking (mejora 10): el operador marca producto por producto
   // con lo que efectivamente recibió. pick = undefined  ->  comportamiento
   // histórico (entregar todo el stock disponible de la sucursal principal).
-  const pickMap = new Map<number, number>();
-  if (pick) {
+  // Sin checklist se mantiene el flujo histórico (undefined).
+  // Un Map vacío representa un checklist explícito inválido, no ausencia de checklist.
+  const pickMap = pick === undefined ? undefined : new Map<number, number>();
+  if (pick !== undefined) {
+    if (pick.length === 0) throw ApiError.badRequest('El checklist debe incluir todos los productos, aunque la cantidad sea cero.');
     for (const p of pick) {
-      if (Number(p.quantity) > 0 && pickMap.has(p.productId) === false) {
-        pickMap.set(Number(p.productId), Number(p.quantity));
-      }
+      if (pickMap!.has(p.productId)) throw ApiError.badRequest('El checklist contiene productos duplicados.');
+      if (!Number.isFinite(p.quantity) || p.quantity < 0) throw ApiError.badRequest('Cantidad de picking inválida.');
+      pickMap!.set(Number(p.productId), Number(p.quantity));
     }
   }
   const result = await withTx(async (c) => {
@@ -1035,7 +1175,7 @@ export async function approveDelivery(user: AuthUser, ip: string | undefined, id
  * Devuelve el contenido sin importar el estado; quien escanea muestra el
  * estado y define qué puede hacerse (BORRADOR confirmable, PARCIAL/CONFIRMADO solo consulta).
  */
-export async function scanDeliveryBarcode(barcode: string) {
+export async function scanDeliveryBarcode(barcode: string, user: AuthUser) {
   return withTx(async (c) => {
     const d = await c.query<{
       id: number; number: string; status: string; location_id: number; barcode: string;
@@ -1053,6 +1193,7 @@ export async function scanDeliveryBarcode(barcode: string) {
     );
     if (!d.rows[0]) throw ApiError.notFound('No existe ninguna entrega de mercadería con ese código');
     const delivery = d.rows[0];
+    assertLocationAccess(user, delivery.location_id);
 
     const items = await c.query<{
       product_id: number; quantity: string; quantity_delivered: string | null; requested_quantity: string | null;
@@ -1085,12 +1226,14 @@ export async function scanDeliveryBarcode(barcode: string) {
   });
 }
 
-export async function getPendingDeliveryForDelivery(deliveryId: number) {
+export async function getPendingDeliveryForDelivery(deliveryId: number, user: AuthUser) {
   return withTx(async (c) => {
     const deliveryNum = (
       await c.query('SELECT number FROM deliveries WHERE id = $1', [deliveryId])
     ).rows[0]?.number as string | undefined;
     if (!deliveryNum) throw ApiError.notFound('Entrega no encontrada');
+    const deliveryLocation = await c.query<{ location_id: number }>('SELECT location_id FROM deliveries WHERE id = $1', [deliveryId]);
+    assertLocationAccess(user, deliveryLocation.rows[0].location_id);
 
     // TODAS las órdenes de retiro vivas de la entrega (pueden ser varias si
     // los faltantes se derivaron a más de una sucursal). El vínculo explícito
@@ -1156,7 +1299,13 @@ export async function getPendingDeliveryForDelivery(deliveryId: number) {
 /**
  * Anulacion con DOBLE AUTORIZACION para entregas confirmadas
  */
-export async function voidDelivery(user: AuthUser, ip: string | undefined, id: number, reason: string, voidApprovedBy?: number) {
+export async function voidDelivery(
+  user: AuthUser,
+  ip: string | undefined,
+  id: number,
+  reason: string,
+  approverCredentials?: { username: string; password: string }
+) {
   return withTx(async (c) => {
     const d = await c.query<{ status: string; number: string; location_id: number; void_approved_by: number | null }>(
       'SELECT status, number, location_id, void_approved_by FROM deliveries WHERE id = $1 FOR UPDATE',
@@ -1168,13 +1317,23 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
     if (delivery.status === 'ANULADO') throw ApiError.conflict('La entrega ya esta anulada');
 
     const requiresDualAuth = ['CONFIRMADO', 'PARCIAL'].includes(delivery.status);
+    let voidApprovedBy: number | null = null;
     if (requiresDualAuth) {
-      if (!voidApprovedBy) throw ApiError.badRequest('Anulación de entrega confirmada requiere segundo autorizador (voidApprovedBy)');
-      if (voidApprovedBy === user.id) throw ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
-      const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
-      if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
-        throw ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+      if (!approverCredentials?.username?.trim() || !approverCredentials.password) {
+        throw ApiError.badRequest('La anulación confirmada requiere credenciales de un segundo autorizador.');
       }
+      const approver = await c.query<{ id: number; role_code: string; password_hash: string; is_active: boolean }>(
+        'SELECT id, role_code, password_hash, is_active FROM users WHERE lower(username) = lower($1)',
+        [approverCredentials.username.trim()]
+      );
+      const account = approver.rows[0];
+      if (!account || !account.is_active || !['ENCARGADO', 'ADMIN'].includes(account.role_code)) {
+        throw ApiError.forbidden('Credenciales o rol del segundo autorizador inválidos.');
+      }
+      if (account.id === user.id) throw ApiError.forbidden('El segundo autorizador debe ser otra persona.');
+      const validPassword = await bcrypt.compare(approverCredentials.password, account.password_hash);
+      if (!validPassword) throw ApiError.forbidden('Credenciales o rol del segundo autorizador inválidos.');
+      voidApprovedBy = account.id;
     }
 
     // Evaluar reglas
@@ -1294,16 +1453,80 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
   });
 }
 
-export async function getDelivery(id: number) {
-  const result = await withTx(async (c) => loadDelivery(c, id));
+/**
+ * Registra la recepción física de un reparto a domicilio.
+ * Es una constancia operativa; no vuelve a tocar el inventario.
+ */
+export async function markDeliveryDelivered(
+  user: AuthUser,
+  ip: string | undefined,
+  id: number,
+  input: { receivedBy: string; notes?: string | null }
+) {
+  return withTx(async (c) => {
+    const r = await c.query<{
+      id: number; number: string; status: string; location_id: number;
+      delivery_type: string; delivered_at: Date | null;
+    }>(
+      `SELECT id, number, status, location_id, delivery_type, delivered_at
+       FROM deliveries WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    const delivery = r.rows[0];
+    if (!delivery) throw ApiError.notFound('Entrega no encontrada');
+    assertLocationAccess(user, delivery.location_id);
+    if (delivery.delivery_type !== 'DOMICILIO') {
+      throw ApiError.conflict('La constancia de recepción solo aplica a entregas a domicilio.');
+    }
+    if (!['CONFIRMADO', 'PARCIAL'].includes(delivery.status)) {
+      throw ApiError.conflict('Primero debe confirmarse la salida de mercadería.');
+    }
+    if (delivery.delivered_at) {
+      throw ApiError.conflict('Esta entrega ya tiene constancia de recepción.');
+    }
+    const updated = await c.query(
+      `UPDATE deliveries
+       SET delivered_at = now(), delivered_by = $1, delivered_to = $2,
+           delivery_proof_notes = $3
+       WHERE id = $4 AND delivered_at IS NULL
+       RETURNING id`,
+      [user.id, input.receivedBy.trim(), input.notes?.trim() || null, id]
+    );
+    if (!updated.rows[0]) throw ApiError.conflict('La recepción fue registrada por otro usuario.');
+    await writeAudit(c, {
+      userId: user.id,
+      action: 'DELIVERY_RECEIVED_BY_CUSTOMER',
+      entity: 'delivery',
+      entityId: id,
+      details: { number: delivery.number, receivedBy: input.receivedBy.trim(), notes: input.notes?.trim() || null },
+      ip,
+    });
+    return { ok: true, deliveryId: id, deliveredAt: new Date().toISOString() };
+  });
+}
+
+export async function getDelivery(id: number, user: AuthUser) {
+  const result = await withTx(async (c) => {
+    const delivery = await loadDelivery(c, id);
+    if (delivery) assertLocationAccess(user, Number((delivery as any).location_id));
+    return delivery;
+  });
   return result;
 }
 
 export async function listDeliveries(opts: {
   status?: string; locationId?: number; q?: string; page: number; pageSize: number; offset: number;
-}) {
+}, user: AuthUser) {
   const params: unknown[] = [];
   const where: string[] = [];
+  if (user.role !== 'ADMIN' && user.restrictToLocation) {
+    if (!user.locationId) throw ApiError.forbidden('Tu usuario está restringido a una ubicación pero no tiene ninguna asignada.');
+    if (opts.locationId && Number(opts.locationId) !== Number(user.locationId)) {
+      throw ApiError.forbidden('No tenés acceso a las entregas de esa ubicación.');
+    }
+    params.push(user.locationId);
+    where.push(`d.location_id = ${params.length}`);
+  }
   if (opts.status) { params.push(opts.status); where.push(`d.status = $${params.length}`); }
   if (opts.locationId) { params.push(opts.locationId); where.push(`d.location_id = $${params.length}`); }
   if (opts.q) {
@@ -1314,7 +1537,7 @@ export async function listDeliveries(opts: {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
   const rows = await query<{ id: number; total?: string }>(
-    `SELECT d.id, d.number, d.status, d.invoice_number, d.location_id, l.name AS location_name,
+    `SELECT d.id, d.number, d.status, d.is_pending_delivery, d.invoice_number, d.location_id, l.name AS location_name,
             d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
             d.delivery_type, d.customer_name, d.delivery_address, d.driver_user_id, d.driver_assigned_at,
             d.delivered_at, d.delivery_started_at, d.due_at,
@@ -1395,13 +1618,14 @@ export interface AvailabilityCheckResult {
   hasShortfalls: boolean;
 }
 
-export async function checkDeliveryAvailability(deliveryId: number): Promise<AvailabilityCheckResult> {
+export async function checkDeliveryAvailability(deliveryId: number, user: AuthUser): Promise<AvailabilityCheckResult> {
   return withTx(async (c) => {
     const delivery = await c.query<{ id: number; location_id: number }>(
       'SELECT id, location_id FROM deliveries WHERE id = $1',
       [deliveryId]
     );
-    if (!delivery.rows[0]) throw new Error('Entrega no encontrada');
+    if (!delivery.rows[0]) throw ApiError.notFound('Entrega no encontrada');
+    assertLocationAccess(user, delivery.rows[0].location_id);
     
     const items = await c.query<{
       product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string;

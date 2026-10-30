@@ -16,7 +16,8 @@ import {
   approveDelivery,
   getPendingDeliveryForDelivery,
   rederiveShortfalls,
-  scanDeliveryBarcode
+  scanDeliveryBarcode,
+  markDeliveryDelivered
 } from './deliveries.service';
 
 const router = Router();
@@ -30,7 +31,7 @@ const itemSchema = z.object({
 
 const draftSchema = z.object({
   locationId: z.number().int().positive(),
-  invoiceNumber: z.string().max(150).nullable().optional(),
+  invoiceNumber: z.string().trim().min(1, 'El número de factura es obligatorio').max(150),
   notes: z.string().max(2000).nullable().optional(),
   items: z.array(itemSchema).min(1),
   deliveryType: z.enum(['LOCAL', 'DOMICILIO']).optional(),
@@ -43,6 +44,7 @@ const draftSchema = z.object({
   driverId: z.number().int().positive().nullable().optional(),
   dueAt: z.string().nullable().optional(),
   deliveryObservations: z.string().nullable().optional(),
+  pendingDelivery: z.boolean().optional().default(false),
 });
 
 router.get(
@@ -54,7 +56,7 @@ router.get(
       locationId: intParam(req.query.locationId),
       q: strParam(req.query.q),
       page, pageSize, offset,
-    });
+    }, req.user!);
     res.json({ ...result, page, pageSize });
   })
 );
@@ -62,12 +64,12 @@ router.get(
 // Escaneo del código de barras (EAN-13) de la orden de entrega.
 // IMPORTANTE: debe ir ANTES de '/:id' para que 'scan' no se interprete como id.
 router.get('/scan/:barcode', asyncH(async (req, res) => {
-  const result = await scanDeliveryBarcode(strParam(req.params.barcode) ?? '');
+  const result = await scanDeliveryBarcode(strParam(req.params.barcode) ?? '', req.user!);
   res.json({ delivery: result });
 }));
 
 router.get('/:id', asyncH(async (req, res) => {
-  const delivery = await getDelivery(pathId(req.params.id));
+  const delivery = await getDelivery(pathId(req.params.id), req.user!);
   if (!delivery) return res.status(404).json({ error: 'Entrega no encontrada' });
   res.json({ delivery });
 }));
@@ -76,7 +78,7 @@ router.get('/:id', asyncH(async (req, res) => {
 // Es lo que el frontend consulta antes de confirmar para mostrar el modal
 // de derivación a otra sucursal.
 router.get('/:id/check-availability', asyncH(async (req, res) => {
-  const result = await checkDeliveryAvailability(pathId(req.params.id));
+  const result = await checkDeliveryAvailability(pathId(req.params.id), req.user!);
   res.json(result);
 }));
 
@@ -109,12 +111,14 @@ router.post(
     // Checklist de picking (mejora 10): body opcional { pick: [{productId, quantity}] }
     // con lo que el operador realmente recibió item por item. Sin body, todo
     // el stock disponible como siempre.
-    const pick = req.body && Array.isArray((req.body as Record<string, unknown>).pick)
-      ? z.array(z.object({
-          productId: z.number().int().positive(),
-          quantity: z.number().min(0),
-        })).parse((req.body as Record<string, unknown>).pick)
+    const bodySchema = z.object({ pick: z.array(z.object({
+      productId: z.number().int().positive(),
+      quantity: z.number().finite().min(0),
+    })).min(1) }).strict();
+    const parsedBody = req.body && Object.prototype.hasOwnProperty.call(req.body, 'pick')
+      ? bodySchema.parse(req.body)
       : undefined;
+    const pick = parsedBody?.pick;
     const result = await confirmDelivery(req.user!, req.ip, pathId(req.params.id), pick);
     res.json(result);
   }))
@@ -150,7 +154,7 @@ router.post(
 router.get(
   '/:id/pending-delivery',
   asyncH(async (req, res) => {
-    const list = await getPendingDeliveryForDelivery(pathId(req.params.id));
+    const list = await getPendingDeliveryForDelivery(pathId(req.params.id), req.user!);
     // Array: una entrada por sucursal de retiro (puede haber varias órdenes)
     res.json({ pendingDeliveries: list });
   })
@@ -168,14 +172,30 @@ router.post(
 );
 
 router.post(
+  '/:id/mark-delivered',
+  requirePerm('deliveries.confirm'),
+  idempotent(asyncH(async (req, res) => {
+    const input = z.object({
+      receivedBy: z.string().trim().min(2).max(150),
+      notes: z.string().trim().max(1000).nullable().optional(),
+    }).strict().parse(req.body);
+    const result = await markDeliveryDelivered(req.user!, req.ip, pathId(req.params.id), input);
+    res.json(result);
+  }))
+);
+
+router.post(
   '/:id/void',
   requirePerm('deliveries.void'),
   idempotent(asyncH(async (req, res) => {
-    const { reason, voidApprovedBy } = z.object({
-      reason: z.string().min(5).max(255),
-      voidApprovedBy: z.number().int().positive().optional()
-    }).parse(req.body);
-    await voidDelivery(req.user!, req.ip, pathId(req.params.id), reason, voidApprovedBy);
+    const { reason, approver } = z.object({
+      reason: z.string().trim().min(5).max(255),
+      approver: z.object({
+        username: z.string().trim().min(2).max(60),
+        password: z.string().min(1).max(200),
+      }).optional(),
+    }).strict().parse(req.body);
+    await voidDelivery(req.user!, req.ip, pathId(req.params.id), reason, approver);
     res.json({ ok: true });
   }))
 );
