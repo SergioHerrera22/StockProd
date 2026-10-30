@@ -70,19 +70,6 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
       [number, input.locationId, input.type, supplierName, input.supplierId ?? null, input.notes?.trim() || null, user.id, status]
     );
     const entryId = r.rows[0].id;
-    if (input.type === 'COMPRA' && input.supplierId) {
-      await c.query(
-        `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
-         SELECT products.product_id, $2, NOT EXISTS (
-           SELECT 1 FROM product_suppliers existing
-           WHERE existing.product_id = products.product_id AND existing.is_primary
-         )
-         FROM unnest($1::int[]) AS products(product_id)
-         ON CONFLICT (product_id, supplier_id) DO NOTHING`,
-        [input.items.map((it) => it.productId), input.supplierId]
-      );
-    }
-
     // Insercion de items en UNA sola query (unnest) en vez de N round-trips
     await c.query(
       `INSERT INTO stock_entry_items (entry_id, product_id, quantity, unit_cost)
@@ -123,8 +110,8 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
 }
 
 async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: { skipSegregation?: boolean }) {
-  const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
-    'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
+  const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; type: string; supplier_id: number | null }>(
+    'SELECT id, number, status, location_id, created_by, type, supplier_id FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
   );
   const entry = e.rows[0];
   if (!entry) throw ApiError.notFound('Entrada no encontrada');
@@ -151,6 +138,18 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
     'SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]
   );
   if (!items.rows.length) throw ApiError.badRequest('La entrada no tiene productos');
+  if (entry.type === 'COMPRA' && entry.supplier_id) {
+    await c.query(
+      `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+       SELECT products.product_id, $2, NOT EXISTS (
+         SELECT 1 FROM product_suppliers existing
+         WHERE existing.product_id = products.product_id AND existing.is_primary
+       )
+       FROM unnest($1::int[]) AS products(product_id)
+       ON CONFLICT (product_id, supplier_id) DO NOTHING`,
+      [items.rows.map((item) => item.product_id), entry.supplier_id]
+    );
+  }
   const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
   const context = { qty_sum: qtySum, location_id: entry.location_id, user_role: user.role };
   const rules = await evaluateBusinessRules('ENTRY', 'BEFORE_CONFIRM', context);
