@@ -93,7 +93,7 @@ async function main() {
   console.log('\n[A] Caída a mitad de una entrega: NO debe descontar nada');
   const multi = await api('POST', '/deliveries?confirm=true', {
     token: T,
-    body: { locationId: DEP.id, items: [
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0001', items: [
       { productId: pid, quantity: 2 },      // primera línea OK
       { productId: pid, quantity: 99999 },  // duplicado se rechaza antes... usar producto distinto no hay; usar segunda línea inválida
     ] },
@@ -119,7 +119,7 @@ async function main() {
   console.log('\n[B] Dos confirmaciones al mismo tiempo');
   const draft = await api('POST', '/deliveries', {
     token: T,
-    body: { locationId: DEP.id, items: [{ productId: pid, quantity: 1 }] },
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0002', items: [{ productId: pid, quantity: 1 }] },
   });
   const [c1, c2] = await Promise.allSettled([
     api('POST', `/deliveries/${draft.json.id}/confirm`, { token: TX }),
@@ -223,7 +223,7 @@ async function main() {
   const r7 = await api('POST', '/counts', { token: TC, body: { locationId: SUC2.id } });
   ok(r7.status === 403, 'Encargado restringido: recuento en otra ubicación → 403');
   // Confirmar un borrador ajeno
-  const foreignDraft = await api('POST', '/deliveries', { token: T, body: { locationId: SUC2.id, items: [{ productId: pid, quantity: 1 }] } });
+  const foreignDraft = await api('POST', '/deliveries', { token: T, body: { locationId: SUC2.id, invoiceNumber: '0001-NEG-0004', items: [{ productId: pid, quantity: 1 }] } });
   const r8 = await api('POST', `/deliveries/${foreignDraft.json.id}/confirm`, { token: TE });
   ok(r8.status === 403, 'Empleado restringido: confirmar borrador de otra ubicación → 403');
 
