@@ -89,7 +89,7 @@ export function DerivationModal({
               </div>
 
               {item.alternativeLocations.length === 0 ? (
-                <div className="text-red-600 text-sm p-3 bg-red-50 rounded">No hay stock en otras sucursales. Quedará como deuda pendiente sin derivar si la cantidad ya se entrega en esta sucursal.</div>
+                <div className="text-red-600 text-sm p-3 bg-red-50 rounded">No hay stock existente en otras sucursales.</div>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div>
@@ -134,7 +134,7 @@ export function DerivationModal({
 
       {noAlternativeItems.length > 0 && (
         <div className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
-          {noAlternativeItems.length} producto(s) sin stock en ninguna sucursal quedarán como <strong>deuda sin derivar</strong> (podré derivarse más tarde desde el detalle).
+          {noAlternativeItems.length} producto(s) sin stock en ninguna sucursal quedarán como <strong>deuda sin derivar</strong> (podrá re-derivarse más tarde desde el detalle).
         </div>
       )}
 
