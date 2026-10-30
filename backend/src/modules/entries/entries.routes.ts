@@ -19,6 +19,7 @@ const draftSchema = z.object({
   locationId: z.number().int().positive(),
   type: z.enum(['COMPRA', 'DEVOLUCION', 'OTRO']),
   supplier: z.string().max(150).nullable().optional(),
+  supplierId: z.number().int().positive().nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   items: z.array(itemSchema).min(1),
 });

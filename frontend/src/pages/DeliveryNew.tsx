@@ -385,7 +385,7 @@ export default function DeliveryNew() {
         </div>
         {lines.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-slate-400">
-            Escaneá un producto o usá el buscador para agregar la primera línea
+            Escaneá un producto o usá el buscador para agregar el primer producto
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -440,8 +440,11 @@ export default function DeliveryNew() {
                       </td>
                       <td className="px-3 py-2 text-right">
                         <Button
-                          size="sm"
+                          size="lg"
                           variant="ghost"
+                          className="!h-10 !w-10 !min-w-10 !p-0 text-xl leading-none"
+                          aria-label="Eliminar producto de la entrega"
+                          title="Eliminar producto"
                           onClick={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}
                           disabled={saving}
                         >
@@ -459,7 +462,7 @@ export default function DeliveryNew() {
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-4 shadow-sm">
         <div className="text-sm text-slate-500">
-          {lines.length} línea(s) · <strong className="text-slate-700">{fmtQty(totalUnits)}</strong> unidad(es) a entregar
+          {lines.length} producto(s) · <strong className="text-slate-700">{fmtQty(totalUnits)}</strong> unidad(es) a entregar
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={saveDraft} loading={saving} disabled={!lines.length}>

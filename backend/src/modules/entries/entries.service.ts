@@ -16,6 +16,7 @@ export interface EntryDraftInput {
   locationId: number;
   type: string;
   supplier?: string | null;
+  supplierId?: number | null;
   notes?: string | null;
   items: { productId: number; quantity: number; unitCost?: number | null }[];
 }
@@ -47,6 +48,15 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
     const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion de destino invalida');
 
+    let supplierName = input.supplier?.trim() || null;
+    if (input.type === 'COMPRA' && !input.supplierId) {
+      throw ApiError.badRequest('Seleccioná un proveedor registrado para la compra');
+    }
+    if (input.supplierId) {
+      const supplierRow = await c.query<{ name: string }>('SELECT name FROM suppliers WHERE id = $1 AND is_active', [input.supplierId]);
+      if (!supplierRow.rows[0]) throw ApiError.badRequest('El proveedor seleccionado no existe o está inactivo');
+      supplierName = supplierRow.rows[0].name;
+    }
     const qtySum = input.items.reduce((s, it) => s + it.quantity, 0);
     const context = { qty_sum: qtySum, location_id: input.locationId, user_role: user.role };
 
@@ -57,9 +67,9 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
 
     const number = await nextDocNumber(c, 'entry');
     const r = await c.query<{ id: number }>(
-      `INSERT INTO stock_entries (number, location_id, type, supplier, notes, created_by, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [number, input.locationId, input.type, input.supplier?.trim() || null, input.notes?.trim() || null, user.id, status]
+      `INSERT INTO stock_entries (number, location_id, type, supplier, supplier_id, notes, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [number, input.locationId, input.type, supplierName, input.supplierId ?? null, input.notes?.trim() || null, user.id, status]
     );
     const entryId = r.rows[0].id;
     // Insercion de items en UNA sola query (unnest) en vez de N round-trips
@@ -102,8 +112,8 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
 }
 
 async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: { skipSegregation?: boolean }) {
-  const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number }>(
-    'SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
+  const e = await c.query<{ id: number; number: string; status: string; location_id: number; created_by: number; type: string; supplier_id: number | null }>(
+    'SELECT id, number, status, location_id, created_by, type, supplier_id FROM stock_entries WHERE id = $1 FOR UPDATE', [id]
   );
   const entry = e.rows[0];
   if (!entry) throw ApiError.notFound('Entrada no encontrada');
@@ -130,6 +140,15 @@ async function confirmEntryTx(c: PoolClient, id: number, user: AuthUser, opts?: 
     'SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]
   );
   if (!items.rows.length) throw ApiError.badRequest('La entrada no tiene productos');
+  if (entry.type === 'COMPRA' && entry.supplier_id) {
+    await c.query(
+      `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+       SELECT products.product_id, $2, false
+       FROM unnest($1::int[]) AS products(product_id)
+       ON CONFLICT (product_id, supplier_id) DO NOTHING`,
+      [items.rows.map((item) => item.product_id), entry.supplier_id]
+    );
+  }
   const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
   const context = { qty_sum: qtySum, location_id: entry.location_id, user_role: user.role };
   const rules = await evaluateBusinessRules('ENTRY', 'BEFORE_CONFIRM', context);

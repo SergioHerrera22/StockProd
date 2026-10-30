@@ -29,7 +29,7 @@ export function fmtDateTime(iso: string | Date | null | undefined): string {
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('es-AR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   });
 }
 
@@ -39,7 +39,7 @@ export function fmtDateTimeShort(iso: string | Date | null | undefined): string 
   const d = typeof iso === 'string' ? new Date(iso) : iso;
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('es-AR', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   });
 }
 

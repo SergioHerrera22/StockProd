@@ -42,7 +42,7 @@ function stockAt(stock, locationId) {
 
 /** Crea un producto y deja `depQty` en DEP y `sucQty` en SUC1 (entradas confirmadas). */
 let productSeq = 0;
-async function createProductWithStock(T, TE, dep, suc1, stamp, depQty, sucQty) {
+async function createProductWithStock(T, TE, dep, suc1, stamp, depQty, sucQty, supplierId) {
   const seq = productSeq++;
   const prod = await api('POST', '/products', {
     token: T,
@@ -65,7 +65,7 @@ async function createProductWithStock(T, TE, dep, suc1, stamp, depQty, sucQty) {
   for (const [loc, qty] of [[dep, depQty], [suc1, sucQty]]) {
     const entry = await api('POST', '/entries', {
       token: T,
-      body: { locationId: loc.id, type: 'COMPRA', supplier: 'Proveedor Test', items: [{ productId: pid, quantity: qty, unitCost: 1000 }] },
+      body: { locationId: loc.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: qty, unitCost: 1000 }] },
     });
     const confirmed = await api('POST', `/entries/${entry.json.id}/confirm`, { token: TE });
     if (entry.status !== 201 || confirmed.status !== 200) {
@@ -95,10 +95,13 @@ async function main() {
   ok(!!dep && !!suc1, 'Deposito y sucursal presentes');
 
   const stamp = Date.now();
+  const supplierCreated = await api('POST', '/suppliers', { token: T, body: { name: `Proveedor Escenario ${stamp}` } });
+  const supplierId = supplierCreated.json?.id;
+  if (supplierCreated.status !== 201 || !supplierId) throw new Error('No se pudo crear el proveedor de prueba');
 
   // ---------- Producto y stock: 98 en DEP, 10 en SUC1 ----------
   console.log('[2] Producto con 98 en DEP y 10 en SUC1');
-  const pid = await createProductWithStock(T, TE, dep, suc1, stamp, 98, 10);
+  const pid = await createProductWithStock(T, TE, dep, suc1, stamp, 98, 10, supplierId);
   ok(true, 'Producto creado con 98 en DEP y 10 en SUC1');
 
   let stock = (await api('GET', `/products/${pid}`, { token: T })).json.stock;

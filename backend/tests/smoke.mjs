@@ -87,6 +87,9 @@ async function main() {
   const created = await api('POST', '/products', { token: T, body: prodBody });
   ok(created.status === 201 && created.json.id, 'Producto creado');
   const pid = created.json.id;
+  const supplierCreated = await api('POST', '/suppliers', { token: T, body: { name: `Proveedor Smoke ${stamp}` } });
+  const supplierId = supplierCreated.json?.id;
+  ok(supplierCreated.status === 201 && supplierId, 'Proveedor maestro creado');
 
   const dup = await api('POST', '/products', { token: T, body: prodBody });
   ok(dup.status === 409, 'Rechaza código duplicado (409)');
@@ -130,12 +133,16 @@ async function main() {
   console.log('[4] Entrada de mercadería');
   const entry = await api('POST', '/entries', {
     token: T,
-    body: { locationId: dep.id, type: 'COMPRA', supplier: 'Proveedor Test', items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
+    body: { locationId: dep.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
   });
   ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada borrador ${entry.json?.number} creada`);
+  const linksBeforeConfirm = await api('GET', `/products/${pid}/suppliers`, { token: T });
+  ok(linksBeforeConfirm.status === 200 && !linksBeforeConfirm.json.suppliers.some((s) => s.id === supplierId), 'La compra en borrador todavía no asocia el proveedor al producto');
   // Confirmar con el encargado (segregación de funciones: admin no puede confirmar su propia entrada)
   const entryConfirm = await api('POST', `/entries/${entry.json.id}/confirm`, { token: TE });
   ok(entryConfirm.status === 200, `Entrada confirmada por encargado`);
+  const linksAfterConfirm = await api('GET', `/products/${pid}/suppliers`, { token: T });
+  ok(linksAfterConfirm.status === 200 && linksAfterConfirm.json.suppliers.some((s) => s.id === supplierId), 'La compra confirmada asocia el proveedor al producto');
 
   const afterEntry = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   const depQty = Number(afterEntry.find((s) => s.location_id === dep.id)?.quantity ?? -1);
