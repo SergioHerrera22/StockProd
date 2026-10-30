@@ -275,6 +275,29 @@ async function main() {
   const dash = (await api('GET', '/dashboard/summary', { token: T })).json;
   ok(dash.activeProducts >= 1 && typeof dash.inventoryValue === 'number', 'Dashboard con datos reales');
   ok(Array.isArray(dash.series) && dash.series.length >= 14, 'Serie temporal de entradas/salidas');
+  ok(
+    dash.stockInsights &&
+    Array.isArray(dash.stockInsights.lowStockItems) &&
+    Array.isArray(dash.stockInsights.outOfStockItems) &&
+    Array.isArray(dash.stockInsights.purchaseSuggestions) &&
+    Array.isArray(dash.stockInsights.topProducts) &&
+    Array.isArray(dash.stockInsights.lowRotation) &&
+    Number.isFinite(dash.stockInsights.stockoutRate),
+    'Dashboard devuelve todos los indicadores de inventario y rotación'
+  );
+  ok(
+    Number.isFinite(dash.stockInsights.stockoutEvents) &&
+    Number.isFinite(dash.stockInsights.requestedLines) &&
+    dash.stockInsights.stockoutRate >= 0 &&
+    dash.stockInsights.stockoutRate <= 100,
+    'Tasa de rotura dentro de rango y con contadores numéricos'
+  );
+  const dashByLocation = (await api('GET', `/dashboard/summary?locationId=${dep.id}&days=30`, { token: T })).json;
+  ok(
+    dashByLocation.stockInsights &&
+    Number.isFinite(dashByLocation.stockInsights.stockoutRate),
+    'Indicadores del dashboard responden al filtro por ubicación'
+  );
   const rep = (await api('GET', '/reports/stock-by-location', { token: T })).json;
   ok(Array.isArray(rep.rows) && rep.rows.length > 0, 'Reporte stock por ubicación');
   const val = (await api('GET', '/reports/inventory-value', { token: T })).json;
