@@ -16,10 +16,7 @@ router.get(
     const locFilterBal = locationId ? 'AND sb.location_id = ' + locationId : '';
 
     const [
-      activeProducts,
-      inventoryValue,
-      lowStock,
-      outOfStock,
+      inventoryStats,
       today,
       pendingTransfersCount,
       pendingTransfersList,
@@ -29,28 +26,22 @@ router.get(
       debtPickupsCount,
       debtPickupsOverdue,
       debtPickupList,
-      debtUnderivedList,
-      debtUnderivedCount,
+      debtUnderived,
     ] = await Promise.all([
-      query<{ total: string }>(`SELECT COUNT(*) total FROM products WHERE is_active`),
-      query<{ value: string | null }>(
-        `SELECT SUM(sb.quantity * p.cost) AS value
-         FROM stock_balances sb JOIN products p ON p.id = sb.product_id
-         WHERE p.cost IS NOT NULL AND p.is_active ${locFilterBal}`
-      ),
-      query<{ total: string }>(
-        `SELECT COUNT(*) total FROM (
-           SELECT p.id, COALESCE(SUM(sb.quantity), 0) AS qty, p.min_stock
-           FROM products p LEFT JOIN stock_balances sb ON sb.product_id = p.id ${locFilterBal}
-           WHERE p.is_active GROUP BY p.id, p.min_stock
-         ) t WHERE t.qty > 0 AND t.qty <= t.min_stock`
-      ),
-      query<{ total: string }>(
-        `SELECT COUNT(*) total FROM (
-           SELECT p.id, COALESCE(SUM(sb.quantity), 0) AS qty
-           FROM products p LEFT JOIN stock_balances sb ON sb.product_id = p.id ${locFilterBal}
-           WHERE p.is_active GROUP BY p.id
-         ) t WHERE t.qty = 0`
+      query<{ active_products: string; inventory_value: string; low_stock: string; out_of_stock: string }>(
+        `WITH product_stock AS (
+           SELECT p.id, p.min_stock, p.cost, COALESCE(SUM(sb.quantity), 0) AS qty
+           FROM products p
+           LEFT JOIN stock_balances sb ON sb.product_id = p.id ${locFilterBal}
+           WHERE p.is_active
+           GROUP BY p.id, p.min_stock, p.cost
+         )
+         SELECT
+           COUNT(*)::text AS active_products,
+           COALESCE(SUM(qty * cost) FILTER (WHERE cost IS NOT NULL), 0)::text AS inventory_value,
+           COUNT(*) FILTER (WHERE qty > 0 AND qty <= min_stock)::text AS low_stock,
+           COUNT(*) FILTER (WHERE qty = 0)::text AS out_of_stock
+         FROM product_stock`
       ),
       query<{ entradas: string; salidas: string }>(
         `SELECT
@@ -131,65 +122,51 @@ router.get(
          ORDER BY pd.created_at ASC
          LIMIT 6`
       ),
-      // Entregas CONFIRMADO/PARCIAL con faltante sin derivar (misma formula
-      // que listDeliveries: objetivo - entregado - ya retirado via ordenes de retiro)
-      query(
-        `SELECT d.id, d.number, d.status, d.created_at, x.shortfall_lines, x.shortfall_units
-         FROM deliveries d
-         JOIN (
+      // Un solo cálculo de faltantes: lista (6) y total salen del mismo CTE.
+      query<{ total: string; items: Array<Record<string, unknown>> }>(
+        `WITH owed AS (
+           SELECT di.delivery_id, di.product_id,
+                  GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
+                    - COALESCE(di.quantity_delivered, 0) AS owed
+           FROM delivery_items di
+           JOIN deliveries d2 ON d2.id = di.delivery_id
+           WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
+         ),
+         withdrawn AS (
+           SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
+           FROM pending_deliveries pd
+           JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
+           WHERE pdi.quantity_delivered > 0 AND pd.status <> 'CANCELADO'
+           GROUP BY pd.delivery_id, pdi.product_id
+         ),
+         underived AS (
            SELECT oi.delivery_id,
-                  COUNT(*) FILTER (WHERE owed > COALESCE(wd.withdrawn, 0)) AS shortfall_lines,
-                  COALESCE(SUM(GREATEST(owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
-           FROM (
-             SELECT di.delivery_id, di.product_id,
-                    GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
-                      - COALESCE(di.quantity_delivered, 0) AS owed
-             FROM delivery_items di
-             JOIN deliveries d2 ON d2.id = di.delivery_id
-             WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
-           ) oi
-           LEFT JOIN (
-             SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
-             FROM pending_deliveries pd
-             JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
-             WHERE pdi.quantity_delivered > 0 AND pd.status NOT IN ('CANCELADO')
-             GROUP BY pd.delivery_id, pdi.product_id
-           ) wd ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
+                  COUNT(*) FILTER (WHERE oi.owed > COALESCE(wd.withdrawn, 0)) AS shortfall_lines,
+                  COALESCE(SUM(GREATEST(oi.owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
+           FROM owed oi
+           LEFT JOIN withdrawn wd
+             ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
            GROUP BY oi.delivery_id
-         ) x ON x.delivery_id = d.id
-         WHERE x.shortfall_units > 0
-         ORDER BY d.created_at DESC
-         LIMIT 6`
-      ),
-      query<{ total: string }>(
-        `SELECT COUNT(*) total FROM (
-           SELECT oi.delivery_id,
-                  COALESCE(SUM(GREATEST(owed - COALESCE(wd.withdrawn, 0), 0)), 0) AS shortfall_units
-           FROM (
-             SELECT di.delivery_id, di.product_id,
-                    GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
-                      - COALESCE(di.quantity_delivered, 0) AS owed
-             FROM delivery_items di
-             JOIN deliveries d2 ON d2.id = di.delivery_id
-             WHERE d2.status IN ('CONFIRMADO', 'PARCIAL')
-           ) oi
-           LEFT JOIN (
-             SELECT pd.delivery_id, pdi.product_id, SUM(pdi.quantity_delivered) AS withdrawn
-             FROM pending_deliveries pd
-             JOIN pending_delivery_items pdi ON pdi.pending_delivery_id = pd.id
-             WHERE pdi.quantity_delivered > 0 AND pd.status NOT IN ('CANCELADO')
-             GROUP BY pd.delivery_id, pdi.product_id
-           ) wd ON wd.delivery_id = oi.delivery_id AND wd.product_id = oi.product_id
-           GROUP BY oi.delivery_id
-         ) y WHERE y.shortfall_units > 0`
+           HAVING SUM(GREATEST(oi.owed - COALESCE(wd.withdrawn, 0), 0)) > 0
+         ),
+         top_items AS (
+           SELECT d.id, d.number, d.status, d.created_at, u.shortfall_lines, u.shortfall_units
+           FROM deliveries d
+           JOIN underived u ON u.delivery_id = d.id
+           ORDER BY d.created_at DESC
+           LIMIT 6
+         )
+         SELECT
+           (SELECT COUNT(*)::text FROM underived) AS total,
+           COALESCE((SELECT json_agg(row_to_json(t)) FROM top_items t), '[]'::json) AS items`
       ),
     ]);
 
     res.json({
-      activeProducts: Number(activeProducts.rows[0].total),
-      inventoryValue: Number(inventoryValue.rows[0].value ?? 0),
-      lowStock: Number(lowStock.rows[0].total),
-      outOfStock: Number(outOfStock.rows[0].total),
+      activeProducts: Number(inventoryStats.rows[0].active_products),
+      inventoryValue: Number(inventoryStats.rows[0].inventory_value),
+      lowStock: Number(inventoryStats.rows[0].low_stock),
+      outOfStock: Number(inventoryStats.rows[0].out_of_stock),
       entriesToday: Number(today.rows[0].entradas),
       exitsToday: Number(today.rows[0].salidas),
       pendingTransfersCount: Number(pendingTransfersCount.rows[0].total),
@@ -207,10 +184,10 @@ router.get(
         pickupOrders: debtPickupList.rows.map((r: Record<string, unknown>) => ({
           ...r, pending_units: Number(r.pending_units),
         })),
-        underivedDeliveries: debtUnderivedList.rows.map((r: Record<string, unknown>) => ({
+        underivedDeliveries: debtUnderived.rows[0].items.map((r) => ({
           ...r, shortfall_lines: Number(r.shortfall_lines), shortfall_units: Number(r.shortfall_units),
         })),
-        underivedCount: Number(debtUnderivedCount.rows[0].total),
+        underivedCount: Number(debtUnderived.rows[0].total),
       },
     });
   })
