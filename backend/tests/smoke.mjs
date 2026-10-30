@@ -263,7 +263,11 @@ async function main() {
     ok(empEntry.status === 403, 'Empleado NO puede registrar entradas (403)');
     const empDelivery = await api('POST', '/deliveries', {
       token: empLogin.json.token,
-      body: { locationId: dep.id, items: [{ productId: pid, quantity: 1 }] },
+      body: {
+        locationId: dep.id,
+        invoiceNumber: `SMOKE-EMP-${stamp}`,
+        items: [{ productId: pid, quantity: 1 }],
+      },
     });
     ok(empDelivery.status === 201, 'Empleado SÍ puede registrar entregas');
   } else {
