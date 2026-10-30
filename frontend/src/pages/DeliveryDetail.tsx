@@ -131,7 +131,7 @@ export default function DeliveryDetail() {
       if (res.created.length > 0) {
         toast.success(`Re-derivados: ${res.created.length} retiro(s) creado(s)`);
       } else {
-        toast.info(res.message ?? 'No hay faltantes con stock disponible en otras sucursales');
+        toast.info(res.message ?? 'No hay stock existente en otras sucursales.');
       }
       void load();
     } catch (e) {
@@ -241,8 +241,8 @@ export default function DeliveryDetail() {
             <Button variant="success" loading={saving} onClick={confirmDraft}>{delivery.is_pending_delivery ? '📦 Registrar entrega efectiva' : '✅ Confirmar entrega'}</Button>
           )}
           {(delivery.status === 'PARCIAL' || delivery.status === 'CONFIRMADO') && can('deliveries.confirm') && (
-            <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock en otras sucursales para los faltantes que quedaron sin derivar">
-              🔄 Re-derivar faltantes
+            <Button variant="secondary" loading={saving} onClick={rederiveOutstanding} title="Busca stock existente en otras sucursales para completar la entrega">
+              🔄 Re-derivar entrega
             </Button>
           )}
           {delivery.status !== 'ANULADO' && can('deliveries.void') && (
@@ -328,8 +328,7 @@ export default function DeliveryDetail() {
           <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">
             <div className="text-xs font-bold uppercase tracking-wide">⚠️ Faltantes en esta orden</div>
             <p>
-              Faltan <strong>{shortfallSummary.products}</strong> producto(s) ·{' '}
-              <strong>{fmtQty(shortfallSummary.units)}</strong> unidades sin entregar todavía.
+              FALTAN ENTREGAR ({shortfallSummary.products}) PRODUCTO(S), NO EXISTE STOCK DISPONIBLE EN LAS SUCURSALES PARA LA ENTREGA. ({fmtQty(shortfallSummary.units)} UNIDAD(ES)).
               {shortfallSummary.derivedUnits > 0 && (
                 <> De ellas, <strong>{fmtQty(shortfallSummary.derivedUnits)}</strong> u. quedaron derivadas
                 para retiro en otra sucursal (ver Pendientes de entrega).</>
@@ -416,7 +415,7 @@ export default function DeliveryDetail() {
             <div className="mb-1 font-bold uppercase tracking-wide">⏳ Pendiente sin derivar</div>
             Estos montos no pudieron derivarse por falta de stock en ninguna sucursal:{' '}
             <strong>{underived.map((u) => `${u.name} x${fmtQty(u.qty)}`).join(' · ')}</strong>.
-            Usá «🔄 Re-derivar faltantes» cuando llegue mercadería.
+            ESTOS PRODUCTOS NO SE PUDIERON DERIVAR A OTRA SUCURSAL POR FALTA DE STOCK EN LAS SUCURSALES. USÁ «RE-DERIVAR ENTREGA» CUANDO LLEGUE LA MERCADERÍA.
           </div>
         )}
 
