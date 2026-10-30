@@ -136,9 +136,13 @@ async function main() {
     body: { locationId: dep.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
   });
   ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada borrador ${entry.json?.number} creada`);
+  const linksBeforeConfirm = await api('GET', `/products/${pid}/suppliers`, { token: T });
+  ok(linksBeforeConfirm.status === 200 && !linksBeforeConfirm.json.suppliers.some((s) => s.id === supplierId), 'La compra en borrador todavía no asocia el proveedor al producto');
   // Confirmar con el encargado (segregación de funciones: admin no puede confirmar su propia entrada)
   const entryConfirm = await api('POST', `/entries/${entry.json.id}/confirm`, { token: TE });
   ok(entryConfirm.status === 200, `Entrada confirmada por encargado`);
+  const linksAfterConfirm = await api('GET', `/products/${pid}/suppliers`, { token: T });
+  ok(linksAfterConfirm.status === 200 && linksAfterConfirm.json.suppliers.some((s) => s.id === supplierId), 'La compra confirmada asocia el proveedor al producto');
 
   const afterEntry = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
   const depQty = Number(afterEntry.find((s) => s.location_id === dep.id)?.quantity ?? -1);
