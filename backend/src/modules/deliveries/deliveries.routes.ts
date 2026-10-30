@@ -16,7 +16,8 @@ import {
   approveDelivery,
   getPendingDeliveryForDelivery,
   rederiveShortfalls,
-  scanDeliveryBarcode
+  scanDeliveryBarcode,
+  markDeliveryDelivered
 } from './deliveries.service';
 
 const router = Router();
@@ -168,6 +169,19 @@ router.post(
     const result = await rederiveShortfalls(req.user!, req.ip, pathId(req.params.id));
     res.json(result);
   })
+);
+
+router.post(
+  '/:id/mark-delivered',
+  requirePerm('deliveries.confirm'),
+  idempotent(asyncH(async (req, res) => {
+    const input = z.object({
+      receivedBy: z.string().trim().min(2).max(150),
+      notes: z.string().trim().max(1000).nullable().optional(),
+    }).strict().parse(req.body);
+    const result = await markDeliveryDelivered(req.user!, req.ip, pathId(req.params.id), input);
+    res.json(result);
+  }))
 );
 
 router.post(
