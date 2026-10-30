@@ -175,7 +175,7 @@ router.get(
          FROM products p
          LEFT JOIN sold s ON s.product_id = p.id
          LEFT JOIN available a ON a.product_id = p.id
-         WHERE p.is_active
+         WHERE p.is_active AND COALESCE(s.qty, 0) > 0
          ORDER BY COALESCE(s.qty, 0) DESC, p.name
          LIMIT 5`,
         [locationId || null]
