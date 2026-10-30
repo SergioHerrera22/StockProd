@@ -593,6 +593,6 @@ export async function getMyDriverAssignments(){const r=await api<{assignments:an
 export async function getMyDriverHistory(){const r=await api<{history:any[]}>('/drivers/my-history');return r.history;} 
 export async function assignDriverTo(type:string,id:number,driverUserId:number){return api('/drivers/assign',{method:'POST',body:{type,id,driverUserId}});} 
 export async function startDriverDelivery(type:string,id:number){return api('/drivers/start',{method:'POST',body:{type,id}});} 
-export async function completeDriverDelivery(type:string,id:number,notes?:string){return api('/drivers/complete',{method:'POST',body:{type,id,notes}});} 
+export async function completeDriverDelivery(type:string,id:number,notes?:string,receivedBy?:string){return api('/drivers/complete',{method:'POST',body:{type,id,notes,receivedBy}});} 
 export async function getDeliveryDelays(){return api('/drivers/delays');} 
 export async function geocodeAddressApi(address:string){return api('/drivers/geocode',{method:'POST',body:{address}});}
