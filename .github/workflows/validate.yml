@@ -1,0 +1,111 @@
+name: Validate StockProd
+
+on:
+  push:
+    branches:
+      - performance/online-first-optimization
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robles_stock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d robles_stock"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      JWT_SECRET: ci-only-secret-not-for-production
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/robles_stock
+      SEED_ADMIN_PASSWORD: robles2026
+      SMOKE_ADMIN_PASSWORD: robles2026
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build backend
+        run: npm run build
+        working-directory: backend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      - name: Apply migrations and seed primary database
+        run: |
+          npm run db:migrate
+          npm run db:seed
+        working-directory: backend
+
+      - name: Start primary API
+        run: |
+          nohup npm start > /tmp/stockprod-api-4000.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4000/api/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/stockprod-api-4000.log
+          exit 1
+        working-directory: backend
+
+      - name: Smoke and delivery derivation scenarios
+        run: |
+          npm run test:smoke
+          npm run test:scenario
+        working-directory: backend
+
+      - name: Create isolated negative-test database
+        run: |
+          node -e "const {Client}=require('./backend/node_modules/pg'); (async()=>{const c=new Client({connectionString:'postgresql://postgres:postgres@localhost:5432/robles_stock'}); await c.connect(); await c.query('CREATE DATABASE robles_stock_test'); await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
+
+      - name: Migrate and seed isolated database
+        run: |
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/robles_stock_test npm run db:migrate
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/robles_stock_test npm run db:seed
+        working-directory: backend
+
+      - name: Start isolated API
+        run: |
+          PORT=4001 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/robles_stock_test nohup npm start > /tmp/stockprod-api-4001.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4001/api/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/stockprod-api-4001.log
+          exit 1
+        working-directory: backend
+
+      - name: Negative and concurrency scenarios
+        run: npm run test:negative
+        working-directory: backend
