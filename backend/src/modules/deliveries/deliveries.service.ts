@@ -1390,6 +1390,58 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
   });
 }
 
+/**
+ * Registra la recepción física de un reparto a domicilio.
+ * Es una constancia operativa; no vuelve a tocar el inventario.
+ */
+export async function markDeliveryDelivered(
+  user: AuthUser,
+  ip: string | undefined,
+  id: number,
+  input: { receivedBy: string; notes?: string | null }
+) {
+  return withTx(async (c) => {
+    const r = await c.query<{
+      id: number; number: string; status: string; location_id: number;
+      delivery_type: string; delivered_at: Date | null;
+    }>(
+      `SELECT id, number, status, location_id, delivery_type, delivered_at
+       FROM deliveries WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    const delivery = r.rows[0];
+    if (!delivery) throw ApiError.notFound('Entrega no encontrada');
+    assertLocationAccess(user, delivery.location_id);
+    if (delivery.delivery_type !== 'DOMICILIO') {
+      throw ApiError.conflict('La constancia de recepción solo aplica a entregas a domicilio.');
+    }
+    if (!['CONFIRMADO', 'PARCIAL'].includes(delivery.status)) {
+      throw ApiError.conflict('Primero debe confirmarse la salida de mercadería.');
+    }
+    if (delivery.delivered_at) {
+      throw ApiError.conflict('Esta entrega ya tiene constancia de recepción.');
+    }
+    const updated = await c.query(
+      `UPDATE deliveries
+       SET delivered_at = now(), delivered_by = $1, delivered_to = $2,
+           delivery_proof_notes = $3
+       WHERE id = $4 AND delivered_at IS NULL
+       RETURNING id`,
+      [user.id, input.receivedBy.trim(), input.notes?.trim() || null, id]
+    );
+    if (!updated.rows[0]) throw ApiError.conflict('La recepción fue registrada por otro usuario.');
+    await writeAudit(c, {
+      userId: user.id,
+      action: 'DELIVERY_RECEIVED_BY_CUSTOMER',
+      entity: 'delivery',
+      entityId: id,
+      details: { number: delivery.number, receivedBy: input.receivedBy.trim(), notes: input.notes?.trim() || null },
+      ip,
+    });
+    return { ok: true, deliveryId: id, deliveredAt: new Date().toISOString() };
+  });
+}
+
 export async function getDelivery(id: number, user: AuthUser) {
   const result = await withTx(async (c) => {
     const delivery = await loadDelivery(c, id);
