@@ -16,9 +16,8 @@ router.get(
     const where: string[] = ['p.is_active'];
     if (locationId) { params.push(locationId); where.push(`sb.location_id = $${params.length}`); }
     const rows = await query(
-      `SELECT p.code, p.name AS product_name, p.brand, p.unit, p.min_stock, p.cost,
-              l.name AS location_name, l.code AS location_code, sb.quantity,
-              (sb.quantity * COALESCE(p.cost, 0)) AS value
+      `SELECT p.code, p.name AS product_name, p.brand, p.unit, p.min_stock,
+              l.name AS location_name, l.code AS location_code, sb.quantity
        FROM stock_balances sb
        JOIN products p ON p.id = sb.product_id
        JOIN locations l ON l.id = sb.location_id
@@ -27,6 +26,56 @@ router.get(
       params
     );
     res.json({ rows: rows.rows });
+  })
+);
+
+// Proveedores disponibles en compras confirmadas.
+router.get(
+  '/suppliers',
+  asyncH(async (_req, res) => {
+    const rows = await query<{ supplier: string }>(
+      `SELECT DISTINCT TRIM(supplier) AS supplier
+       FROM stock_entries
+       WHERE status = 'CONFIRMADO' AND type = 'COMPRA'
+         AND NULLIF(TRIM(supplier), '') IS NOT NULL
+       ORDER BY supplier`
+    );
+    res.json({ suppliers: rows.rows.map((row) => row.supplier) });
+  })
+);
+
+// Productos bajo mínimo agrupados por el proveedor de su última compra confirmada.
+// El filtro de ubicación usa el stock físico registrado, igual que los reportes actuales.
+router.get(
+  '/low-stock-by-supplier',
+  asyncH(async (req, res) => {
+    const locationId = intParam(req.query.locationId);
+    const supplier = strParam(req.query.supplier);
+    const rows = await query(
+      `WITH latest_supplier AS (
+         SELECT DISTINCT ON (ei.product_id)
+                ei.product_id, TRIM(e.supplier) AS supplier
+         FROM stock_entry_items ei
+         JOIN stock_entries e ON e.id = ei.entry_id
+         WHERE e.status = 'CONFIRMADO' AND e.type = 'COMPRA'
+           AND NULLIF(TRIM(e.supplier), '') IS NOT NULL
+         ORDER BY ei.product_id, COALESCE(e.confirmed_at, e.created_at) DESC, e.id DESC
+       )
+       SELECT COALESCE(ls.supplier, '(Sin proveedor registrado)') AS supplier,
+              p.code, p.name, p.brand, p.unit, p.min_stock,
+              COALESCE(SUM(sb.quantity), 0) AS total_qty
+       FROM products p
+       LEFT JOIN latest_supplier ls ON ls.product_id = p.id
+       LEFT JOIN stock_balances sb ON sb.product_id = p.id
+         AND ($1::int IS NULL OR sb.location_id = $1)
+       WHERE p.is_active AND p.min_stock > 0
+       GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, ls.supplier
+       HAVING COALESCE(SUM(sb.quantity), 0) <= p.min_stock
+          AND ($2::text IS NULL OR LOWER(COALESCE(ls.supplier, '(Sin proveedor registrado)')) = LOWER($2))
+       ORDER BY supplier, total_qty ASC, p.name`,
+      [locationId ?? null, supplier?.trim() || null]
+    );
+    res.json({ rows: rows.rows.map((row: Record<string, unknown>) => ({ ...row, total_qty: Number(row.total_qty) })) });
   })
 );
 
@@ -188,42 +237,6 @@ router.get(
       system_quantity: Number(r.system_quantity),
       counted_quantity: Number(r.counted_quantity),
     })) });
-  })
-);
-
-// Valorizacion del inventario
-router.get(
-  '/inventory-value',
-  asyncH(async (_req, res) => {
-    const total = await query<{ value: string | null; products: string }>(
-      `SELECT COALESCE(SUM(sb.quantity * p.cost), 0) AS value,
-              COUNT(DISTINCT sb.product_id) AS products
-       FROM stock_balances sb JOIN products p ON p.id = sb.product_id
-       WHERE p.cost IS NOT NULL AND sb.quantity > 0`
-    );
-    const byLocation = await query(
-      `SELECT l.name AS location_name,
-              COALESCE(SUM(sb.quantity * p.cost), 0) AS value,
-              COALESCE(SUM(sb.quantity), 0) AS units
-       FROM locations l
-       LEFT JOIN stock_balances sb ON sb.location_id = l.id
-       LEFT JOIN products p ON p.id = sb.product_id AND p.cost IS NOT NULL
-       WHERE l.is_active
-       GROUP BY l.name ORDER BY l.name`
-    );
-    const withoutCost = await query<{ total: string }>(
-      `SELECT COUNT(*) total FROM products p
-       WHERE p.is_active AND p.cost IS NULL
-         AND EXISTS (SELECT 1 FROM stock_balances sb WHERE sb.product_id = p.id AND sb.quantity > 0)`
-    );
-    res.json({
-      totalValue: Number(total.rows[0].value ?? 0),
-      productsWithValue: Number(total.rows[0].products),
-      withoutCost: Number(withoutCost.rows[0].total),
-      byLocation: byLocation.rows.map((r: Record<string, unknown>) => ({
-        ...r, value: Number(r.value), units: Number(r.units),
-      })),
-    });
   })
 );
 
