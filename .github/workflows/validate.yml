@@ -97,7 +97,7 @@ jobs:
 
       - name: Start isolated API
         run: |
-          PORT=4001 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/robles_stock_test nohup npm start > /tmp/stockprod-api-4001.log 2>&1 &
+          SESSION_IDLE_MINUTES=0.03 PORT=4001 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/robles_stock_test nohup npm start > /tmp/stockprod-api-4001.log 2>&1 &
           for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:4001/api/health >/dev/null; then exit 0; fi
             sleep 2
