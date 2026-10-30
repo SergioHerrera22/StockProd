@@ -612,12 +612,12 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
     }
 
     if (shortfallQty > 0) {
-      const alternatives = (avail?.otherLocations || [])
+      const alternatives: DeliveryShortfall['alternativeLocations'] = (avail?.otherLocations || [])
         .filter((loc: any) => Number(loc.availableQty) > 0)
         .map((loc: any) => ({
-          locationId: loc.locationId,
-          locationCode: loc.locationCode,
-          locationName: loc.locationName,
+          locationId: Number(loc.locationId),
+          locationCode: String(loc.locationCode),
+          locationName: String(loc.locationName),
           availableQuantity: Number(loc.availableQty),
         }));
 
