@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS product_suppliers (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_suppliers_one_primary ON product_suppliers(product_id) WHERE is_primary;
 CREATE INDEX IF NOT EXISTS idx_product_suppliers_supplier ON product_suppliers(supplier_id, product_id);
 ALTER TABLE stock_entries ADD COLUMN IF NOT EXISTS supplier_id integer REFERENCES suppliers(id) ON DELETE SET NULL;
+ALTER TABLE stock_entries ALTER COLUMN supplier TYPE varchar(180);
 CREATE INDEX IF NOT EXISTS idx_stock_entries_supplier ON stock_entries(supplier_id, status, created_at DESC);
 
 INSERT INTO suppliers (name)
