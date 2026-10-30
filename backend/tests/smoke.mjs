@@ -87,6 +87,9 @@ async function main() {
   const created = await api('POST', '/products', { token: T, body: prodBody });
   ok(created.status === 201 && created.json.id, 'Producto creado');
   const pid = created.json.id;
+  const supplierCreated = await api('POST', '/suppliers', { token: T, body: { name: `Proveedor Smoke ${stamp}` } });
+  const supplierId = supplierCreated.json?.id;
+  ok(supplierCreated.status === 201 && supplierId, 'Proveedor maestro creado');
 
   const dup = await api('POST', '/products', { token: T, body: prodBody });
   ok(dup.status === 409, 'Rechaza código duplicado (409)');
@@ -130,7 +133,7 @@ async function main() {
   console.log('[4] Entrada de mercadería');
   const entry = await api('POST', '/entries', {
     token: T,
-    body: { locationId: dep.id, type: 'COMPRA', supplier: 'Proveedor Test', items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
+    body: { locationId: dep.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
   });
   ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada borrador ${entry.json?.number} creada`);
   // Confirmar con el encargado (segregación de funciones: admin no puede confirmar su propia entrada)

@@ -49,6 +49,9 @@ async function main() {
   });
   const pid = prod.json.id;
   ok(!!pid, 'Producto de prueba creado');
+  const supplierCreated = await api('POST', '/suppliers', { token: T, body: { name: `Proveedor Negativo ${stamp}` } });
+  const supplierId = supplierCreated.json?.id;
+  ok(supplierCreated.status === 201 && supplierId, 'Proveedor de prueba creado');
 
   // Usuarios restringidos a SUC1
   await api('POST', '/users', { token: T, body: { username: `neg_emp_${stamp}`, fullName: 'Empleado Restrictivo', role: 'EMPLEADO', password: 'clave123', defaultLocationId: SUC1.id, restrictToLocation: true } });
@@ -71,7 +74,7 @@ async function main() {
   // funciones impide que quien crea la entrada sea quien la confirma.
   const entry = await api('POST', '/entries', {
     token: T,
-    body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 100, unitCost: 500 }] },
+    body: { locationId: DEP.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 100, unitCost: 500 }] },
   });
   const entryConfirm = await api('POST', `/entries/${entry.json?.id}/confirm`, { token: TX });
   ok(entry.status === 201 && entryConfirm.status === 200,
@@ -133,7 +136,7 @@ async function main() {
   console.log('\n[D] Anulación de entrada confirmada');
   const entry2 = await api('POST', '/entries', {
     token: T,
-    body: { locationId: DEP.id, type: 'COMPRA', items: [{ productId: pid, quantity: 10 }] },
+    body: { locationId: DEP.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 10 }] },
   });
   await api('POST', `/entries/${entry2.json.id}/confirm`, { token: TX });
   const voidEntry = await api('POST', `/entries/${entry2.json.id}/void`, { token: TX, body: { reason: 'Entrada cargada por error', voidApprovedBy: admin.json.user.id } });
