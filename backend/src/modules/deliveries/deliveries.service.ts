@@ -1386,7 +1386,7 @@ export async function listDeliveries(opts: {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
   const rows = await query<{ id: number; total?: string }>(
-    `SELECT d.id, d.number, d.status, d.invoice_number, d.location_id, l.name AS location_name,
+    `SELECT d.id, d.number, d.status, d.is_pending_delivery, d.invoice_number, d.location_id, l.name AS location_name,
             d.created_at, d.confirmed_at, d.packed_at, cu.full_name AS created_by_name,
             d.delivery_type, d.customer_name, d.delivery_address, d.driver_user_id, d.driver_assigned_at,
             d.delivered_at, d.delivery_started_at, d.due_at,
