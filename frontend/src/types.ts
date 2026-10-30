@@ -9,6 +9,11 @@ export interface Location {
   is_active: boolean;
 }
 
+export interface Supplier {
+  id: number; name: string; tax_id: string | null; contact_name: string | null;
+  phone: string | null; email: string | null; address: string | null; notes: string | null; is_active: boolean;
+}
+
 export interface Category {
   id: number;
   name: string;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
-import type { Entry, EntryItem, Location, StockRow } from '../types';
+import type { Entry, EntryItem, Location, StockRow, Supplier } from '../types';
 import {
   Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Textarea, useConfirm,
 } from '../components/ui';
@@ -34,6 +34,7 @@ export default function Entries() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
   const [locations, setLocations] = useState<Location[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   const [detail, setDetail] = useState<Entry | null>(null);
   const [voidOpen, setVoidOpen] = useState(false);
@@ -44,7 +45,7 @@ export default function Entries() {
   const [newOpen, setNewOpen] = useState(false);
   const [newLocation, setNewLocation] = useState('');
   const [newType, setNewType] = useState('COMPRA');
-  const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -69,12 +70,13 @@ export default function Entries() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     api<{ locations: Location[] }>('/locations').then((r) => setLocations(r.locations)).catch(() => {});
+    api<{ suppliers: Supplier[] }>('/suppliers').then((r) => setSuppliers(r.suppliers)).catch(() => {});
   }, []);
 
   function openNew() {
     setNewOpen(true);
     setLines([]);
-    setSupplier(''); setNotes('');
+    setSupplierId(''); setNotes('');
     setNewLocation(String(locations[0]?.id ?? ''));
   }
 
@@ -88,7 +90,7 @@ export default function Entries() {
         body: {
           locationId: Number(newLocation),
           type: newType,
-          supplier: supplier.trim() || null,
+          supplierId: supplierId ? Number(supplierId) : null,
           notes: notes.trim() || null,
           items: lines.map((l) => ({
             productId: l.productId,
@@ -217,14 +219,18 @@ export default function Entries() {
             </Select>
           </Field>
           <Field label="Tipo de movimiento" required>
-            <Select value={newType} onChange={(e) => setNewType(e.target.value)}>
+            <Select value={newType} onChange={(e) => { setNewType(e.target.value); if (e.target.value !== 'COMPRA') setSupplierId(''); }}>
               <option value="COMPRA">Compra a proveedor</option>
               <option value="DEVOLUCION">Devolución recibida</option>
               <option value="OTRO">Otro ingreso autorizado</option>
             </Select>
           </Field>
-          <Field label="Proveedor / referencia">
-            <Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Opcional" />
+          <Field label="Proveedor" required={newType === 'COMPRA'}>
+            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              <option value="">{newType === 'COMPRA' ? 'Seleccionar proveedor' : 'Sin proveedor'}</option>
+              {suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </Select>
+            {newType === 'COMPRA' && <span className="mt-1 block text-xs text-slate-500">La compra vinculará automáticamente sus productos con este proveedor.</span>}
           </Field>
         </div>
 

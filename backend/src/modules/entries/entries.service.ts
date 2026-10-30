@@ -16,6 +16,7 @@ export interface EntryDraftInput {
   locationId: number;
   type: string;
   supplier?: string | null;
+  supplierId?: number | null;
   notes?: string | null;
   items: { productId: number; quantity: number; unitCost?: number | null }[];
 }
@@ -47,6 +48,13 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
     const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
     if (!loc.rows[0]) throw ApiError.badRequest('Ubicacion de destino invalida');
 
+    let supplierName = input.supplier?.trim() || null;
+    if (input.type === 'COMPRA') {
+      if (!input.supplierId) throw ApiError.badRequest('Seleccioná un proveedor registrado para la compra');
+      const supplierRow = await c.query<{ name: string }>('SELECT name FROM suppliers WHERE id = $1 AND is_active', [input.supplierId]);
+      if (!supplierRow.rows[0]) throw ApiError.badRequest('El proveedor seleccionado no existe o está inactivo');
+      supplierName = supplierRow.rows[0].name;
+    }
     const qtySum = input.items.reduce((s, it) => s + it.quantity, 0);
     const context = { qty_sum: qtySum, location_id: input.locationId, user_role: user.role };
 
@@ -57,11 +65,24 @@ export async function createEntry(user: AuthUser, ip: string | undefined, input:
 
     const number = await nextDocNumber(c, 'entry');
     const r = await c.query<{ id: number }>(
-      `INSERT INTO stock_entries (number, location_id, type, supplier, notes, created_by, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [number, input.locationId, input.type, input.supplier?.trim() || null, input.notes?.trim() || null, user.id, status]
+      `INSERT INTO stock_entries (number, location_id, type, supplier, supplier_id, notes, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [number, input.locationId, input.type, supplierName, input.supplierId ?? null, input.notes?.trim() || null, user.id, status]
     );
     const entryId = r.rows[0].id;
+    if (input.type === 'COMPRA' && input.supplierId) {
+      await c.query(
+        `INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+         SELECT products.product_id, $2, NOT EXISTS (
+           SELECT 1 FROM product_suppliers existing
+           WHERE existing.product_id = products.product_id AND existing.is_primary
+         )
+         FROM unnest($1::int[]) AS products(product_id)
+         ON CONFLICT (product_id, supplier_id) DO NOTHING`,
+        [input.items.map((it) => it.productId), input.supplierId]
+      );
+    }
+
     // Insercion de items en UNA sola query (unnest) en vez de N round-trips
     await c.query(
       `INSERT INTO stock_entry_items (entry_id, product_id, quantity, unit_cost)
