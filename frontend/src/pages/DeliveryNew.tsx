@@ -469,7 +469,7 @@ export default function DeliveryNew() {
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-4 shadow-sm">
         <div className="text-sm text-slate-500">
-          {lines.length} producto(s) · <strong className="text-slate-700">{fmtQty(totalUnits)}</strong> unidad(es) a entregar
+          ({lines.length} PRODUCTO(S) - {fmtQty(totalUnits)} UNIDAD(ES) A ENTREGAR)
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={saveDraft} loading={saving} disabled={!lines.length}>
