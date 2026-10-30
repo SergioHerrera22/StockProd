@@ -29,57 +29,42 @@ router.get(
   })
 );
 
-// Proveedores disponibles en compras confirmadas.
+// Proveedores activos del maestro de datos.
 router.get(
   '/suppliers',
   asyncH(async (_req, res) => {
     const rows = await query<{ supplier: string }>(
-`SELECT supplier FROM (
-         SELECT DISTINCT TRIM(supplier) AS supplier
-         FROM stock_entries
-         WHERE status = 'CONFIRMADO' AND type = 'COMPRA'
-           AND NULLIF(TRIM(supplier), '') IS NOT NULL
-         UNION
-         SELECT '(Sin proveedor registrado)' AS supplier
-       ) supplier_options
-       ORDER BY supplier`
+`SELECT id, name FROM suppliers WHERE is_active ORDER BY name`
     );
-    res.json({ suppliers: rows.rows.map((row) => row.supplier) });
+    res.json({ suppliers: rows.rows });
   })
 );
 
-// Productos bajo mínimo agrupados por el proveedor de su última compra confirmada.
+// Productos bajo mínimo agrupados por cada proveedor relacionado en el maestro.
 // El mínimo se compara contra stock disponible (físico menos reservas activas).
 router.get(
   '/low-stock-by-supplier',
   asyncH(async (req, res) => {
     const locationId = intParam(req.query.locationId);
-    const supplier = strParam(req.query.supplier);
+    const supplierId = intParam(req.query.supplierId);
     const rows = await query(
-      `WITH latest_supplier AS (
-         SELECT DISTINCT ON (ei.product_id)
-                ei.product_id, TRIM(e.supplier) AS supplier
-         FROM stock_entry_items ei
-         JOIN stock_entries e ON e.id = ei.entry_id
-         WHERE e.status = 'CONFIRMADO' AND e.type = 'COMPRA'
-           AND NULLIF(TRIM(e.supplier), '') IS NOT NULL
-         ORDER BY ei.product_id, COALESCE(e.confirmed_at, e.created_at) DESC, e.id DESC
-       )
-       SELECT COALESCE(ls.supplier, '(Sin proveedor registrado)') AS supplier,
+      `SELECT COALESCE(s.name, '(Sin proveedor asociado)') AS supplier,
               p.code, p.name, p.brand, p.unit, p.min_stock,
               COALESCE(selected_location.name, 'Todas las ubicaciones') AS location_name,
               COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)), 0) AS total_qty
        FROM products p
-       LEFT JOIN latest_supplier ls ON ls.product_id = p.id
+       LEFT JOIN product_suppliers ps ON ps.product_id = p.id
+         AND EXISTS (SELECT 1 FROM suppliers active_supplier WHERE active_supplier.id = ps.supplier_id AND active_supplier.is_active)
+       LEFT JOIN suppliers s ON s.id = ps.supplier_id AND s.is_active
        LEFT JOIN locations selected_location ON selected_location.id = $1
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
          AND ($1::int IS NULL OR sb.location_id = $1)
        WHERE p.is_active AND p.min_stock > 0
-       GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, ls.supplier, selected_location.name
+       GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, s.id, s.name, selected_location.name
        HAVING COALESCE(SUM(sb.quantity - COALESCE(sb.reserved_quantity, 0)), 0) <= p.min_stock
-          AND ($2::text IS NULL OR LOWER(COALESCE(ls.supplier, '(Sin proveedor registrado)')) = LOWER($2))
+          AND ($2::int IS NULL OR s.id = $2)
        ORDER BY supplier, total_qty ASC, p.name`,
-      [locationId ?? null, supplier?.trim() || null]
+      [locationId ?? null, supplierId ?? null]
     );
     res.json({ rows: rows.rows.map((row: Record<string, unknown>) => ({ ...row, total_qty: Number(row.total_qty) })) });
   })

@@ -194,14 +194,14 @@ export default function Reports() {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
   const [locationId, setLocationId] = useState('');
-  const [suppliers, setSuppliers] = useState<string[]>([]);
+  const [suppliers, setSuppliers] = useState<{ id: number; name: string }[]>([]);
   const [supplier, setSupplier] = useState('');
   const [from, setFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10); });
   const [to, setTo] = useState(todayISO);
 
   useEffect(() => {
     api<{ locations: Location[] }>('/locations').then((r) => setLocations(r.locations.filter((l) => l.is_active))).catch(() => {});
-    api<{ suppliers: string[] }>('/reports/suppliers').then((r) => setSuppliers(r.suppliers)).catch(() => {});
+    api<{ suppliers: { id: number; name: string }[] }>('/reports/suppliers').then((r) => setSuppliers(r.suppliers)).catch(() => {});
   }, []);
 
   async function run(report: ReportDef) {
@@ -214,7 +214,7 @@ export default function Reports() {
       const params: Record<string, string> = {};
       if (report.needsLocation && locationId) params.locationId = locationId;
       if (report.needsPeriod) { params.from = from; params.to = to; }
-      if (report.needsSupplier && supplier) params.supplier = supplier;
+      if (report.needsSupplier && supplier) params.supplierId = supplier;
       const res = await api<{ rows: Record<string, unknown>[] }>(`/reports/${report.key}${qs(params)}`);
       setRows(res.rows);
       const filterSummary = [
@@ -276,7 +276,7 @@ export default function Reports() {
               {selected.needsSupplier && (
                 <Select value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-52">
                   <option value="">Todos los proveedores</option>
-                  {suppliers.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </Select>
               )}
               {selected.needsPeriod && (
