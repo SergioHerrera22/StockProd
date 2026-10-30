@@ -34,10 +34,14 @@ router.get(
   '/suppliers',
   asyncH(async (_req, res) => {
     const rows = await query<{ supplier: string }>(
-      `SELECT DISTINCT TRIM(supplier) AS supplier
-       FROM stock_entries
-       WHERE status = 'CONFIRMADO' AND type = 'COMPRA'
-         AND NULLIF(TRIM(supplier), '') IS NOT NULL
+`SELECT supplier FROM (
+         SELECT DISTINCT TRIM(supplier) AS supplier
+         FROM stock_entries
+         WHERE status = 'CONFIRMADO' AND type = 'COMPRA'
+           AND NULLIF(TRIM(supplier), '') IS NOT NULL
+         UNION
+         SELECT '(Sin proveedor registrado)' AS supplier
+       ) supplier_options
        ORDER BY supplier`
     );
     res.json({ suppliers: rows.rows.map((row) => row.supplier) });
@@ -63,13 +67,15 @@ router.get(
        )
        SELECT COALESCE(ls.supplier, '(Sin proveedor registrado)') AS supplier,
               p.code, p.name, p.brand, p.unit, p.min_stock,
+              COALESCE(selected_location.name, 'Todas las ubicaciones') AS location_name,
               COALESCE(SUM(sb.quantity), 0) AS total_qty
        FROM products p
        LEFT JOIN latest_supplier ls ON ls.product_id = p.id
+       LEFT JOIN locations selected_location ON selected_location.id = $1
        LEFT JOIN stock_balances sb ON sb.product_id = p.id
          AND ($1::int IS NULL OR sb.location_id = $1)
        WHERE p.is_active AND p.min_stock > 0
-       GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, ls.supplier
+       GROUP BY p.id, p.code, p.name, p.brand, p.unit, p.min_stock, ls.supplier, selected_location.name
        HAVING COALESCE(SUM(sb.quantity), 0) <= p.min_stock
           AND ($2::text IS NULL OR LOWER(COALESCE(ls.supplier, '(Sin proveedor registrado)')) = LOWER($2))
        ORDER BY supplier, total_qty ASC, p.name`,
@@ -242,7 +248,7 @@ router.get(
 
 /**
  * Rotación de productos (mejora 13): qué productos se mueven, por sucursal,
- * en un período. Salidas por venta (SALIDA: entregas y retiros) y trasvasos
+ * en un período. Salidas por venta (SALIDA: entregas y retiros) y transferencias
  * (TRANS_SALIDA entre sucursales). Los AJUSTE_NEG quedan excluidos a
  * propósito: son mermas/inventariado, no rotación de mercadería.
  */
