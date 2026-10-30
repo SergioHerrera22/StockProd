@@ -281,7 +281,7 @@ export default function StockPage() {
       <Modal
         open={dupOpen}
         onClose={() => { if (deleting) return; setDupOpen(false); }}
-        title="Duplicados detectados por nombre"
+        title="Duplicados por nombre, marca y unidad"
         width="xl"
         footer={
           <>

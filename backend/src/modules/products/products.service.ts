@@ -180,8 +180,9 @@ export async function scanDuplicates(): Promise<DuplicateGroup[]> {
 
   const groups = new Map<string, DuplicateGroup>();
   for (const row of r.rows) {
-    const key = [normalizeName(row.name), normalizeName(row.brand ?? ''), String(row.unit).toUpperCase()].join('|');
-    if (!key) continue;
+    const normalizedName = normalizeName(row.name);
+    if (!normalizedName) continue;
+    const key = [normalizedName, normalizeName(row.brand ?? ''), String(row.unit).toUpperCase()].join('|');
     if (!groups.has(key)) {
       groups.set(key, { key, count: 0, products: [] });
     }

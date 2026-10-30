@@ -266,7 +266,7 @@ export default function DeliveryDetail() {
           <div className="flex flex-col items-end text-right">
             <div className="font-mono text-lg font-bold text-brand-700">{delivery.number}</div>
             <Badge color={status.color}>{status.label}</Badge>
-            {delivery.is_pending_delivery && <Badge color="amber">Pendiente · stock reservado</Badge>}
+            {delivery.is_pending_delivery && delivery.status === 'BORRADOR' && <Badge color="amber">Pendiente · stock reservado</Badge>}
             <div className="mt-1 print:mt-2">
               <Barcode value={delivery.number} height={40} width={1.3} />
             </div>
