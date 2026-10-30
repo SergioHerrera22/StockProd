@@ -172,13 +172,14 @@ async function main() {
   ok(Number(stockNow.find((s) => s.location_id === dep.id)?.quantity) === 97, 'Doble confirmación NO volvió a descontar');
 
   // ---------- Entrega sin stock suficiente ----------
-  const tooMuch = await api('POST', '/deliveries?confirm=true', {
-    token: TE,
+  const noStockDraft = await api('POST', '/deliveries', {
+    token: T,
     body: { locationId: dep.id, invoiceNumber: `SMOKE-NOSTOCK-${stamp}`, items: [{ productId: pid, quantity: 99999 }] },
   });
-  // Hoy el confirm sin stock en NINGUNA ubicacion devuelve 409 de negocio
-  // ("Sin stock disponible ... en ninguna ubicacion"); el 403 quedo obsoleto.
-  ok(tooMuch.status === 409, `Entrega sin stock devuelta como conflicto (HTTP ${tooMuch.status}: ${JSON.stringify(tooMuch.json)})`);
+  ok(noStockDraft.status === 201, 'Borrador de entrega sin stock creado por admin');
+  const tooMuch = await api('POST', `/deliveries/${noStockDraft.json.id}/confirm`, { token: TE });
+  // El administrador crea y el encargado confirma: se respeta segregación de funciones.
+  ok(tooMuch.status === 409, `Entrega sin disponibilidad suficiente devuelve conflicto (HTTP ${tooMuch.status}: ${JSON.stringify(tooMuch.json)})`);
 
   // ---------- Transferencia ----------
   console.log('[6] Transferencia entre ubicaciones');
