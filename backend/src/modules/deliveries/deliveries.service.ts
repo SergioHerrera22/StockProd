@@ -526,10 +526,10 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
   // real antes de cualquier otra validación.
   const zeroStock = await c.query<{ product_id: number; name: string; code: string }>(
     `SELECT p.id AS product_id, p.name, p.code
-     FROM unnest($1::integer[]) AS pid
-     JOIN products p ON p.id = pid
+     FROM unnest($1::integer[]) AS requested(product_id)
+     JOIN products p ON p.id = requested.product_id
      WHERE COALESCE((SELECT SUM(sb.quantity - sb.reserved_quantity)
-                     FROM stock_balances sb WHERE sb.product_id = pid), 0) <= 0`,
+                     FROM stock_balances sb WHERE sb.product_id = requested.product_id), 0) <= 0`,
     [items.rows.map((it) => it.product_id)]
   );
   if (zeroStock.rows.length) {
