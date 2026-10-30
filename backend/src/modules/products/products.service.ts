@@ -432,7 +432,7 @@ export async function importProducts(
       const names = [...missingCategories.values()];
       const inserted = await c.query<{ id: number; name: string }>(
         `INSERT INTO categories (name)
-         SELECT value FROM unnest($1::text[]) AS value
+         SELECT name FROM unnest($1::text[]) AS t(name)
          ON CONFLICT (name) DO UPDATE SET is_active = true
          RETURNING id, name`,
         [names]
@@ -505,6 +505,7 @@ export async function importProducts(
 
     for (let offset = 0; offset < inserts.length; offset += 300) {
       const batch = inserts.slice(offset, offset + 300);
+      await c.query('SAVEPOINT product_import_batch');
       try {
         const result = await c.query<{ code: string }>(
           `INSERT INTO products
@@ -532,12 +533,23 @@ export async function importProducts(
             errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (posible alta concurrente)' });
           }
         }
+        await c.query('RELEASE SAVEPOINT product_import_batch');
       } catch {
-        // Un barcode duplicado invalida el INSERT set-based completo. El fallback
-        // mantiene el comportamiento anterior de informar el error de cada fila.
+        // Revertir el lote antes del fallback: PostgreSQL deja la transacción
+        // abortada después de una violación de UNIQUE/NOT NULL/CHECK.
+        await c.query('ROLLBACK TO SAVEPOINT product_import_batch');
+        await c.query('RELEASE SAVEPOINT product_import_batch');
+        // Savepoint por fila para poder registrar el error y continuar.
         for (const item of batch) {
-          try { await insertOne(item); }
-          catch (err) { errors.push({ row: item.line, code: item.code, message: `Error: ${(err as Error).message}` }); }
+          await c.query('SAVEPOINT product_import_row');
+          try {
+            await insertOne(item);
+            await c.query('RELEASE SAVEPOINT product_import_row');
+          } catch (err) {
+            await c.query('ROLLBACK TO SAVEPOINT product_import_row');
+            await c.query('RELEASE SAVEPOINT product_import_row');
+            errors.push({ row: item.line, code: item.code, message: `Error: ${(err as Error).message}` });
+          }
         }
       }
     }
