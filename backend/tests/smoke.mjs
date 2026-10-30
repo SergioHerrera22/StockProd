@@ -174,7 +174,7 @@ async function main() {
   // ---------- Entrega sin stock suficiente ----------
   const tooMuch = await api('POST', '/deliveries?confirm=true', {
     token: TE,
-    body: { locationId: dep.id, items: [{ productId: pid, quantity: 99999 }] },
+    body: { locationId: dep.id, invoiceNumber: '0001-99999999', items: [{ productId: pid, quantity: 99999 }] },
   });
   // Hoy el confirm sin stock en NINGUNA ubicacion devuelve 409 de negocio
   // ("Sin stock disponible ... en ninguna ubicacion"); el 403 quedo obsoleto.
@@ -263,7 +263,7 @@ async function main() {
     ok(empEntry.status === 403, 'Empleado NO puede registrar entradas (403)');
     const empDelivery = await api('POST', '/deliveries', {
       token: empLogin.json.token,
-      body: { locationId: dep.id, items: [{ productId: pid, quantity: 1 }] },
+      body: { locationId: dep.id, invoiceNumber: '0001-99999998', items: [{ productId: pid, quantity: 1 }] },
     });
     ok(empDelivery.status === 201, 'Empleado SÍ puede registrar entregas');
   } else {
