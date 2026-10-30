@@ -1011,12 +1011,12 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
       if (owed <= 0) continue;
 
       const avail = availability.find(a => a.productId === it.product_id);
-      const alternatives = (avail?.otherLocations || [])
+      const alternatives: DeliveryShortfall['alternativeLocations'] = (avail?.otherLocations || [])
         .filter((loc: any) => Number(loc.availableQty) > 0)
         .map((loc: any) => ({
-          locationId: loc.locationId,
-          locationCode: loc.locationCode,
-          locationName: loc.locationName,
+          locationId: Number(loc.locationId),
+          locationCode: String(loc.locationCode),
+          locationName: String(loc.locationName),
           availableQuantity: Number(loc.availableQty),
         }));
       // La propia sucursal de venta también puede cubrir una deuda pendiente
