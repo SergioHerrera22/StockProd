@@ -55,7 +55,7 @@ router.get(
       locationId: intParam(req.query.locationId),
       q: strParam(req.query.q),
       page, pageSize, offset,
-    });
+    }, req.user!);
     res.json({ ...result, page, pageSize });
   })
 );
@@ -63,12 +63,12 @@ router.get(
 // Escaneo del código de barras (EAN-13) de la orden de entrega.
 // IMPORTANTE: debe ir ANTES de '/:id' para que 'scan' no se interprete como id.
 router.get('/scan/:barcode', asyncH(async (req, res) => {
-  const result = await scanDeliveryBarcode(strParam(req.params.barcode) ?? '');
+  const result = await scanDeliveryBarcode(strParam(req.params.barcode) ?? '', req.user!);
   res.json({ delivery: result });
 }));
 
 router.get('/:id', asyncH(async (req, res) => {
-  const delivery = await getDelivery(pathId(req.params.id));
+  const delivery = await getDelivery(pathId(req.params.id), req.user!);
   if (!delivery) return res.status(404).json({ error: 'Entrega no encontrada' });
   res.json({ delivery });
 }));
@@ -77,7 +77,7 @@ router.get('/:id', asyncH(async (req, res) => {
 // Es lo que el frontend consulta antes de confirmar para mostrar el modal
 // de derivación a otra sucursal.
 router.get('/:id/check-availability', asyncH(async (req, res) => {
-  const result = await checkDeliveryAvailability(pathId(req.params.id));
+  const result = await checkDeliveryAvailability(pathId(req.params.id), req.user!);
   res.json(result);
 }));
 
@@ -110,12 +110,14 @@ router.post(
     // Checklist de picking (mejora 10): body opcional { pick: [{productId, quantity}] }
     // con lo que el operador realmente recibió item por item. Sin body, todo
     // el stock disponible como siempre.
-    const pick = req.body && Array.isArray((req.body as Record<string, unknown>).pick)
-      ? z.array(z.object({
-          productId: z.number().int().positive(),
-          quantity: z.number().min(0),
-        })).parse((req.body as Record<string, unknown>).pick)
+    const bodySchema = z.object({ pick: z.array(z.object({
+      productId: z.number().int().positive(),
+      quantity: z.number().finite().min(0),
+    })).min(1) }).strict();
+    const parsedBody = req.body && Object.prototype.hasOwnProperty.call(req.body, 'pick')
+      ? bodySchema.parse(req.body)
       : undefined;
+    const pick = parsedBody?.pick;
     const result = await confirmDelivery(req.user!, req.ip, pathId(req.params.id), pick);
     res.json(result);
   }))
@@ -151,7 +153,7 @@ router.post(
 router.get(
   '/:id/pending-delivery',
   asyncH(async (req, res) => {
-    const list = await getPendingDeliveryForDelivery(pathId(req.params.id));
+    const list = await getPendingDeliveryForDelivery(pathId(req.params.id), req.user!);
     // Array: una entrada por sucursal de retiro (puede haber varias órdenes)
     res.json({ pendingDeliveries: list });
   })
