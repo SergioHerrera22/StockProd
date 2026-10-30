@@ -106,7 +106,7 @@ async function main() {
   });
   const multi2 = await api('POST', '/deliveries?confirm=true', {
     token: TX,
-    body: { locationId: DEP.id, items: [
+    body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0005', items: [
       { productId: pid, quantity: 2 },      // línea 1: hay stock
       { productId: prod2.json.id, quantity: 5 }, // línea 2: sin stock → falla
     ] },
@@ -205,9 +205,9 @@ async function main() {
 
   // ---------- [H] Restricción por ubicación ----------
   console.log('\n[H] Usuario restringido a SUC1 intentando operar en otras ubicaciones');
-  const r1 = await api('POST', '/deliveries', { token: TE, body: { locationId: DEP.id, items: [{ productId: pid, quantity: 1 }] } });
+  const r1 = await api('POST', '/deliveries', { token: TE, body: { locationId: DEP.id, invoiceNumber: '0001-NEG-0006', items: [{ productId: pid, quantity: 1 }] } });
   ok(r1.status === 403, 'Empleado restringido: entrega desde el Depósito → 403');
-  const r2 = await api('POST', '/deliveries', { token: TE, body: { locationId: SUC1.id, items: [{ productId: pid, quantity: 1 }] } });
+  const r2 = await api('POST', '/deliveries', { token: TE, body: { locationId: SUC1.id, invoiceNumber: '0001-NEG-0007', items: [{ productId: pid, quantity: 1 }] } });
   ok(r2.status === 201, 'Empleado restringido: entrega desde SU ubicación → OK');
   const r3 = await api('POST', '/entries?confirm=true', { token: TC, body: { locationId: DEP.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 1 }] } });
   ok(r3.status === 403, 'Encargado restringido: entrada al Depósito → 403');
