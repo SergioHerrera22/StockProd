@@ -49,26 +49,32 @@ export async function createProduct(user: AuthUser, ip: string | undefined, inpu
 }
 
 async function findDuplicates(c: PoolClient, input: Partial<ProductInput>) {
-  const exact: unknown[] = [];
-  if (input.code) {
-    const r = await c.query('SELECT id, code, name FROM products WHERE lower(code) = lower($1) AND is_active', [input.code.trim()]);
-    exact.push(...r.rows);
-  }
-  if (input.barcode) {
-    const r = await c.query('SELECT id, code, name FROM products WHERE barcode = $1 AND is_active', [input.barcode.trim()]);
-    exact.push(...r.rows);
-  }
-  let similar: { id: number; code: string; name: string; brand: string | null }[] = [];
-  if (input.name && input.name.trim().length >= 4) {
-    const r = await c.query(
-      `SELECT id, code, name, brand FROM products
-       WHERE is_active AND lower(name) LIKE '%' || lower($1::text) || '%'
-         AND (brand IS NULL OR $2::text IS NULL OR lower(brand) = lower($2::text))
-       LIMIT 5`,
-      [input.name.trim(), input.brand?.trim() || null]
-    );
-    similar = r.rows;
-  }
+  // 1 solo round-trip para exactos + similares (antes eran 3 queries secuenciales)
+  const r = await c.query<{ id: number; code: string; name: string; brand: string | null; exact: boolean }>(
+    `SELECT id, code, name, NULL::text AS brand, true AS exact
+     FROM products
+     WHERE is_active AND (
+       ($1::text IS NOT NULL AND lower(code) = lower($1::text)) OR
+       ($2::text IS NOT NULL AND barcode = $2::text)
+     )
+     UNION ALL
+     SELECT id, code, name, brand, false
+     FROM (
+       SELECT id, code, name, brand
+       FROM products
+       WHERE is_active
+         AND $3::text IS NOT NULL
+         AND length(trim($3::text)) >= 4
+         AND lower(name) LIKE '%' || lower($3::text) || '%'
+         AND (brand IS NULL OR $4::text IS NULL OR lower(brand) = lower($4::text))
+       LIMIT 5
+     ) s`,
+    [input.code?.trim() || null, input.barcode?.trim() || null, input.name?.trim() || null, input.brand?.trim() || null]
+  );
+  const exact: unknown[] = r.rows.filter((row) => row.exact).map(({ id, code, name }) => ({ id, code, name }));
+  const similar: { id: number; code: string; name: string; brand: string | null }[] = r.rows
+    .filter((row) => !row.exact)
+    .map(({ id, code, name, brand }) => ({ id, code, name, brand }));
   return { exact, similar };
 }
 
@@ -178,33 +184,53 @@ export async function scanDuplicates(): Promise<DuplicateGroup[]> {
 export async function bulkDeleteProducts(user: AuthUser, ip: string | undefined, ids: number[]): Promise<{ deleted: number; skipped: Array<{ id: number; reason: string }> }> {
   const deleted: number[] = [];
   const skipped: Array<{ id: number; reason: string }> = [];
+  const uniqueIds = [...new Set(ids)];
 
   await withTx(async (c) => {
-    for (const id of ids) {
-      const p = await c.query('SELECT id, code, name FROM products WHERE id = $1', [id]);
-      if (!p.rows[0]) {
+    // 3 queries para TODO el lote (antes eran 4 por producto)
+    const found = await c.query<{ id: number; code: string; name: string }>(
+      'SELECT id, code, name FROM products WHERE id = ANY($1::int[])',
+      [uniqueIds]
+    );
+    const foundMap = new Map(found.rows.map((r) => [r.id, r]));
+    const stocks = await c.query<{ product_id: number; total: string }>(
+      `SELECT product_id, COALESCE(SUM(quantity), 0) AS total
+       FROM stock_balances WHERE product_id = ANY($1::int[]) GROUP BY product_id`,
+      [uniqueIds]
+    );
+    const withStock = new Map(stocks.rows.map((s) => [s.product_id, Number(s.total)]));
+
+    const deletable: Array<{ id: number; code: string; name: string }> = [];
+    for (const id of uniqueIds) {
+      const p = foundMap.get(id);
+      if (!p) {
         skipped.push({ id, reason: 'No encontrado' });
         continue;
       }
-      const stock = await c.query<{ total: string }>(
-        'SELECT COALESCE(SUM(quantity), 0) AS total FROM stock_balances WHERE product_id = $1',
-        [id]
-      );
-      const total = Number(stock.rows[0]?.total ?? 0);
+      const total = withStock.get(id) ?? 0;
       if (total > 0) {
         skipped.push({ id, reason: 'Tiene stock > 0' });
         continue;
       }
-      await c.query('UPDATE products SET is_active = false WHERE id = $1', [id]);
-      deleted.push(id);
-      await writeAudit(c, {
-        userId: user.id,
-        action: 'PRODUCT_BULK_DELETE',
-        entity: 'product',
-        entityId: id,
-        details: { code: p.rows[0].code, name: p.rows[0].name },
-        ip,
-      });
+      deletable.push(p);
+    }
+
+    if (deletable.length > 0) {
+      await c.query('UPDATE products SET is_active = false WHERE id = ANY($1::int[])', [deletable.map((p) => p.id)]);
+      // Auditoria en bloque con unnest (1 query, no N)
+      await c.query(
+        `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip)
+         SELECT $1, $2, 'product', v.id, v.details, $5
+         FROM unnest($3::int[], $4::jsonb[]) AS v(id, details)`,
+        [
+          user.id,
+          'PRODUCT_BULK_DELETE',
+          deletable.map((p) => p.id),
+          deletable.map((p) => JSON.stringify({ code: p.code, name: p.name })),
+          ip,
+        ]
+      );
+      deleted.push(...deletable.map((p) => p.id));
     }
   });
 
@@ -215,15 +241,9 @@ export async function bulkDeleteProducts(user: AuthUser, ip: string | undefined,
 export async function updateProduct(user: AuthUser, ip: string | undefined, id: number, input: Partial<ProductInput>) {
   if (input.unit) assertUnit(input.unit);
   return withTx(async (c) => {
-    const existing = await c.query('SELECT id FROM products WHERE id = $1', [id]);
-    if (!existing.rows[0]) throw ApiError.notFound('Producto no encontrado');
-
-    if (input.barcode) {
-      const dup = await c.query('SELECT id FROM products WHERE barcode = $1 AND id <> $2', [input.barcode.trim(), id]);
-      if (dup.rows[0]) throw ApiError.conflict('Otro producto ya usa ese codigo de barras');
-    }
-
-    await c.query(
+    // UPDATE con RETURNING: ni SELECT previo para verificar existencia
+    // (con >= 1 fila que recibe RETURNING como resultado) ni doble round-trip
+    const result = await c.query(
       `UPDATE products SET
          code = COALESCE($1, code),
          barcode = COALESCE($2, barcode),
@@ -236,9 +256,10 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
          cost = $9,
          reference_price = $10,
          is_active = COALESCE($11, is_active)
-       WHERE id = $12`,
+       WHERE id = $12
+       RETURNING id`,
       [
-        input.code ? input.code.trim() : null,
+        ...(input.code ? [input.code.trim()] : [null]),
         input.barcode === undefined ? null : input.barcode?.trim() || null,
         input.name ? input.name.trim() : null,
         input.description ?? null,
@@ -252,6 +273,13 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
         id,
       ]
     );
+    if (result.rows.length === 0) throw ApiError.notFound('Producto no encontrado');
+
+    if (input.barcode) {
+      const dup = await c.query('SELECT id FROM products WHERE barcode = $1 AND id <> $2', [input.barcode.trim(), id]);
+      if (dup.rows[0]) throw ApiError.conflict('Otro producto ya usa ese codigo de barras');
+    }
+
     await writeAudit(c, {
       userId: user.id, action: 'PRODUCT_UPDATE', entity: 'product', entityId: id, details: input, ip,
     });
@@ -345,6 +373,9 @@ export async function importProducts(
     const catRows = await c.query<{ id: number; name: string }>('SELECT id, name FROM categories');
     const catMap = new Map(catRows.rows.map((r) => [r.name.toLowerCase(), r.id]));
     const seenCodes = new Set<string>();
+    // Códigos existentes precargados en 1 query (antes: 1 SELECT por fila)
+    const existingRows = await c.query<{ id: number; code: string }>('SELECT id, lower(code) AS code FROM products');
+    const existingMap = new Map(existingRows.rows.map((r) => [r.code, r.id]));
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
@@ -395,13 +426,13 @@ export async function importProducts(
         }
       }
 
-      const existing = await c.query<{ id: number }>('SELECT id FROM products WHERE lower(code) = lower($1)', [code]);
-      if (existing.rows[0]) {
+      const existingId = existingMap.get(code.toLowerCase());
+      if (existingId) {
         if (updateExisting) {
           await c.query(
             `UPDATE products SET name = $1, brand = $2, category_id = $3, unit = $4, min_stock = $5,
              cost = COALESCE($6, cost), reference_price = COALESCE($7, reference_price) WHERE id = $8`,
-            [finalName, cleanText(row.brand) || null, categoryId, unit, minStock, cost, referencePrice, existing.rows[0].id]
+            [finalName, cleanText(row.brand) || null, categoryId, unit, minStock, cost, referencePrice, existingId]
           );
           updated++;
         } else {
@@ -418,6 +449,8 @@ export async function importProducts(
            categoryId, unit, minStock, cost, referencePrice, user.id]
         );
         created++;
+        // Deduplica por código dentro del archivo: si reaparece en una fila
+        // posterior, seenCodes lo salta; el mapa precargado no cambia.
       } catch (err) {
         errors.push({ row: line, code, message: `Error: ${(err as Error).message}` });
       }

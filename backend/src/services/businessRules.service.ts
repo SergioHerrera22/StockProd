@@ -2,6 +2,7 @@ import { query, withTx } from '../db/pool';
 import { ApiError } from '../lib/errors';
 import { writeAudit } from './audit.service';
 import { AuthUser } from '../middleware/auth';
+import { cached, cacheInvalidate } from '../lib/memCache';
 
 export interface BusinessRuleInput {
   code: string;
@@ -87,6 +88,7 @@ export async function createBusinessRule(user: AuthUser, ip: string | undefined,
       [input.code, input.name, input.description ?? null, input.entityType, input.triggerEvent, JSON.stringify(input.condition), JSON.stringify(input.action), input.severity ?? 'WARNING', user.id]
     );
     await writeAudit(c, { userId: user.id, action: 'BUSINESS_RULE_CREATE', entity: 'business_rule', entityId: r.rows[0].id, details: input, ip });
+    cacheInvalidate('business-rules:');
     return { id: r.rows[0].id };
   });
 }
@@ -112,6 +114,7 @@ export async function updateBusinessRule(user: AuthUser, ip: string | undefined,
     values.push(id);
     await c.query(`UPDATE business_rules SET ${fields.join(', ')} WHERE id = $${idx}`, values);
     await writeAudit(c, { userId: user.id, action: 'BUSINESS_RULE_UPDATE', entity: 'business_rule', entityId: id, details: input, ip });
+    cacheInvalidate('business-rules:');
     return { ok: true };
   });
 }
@@ -120,15 +123,20 @@ export async function updateBusinessRule(user: AuthUser, ip: string | undefined,
  * Evaluar reglas para un contexto (usa funcion BD evaluate_approval_rules extendida)
  */
 export async function evaluateBusinessRules(entityType: string, triggerEvent: string, context: Record<string, unknown>) {
-  const rows = await query(
-    `SELECT * FROM business_rules
-     WHERE entity_type = $1 AND trigger_event = $2 AND is_active = true
-     ORDER BY priority ASC`,
-    [entityType, triggerEvent]
-  );
+  // Las reglas activas se consultan en cada crear/confirmar/anular y casi
+  // nunca cambian: cache de 30s (se invalida al editar una regla).
+  const rules = await cached(`business-rules:${entityType}:${triggerEvent}`, 30_000, async () => {
+    const r = await query(
+      `SELECT id, code, name, severity, action, condition FROM business_rules
+       WHERE entity_type = $1 AND trigger_event = $2 AND is_active = true
+       ORDER BY priority ASC`,
+      [entityType, triggerEvent]
+    );
+    return r.rows;
+  });
 
   const results = [];
-  for (const rule of rows.rows) {
+  for (const rule of rules) {
     const matches = evaluateCondition(rule.condition, context);
     if (matches) {
       results.push({

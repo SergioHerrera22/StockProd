@@ -1,5 +1,5 @@
 import { PoolClient } from 'pg';
-import { query, withTx } from '../../db/pool';
+import { pool, query, withTx } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { applyStockChange } from '../../services/stockEngine';
 import { nextDocNumber } from '../../services/numbering';
@@ -68,16 +68,17 @@ export async function saveCountItems(
     assertLocationAccess(user, countRow.rows[0].location_id);
     if (countRow.rows[0].status !== 'ABIERTO') throw ApiError.conflict('El inventario ya fue cerrado o aplicado');
 
-    for (const it of items) {
-      if (!Number.isFinite(it.countedQuantity) || it.countedQuantity < 0) {
-        throw ApiError.badRequest('Las cantidades contadas deben ser cero o mayores');
-      }
-      const r = await c.query(
-        `UPDATE stock_count_items SET counted_quantity = $1 WHERE id = $2 AND count_id = $3`,
-        [it.countedQuantity, it.itemId, id]
-      );
-      if (!r.rowCount) throw ApiError.badRequest('Item de inventario invalido');
+    if (items.some((it) => !Number.isFinite(it.countedQuantity) || it.countedQuantity < 0)) {
+      throw ApiError.badRequest('Las cantidades contadas deben ser cero o mayores');
     }
+    // UPDATE multi-row con unnest: 1 query en vez de N
+    const r = await c.query(
+      `UPDATE stock_count_items sci SET counted_quantity = v.qty
+       FROM unnest($2::int[], $3::numeric[]) AS v(iid, qty)
+       WHERE sci.id = v.iid AND sci.count_id = $1`,
+      [id, items.map((it) => it.itemId), items.map((it) => it.countedQuantity)]
+    );
+    if (r.rowCount !== items.length) throw ApiError.badRequest('Item de inventario invalido');
     await writeAudit(c, {
       userId: user.id, action: 'COUNT_SAVE_ITEMS', entity: 'count', entityId: id,
       details: { items: items.length }, ip,
@@ -335,7 +336,9 @@ export async function voidCount(user: AuthUser, ip: string | undefined, id: numb
 }
 
 export async function getCount(id: number) {
-  return withTx(async (c) => {
+  // Lectura pura: sin transaccion (antes withTx = BEGIN/COMMIT de regalo)
+  const c = await pool.connect();
+  try {
     const head = await c.query(
       `SELECT sc.*, l.name AS location_name, cu.full_name AS created_by_name, au.full_name AS approved_by_name,
               vau.full_name AS void_approved_by_name
@@ -354,7 +357,9 @@ export async function getCount(id: number) {
        WHERE si.count_id = $1 ORDER BY p.name`, [id]
     );
     return { ...head.rows[0], items: items.rows };
-  });
+  } finally {
+    c.release();
+  }
 }
 
 export async function listCounts(opts: { locationId?: number; page: number; pageSize: number; offset: number }) {
@@ -362,13 +367,14 @@ export async function listCounts(opts: { locationId?: number; page: number; page
   const where: string[] = [];
   if (opts.locationId) { params.push(opts.locationId); where.push(`sc.location_id = $${params.length}`); }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM stock_counts sc ${whereSql}`, params);
-  const rows = await query(
+  // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+  const rows = await query<{ total?: string }>(
     `SELECT sc.id, sc.number, sc.status, sc.location_id, l.name AS location_name,
             sc.created_at, sc.applied_at, cu.full_name AS created_by_name,
             (SELECT COUNT(*) FROM stock_count_items WHERE count_id = sc.id) AS line_count,
             (SELECT COUNT(*) FROM stock_count_items WHERE count_id = sc.id AND counted_quantity IS NOT NULL) AS counted_lines,
-            (SELECT COUNT(*) FROM stock_count_items WHERE count_id = sc.id AND adjusted) AS adjusted_lines
+            (SELECT COUNT(*) FROM stock_count_items WHERE count_id = sc.id AND adjusted) AS adjusted_lines,
+            COUNT(*) OVER() AS total
      FROM stock_counts sc
      JOIN locations l ON l.id = sc.location_id
      JOIN users cu ON cu.id = sc.created_by
@@ -376,5 +382,6 @@ export async function listCounts(opts: { locationId?: number; page: number; page
      LIMIT ${opts.pageSize} OFFSET ${opts.offset}`,
     params
   );
-  return { counts: rows.rows, total: Number(count.rows[0].total) };
+  const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+  return { counts: rows.rows.map(({ total: _t, ...rest }) => rest) as never[], total };
 }

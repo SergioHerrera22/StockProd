@@ -123,19 +123,29 @@ export async function createPendingDelivery(
     const itemsLocked = [...input.items].sort(
       (a, b) => a.productId - b.productId || a.sourceLocationId - b.sourceLocationId
     );
+    // FOR UPDATE de TODAS las filas en UNA query (orden determinista):
+    // mismo lockeo anti-deadlock, sin N round-trips.
+    const lockedTotal = await c.query<{ product_id: number; location_id: number; available: string | null }>(
+      `SELECT product_id, location_id, (quantity - reserved_quantity) AS available
+       FROM stock_balances
+       WHERE (product_id, location_id) IN (
+         SELECT unnest($1::int[]), unnest($2::int[])
+       )
+       ORDER BY product_id, location_id
+       FOR UPDATE`,
+      [itemsLocked.map(it => it.productId), itemsLocked.map(it => it.sourceLocationId)]
+    );
     const availableMap = new Map<string, number>();
-    for (const it of itemsLocked) {
-      const locked = await c.query<{ available: string | null }>(
-        `SELECT (quantity - reserved_quantity) AS available
-         FROM stock_balances
-         WHERE product_id = $1 AND location_id = $2
-         FOR UPDATE`,
-        [it.productId, it.sourceLocationId]
-      );
-      const key = `${it.productId}:${it.sourceLocationId}`;
+    for (const row of lockedTotal.rows) {
+      // Si la fila no existe en stock_balances, el disponible es 0
+      const key = `${row.product_id}:${row.location_id}`;
       if (!availableMap.has(key)) {
-        availableMap.set(key, Number(locked.rows[0]?.available ?? 0));
+        availableMap.set(key, Number(row.available ?? 0));
       }
+    }
+    for (const it of itemsLocked) {
+      const key = `${it.productId}:${it.sourceLocationId}`;
+      if (!availableMap.has(key)) availableMap.set(key, 0);
     }
 
     // Demandas agregadas por (producto, origen): dos lineas del mismo par
@@ -189,32 +199,42 @@ export async function createPendingDelivery(
     );
     const pendingDeliveryId = pdResult.rows[0].id;
 
-    // Insertar items y crear reservas
-    for (const it of input.items) {
-      // Item en la orden pendiente
-      await c.query(
-        `INSERT INTO pending_delivery_items (
-          pending_delivery_id, product_id, quantity_requested, quantity_reserved, source_location_id
-        ) VALUES ($1,$2,$3,$4,$5)`,
-        [pendingDeliveryId, it.productId, it.quantityRequested, it.quantityReserved, it.sourceLocationId]
-      );
+    // Insertar items y crear reservas en DOS queries con unnest (antes N×2)
+    await c.query(
+      `INSERT INTO pending_delivery_items (
+         pending_delivery_id, product_id, quantity_requested, quantity_reserved, source_location_id
+       )
+       SELECT $1, p, rq, rv, sl
+       FROM unnest($2::int[], $3::numeric[], $4::numeric[], $5::int[]) AS t(p, rq, rv, sl)`,
+      [
+        pendingDeliveryId,
+        input.items.map(it => it.productId),
+        input.items.map(it => it.quantityRequested),
+        input.items.map(it => it.quantityReserved),
+        input.items.map(it => it.sourceLocationId),
+      ]
+    );
 
-      // Reserva en stock_reservations (con expiración 48h).
-      // quantityReserved = 0 => ítem "deuda" sin reserva: se registra en la
-      // orden para su seguimiento pero no bloquea stock (no hay stock).
-      if (it.quantityReserved > 0) {
-        const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
-        await c.query(
-          `INSERT INTO stock_reservations (
-            number, reference_type, reference_id, pending_delivery_id, product_id, source_location_id,
-            quantity_reserved, reserved_by, expires_at, status
-          ) VALUES (
-            'RES-' || lpad(nextval('seq_reservation_number')::text, 6, '0'),
-            'PENDING_DELIVERY', $1, $2, $3, $4, $5, $6, $7, 'ACTIVA'
-          )`,
-          [pendingDeliveryId, pendingDeliveryId, it.productId, it.sourceLocationId, it.quantityReserved, user.id, expiresAt]
-        );
-      }
+    const reservables = input.items.filter(it => it.quantityReserved > 0);
+    if (reservables.length > 0) {
+      const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+      await c.query(
+        `INSERT INTO stock_reservations (
+           number, reference_type, reference_id, pending_delivery_id, product_id, source_location_id,
+           quantity_reserved, reserved_by, expires_at, status
+         )
+         SELECT 'RES-' || lpad(nextval('seq_reservation_number')::text, 6, '0'),
+                'PENDING_DELIVERY', $1, $1, p, sl, rv, $2, $3, 'ACTIVA'
+         FROM unnest($4::int[], $5::int[], $6::numeric[]) AS t(p, sl, rv)`,
+        [
+          pendingDeliveryId,
+          user.id,
+          expiresAt,
+          reservables.map(it => it.productId),
+          reservables.map(it => it.sourceLocationId),
+          reservables.map(it => it.quantityReserved),
+        ]
+      );
     }
 
     await writeAudit(c, {
@@ -521,9 +541,8 @@ export async function listPendingDeliveries(opts: {
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  const count = await query<{ total: string }>(`SELECT COUNT(*) total FROM pending_deliveries pd ${whereSql}`, params);
-  
-  const rows = await query(
+  // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+  const rows = await query<{ total?: string }>(
     `SELECT pd.id, pd.number, pd.barcode, pd.status, pd.sale_location_id, pd.pickup_location_id,
             sl.name AS sale_location_name, sl.code AS sale_location_code,
             pl.name AS pickup_location_name, pl.code AS pickup_location_code,
@@ -535,7 +554,8 @@ export async function listPendingDeliveries(opts: {
             (SELECT SUM(quantity_delivered) FROM pending_delivery_items WHERE pending_delivery_id = pd.id) AS total_qty_delivered,
             (SELECT MIN(sr.expires_at) FROM stock_reservations sr
               WHERE sr.reference_type = 'PENDING_DELIVERY' AND sr.reference_id = pd.id
-                AND sr.status IN ('ACTIVA', 'PARCIAL')) AS expires_at
+                AND sr.status IN ('ACTIVA', 'PARCIAL')) AS expires_at,
+            COUNT(*) OVER() AS total
      FROM pending_deliveries pd
      JOIN locations sl ON sl.id = pd.sale_location_id
      JOIN locations pl ON pl.id = pd.pickup_location_id
@@ -546,7 +566,8 @@ export async function listPendingDeliveries(opts: {
     params
   );
 
-  return { pendingDeliveries: rows.rows, total: Number(count.rows[0].total) };
+  const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+  return { pendingDeliveries: rows.rows.map(({ total: _t, ...rest }) => rest), total };
 }
 
 /**
