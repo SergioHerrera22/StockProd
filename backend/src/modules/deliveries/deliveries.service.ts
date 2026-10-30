@@ -327,13 +327,26 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
       return { id: deliveryId, number, status: 'BORRADOR', requiresApproval: true };
     }
 
+    let confirmation: DeliveryConfirmResult | undefined;
     if (confirm && !input.pendingDelivery) {
-      await confirmDeliveryTx(c, deliveryId, user);
+      confirmation = await confirmDeliveryTx(c, deliveryId, user);
+      await writeAudit(c, {
+        userId: user.id, action: 'DELIVERY_CONFIRM', entity: 'delivery', entityId: deliveryId,
+        details: { createdAndConfirmed: true, result: confirmation }, ip,
+      });
     } else {
       await writeAudit(c, { userId: user.id, action: 'DELIVERY_CREATE_DRAFT', entity: 'delivery', entityId: deliveryId, details: { number, pendingDelivery: Boolean(input.pendingDelivery) }, ip });
     }
 
-    return { id: deliveryId, number, status: input.pendingDelivery ? 'PENDIENTE_ENTREGA' : (confirm ? 'CONFIRMADO' : 'BORRADOR'), pendingDelivery: Boolean(input.pendingDelivery), requiresApproval: false };
+    const persisted = await c.query<{ status: string }>('SELECT status FROM deliveries WHERE id = $1', [deliveryId]);
+    return {
+      id: deliveryId,
+      number,
+      status: input.pendingDelivery ? 'PENDIENTE_ENTREGA' : persisted.rows[0]?.status ?? 'BORRADOR',
+      pendingDelivery: Boolean(input.pendingDelivery),
+      requiresApproval: false,
+      ...(confirmation ? confirmation : {}),
+    };
   });
 }
 
@@ -992,6 +1005,23 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
           locationName: loc.locationName,
           availableQuantity: Number(loc.availableQty),
         }));
+      // La propia sucursal de venta también puede cubrir una deuda pendiente
+      // (por ejemplo, un producto repuesto después del picking parcial).
+      const mainAvailable = Number(avail?.saleLocationQty || 0);
+      if (mainAvailable > 0) {
+        const main = await c.query<{ id: number; code: string; name: string }>(
+          'SELECT id, code, name FROM locations WHERE id = $1',
+          [del.location_id]
+        );
+        if (main.rows[0] && !alternatives.some((loc) => loc.locationId === del.location_id)) {
+          alternatives.unshift({
+            locationId: del.location_id,
+            locationCode: main.rows[0].code,
+            locationName: main.rows[0].name,
+            availableQuantity: mainAvailable,
+          });
+        }
+      }
       if (alternatives.length === 0) continue; // nada nuevo para derivar
 
       newShortfalls.push({
@@ -1009,9 +1039,10 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
       return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay stock existente en otras sucursales.' };
     }
 
-    const { pendingItems } = autoAssignShortfalls(newShortfalls);
+    const allocation = autoAssignShortfalls(newShortfalls);
+    const { pendingItems } = allocation;
     if (pendingItems.length === 0) {
-      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay stock existente en otras sucursales.' };
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], unresolved: allocation.unresolved, message: 'No hay stock disponible para derivar.' };
     }
 
     const pendingOrders = await createPendingOrdersForShortfalls(
@@ -1021,10 +1052,10 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
 
     await writeAudit(c, {
       userId: user.id, action: 'DELIVERY_REDERIVE_SHORTFALLS', entity: 'delivery', entityId: id,
-      details: { pendingDeliveries: pendingOrders.map(o => o.number), shortfalls: newShortfalls }, ip,
+      details: { pendingDeliveries: pendingOrders.map(o => o.number), shortfalls: newShortfalls, unresolved: allocation.unresolved }, ip,
     });
 
-    return { ok: true, created: pendingOrders };
+    return { ok: true, created: pendingOrders, unresolved: allocation.unresolved };
   });
   return result;
 }
