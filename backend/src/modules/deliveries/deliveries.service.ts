@@ -143,6 +143,11 @@ async function createPendingOrdersForShortfalls(
  * no alcanza para todo el faltante, el sobrante queda reportado en
  * `unresolved` (deuda de mercadería sin destino posible).
  */
+/**
+ * Distribuye cada faltante entre TODAS las sucursales con disponibilidad.
+ * Una orden de retiro por ubicación; cada línea refleja únicamente la cantidad
+ * asignada a esa ubicación. El remanente queda como deuda sin derivar.
+ */
 function autoAssignShortfalls(shortfalls: DeliveryShortfall[]): {
   pendingItems: PendingItemInput[];
   unresolved: { productId: number; productName: string; quantity: number }[];
@@ -151,32 +156,35 @@ function autoAssignShortfalls(shortfalls: DeliveryShortfall[]): {
   const unresolved: { productId: number; productName: string; quantity: number }[] = [];
 
   for (const sf of shortfalls) {
-    if (sf.alternativeLocations.length === 0) continue; // se maneja como unresolved por el llamador
+    let remaining = sf.shortfallQuantity;
+    const locations = [...sf.alternativeLocations]
+      .filter((loc) => Number.isFinite(loc.availableQuantity) && loc.availableQuantity > 0)
+      .sort((a, b) => b.availableQuantity - a.availableQuantity || a.locationId - b.locationId);
 
-    const best = sf.alternativeLocations.reduce((bestLoc, cur) =>
-      cur.availableQuantity > bestLoc.availableQuantity ? cur : bestLoc
-    );
-    const reservedQty = Math.min(sf.shortfallQuantity, best.availableQuantity);
-    if (reservedQty <= 0) continue; // nada reservable: queda en unresolved
+    for (const loc of locations) {
+      if (remaining <= 0) break;
+      const allocated = Math.min(remaining, loc.availableQuantity);
+      if (allocated <= 0) continue;
+      pendingItems.push({
+        productId: sf.productId,
+        quantityRequested: allocated,
+        sourceLocationId: loc.locationId,
+        quantityReserved: allocated,
+      });
+      remaining -= allocated;
+    }
 
-    pendingItems.push({
-      productId: sf.productId,
-      quantityRequested: sf.shortfallQuantity,
-      sourceLocationId: best.locationId,
-      quantityReserved: reservedQty,
-    });
-    if (reservedQty < sf.shortfallQuantity) {
+    if (remaining > 0) {
       unresolved.push({
         productId: sf.productId,
         productName: sf.productName,
-        quantity: sf.shortfallQuantity - reservedQty,
+        quantity: remaining,
       });
     }
   }
 
   return { pendingItems, unresolved };
 }
-
 async function validateItems(c: PoolClient, items: DeliveryItemInput[]) {
   if (!items.length) throw ApiError.badRequest('La entrega debe tener al menos un producto');
   for (const it of items) {
@@ -420,6 +428,18 @@ async function confirmDeliveryTx(c: PoolClient, id: number, user: AuthUser, pick
     [id]
   );
   if (!items.rows.length) throw ApiError.badRequest('La entrega no tiene productos');
+  if (pickMap !== undefined) {
+    const itemIds = new Set(items.rows.map((it) => Number(it.product_id)));
+    if (pickMap.size !== itemIds.size || [...pickMap.keys()].some((productId) => !itemIds.has(productId))) {
+      throw ApiError.badRequest('El checklist debe contener exactamente todos los productos de la entrega.');
+    }
+    for (const it of items.rows) {
+      const picked = pickMap.get(Number(it.product_id));
+      if (picked === undefined || picked > Number(it.quantity)) {
+        throw ApiError.badRequest(`La cantidad preparada de ${it.name} debe estar entre 0 y ${it.quantity}.`);
+      }
+    }
+  }
 
   const pendingQtySum = items.rows.reduce((sum, it) => sum + Number(it.quantity), 0);
   const pendingRules = await evaluateBusinessRules('DELIVERY', 'BEFORE_CONFIRM', {
@@ -1048,11 +1068,12 @@ export async function confirmDelivery(user: AuthUser, ip: string | undefined, id
   // con lo que efectivamente recibió. pick = undefined  ->  comportamiento
   // histórico (entregar todo el stock disponible de la sucursal principal).
   const pickMap = new Map<number, number>();
-  if (pick) {
+  if (pick !== undefined) {
+    if (pick.length === 0) throw ApiError.badRequest('El checklist debe incluir todos los productos, aunque la cantidad sea cero.');
     for (const p of pick) {
-      if (Number(p.quantity) > 0 && pickMap.has(p.productId) === false) {
-        pickMap.set(Number(p.productId), Number(p.quantity));
-      }
+      if (pickMap.has(p.productId)) throw ApiError.badRequest('El checklist contiene productos duplicados.');
+      if (!Number.isFinite(p.quantity) || p.quantity < 0) throw ApiError.badRequest('Cantidad de picking inválida.');
+      pickMap.set(Number(p.productId), Number(p.quantity));
     }
   }
   const result = await withTx(async (c) => {
@@ -1107,7 +1128,7 @@ export async function approveDelivery(user: AuthUser, ip: string | undefined, id
  * Devuelve el contenido sin importar el estado; quien escanea muestra el
  * estado y define qué puede hacerse (BORRADOR confirmable, PARCIAL/CONFIRMADO solo consulta).
  */
-export async function scanDeliveryBarcode(barcode: string) {
+export async function scanDeliveryBarcode(barcode: string, user: AuthUser) {
   return withTx(async (c) => {
     const d = await c.query<{
       id: number; number: string; status: string; location_id: number; barcode: string;
@@ -1125,6 +1146,7 @@ export async function scanDeliveryBarcode(barcode: string) {
     );
     if (!d.rows[0]) throw ApiError.notFound('No existe ninguna entrega de mercadería con ese código');
     const delivery = d.rows[0];
+    assertLocationAccess(user, delivery.location_id);
 
     const items = await c.query<{
       product_id: number; quantity: string; quantity_delivered: string | null; requested_quantity: string | null;
@@ -1157,12 +1179,14 @@ export async function scanDeliveryBarcode(barcode: string) {
   });
 }
 
-export async function getPendingDeliveryForDelivery(deliveryId: number) {
+export async function getPendingDeliveryForDelivery(deliveryId: number, user: AuthUser) {
   return withTx(async (c) => {
     const deliveryNum = (
       await c.query('SELECT number FROM deliveries WHERE id = $1', [deliveryId])
     ).rows[0]?.number as string | undefined;
     if (!deliveryNum) throw ApiError.notFound('Entrega no encontrada');
+    const deliveryLocation = await c.query<{ location_id: number }>('SELECT location_id FROM deliveries WHERE id = $1', [deliveryId]);
+    assertLocationAccess(user, deliveryLocation.rows[0].location_id);
 
     // TODAS las órdenes de retiro vivas de la entrega (pueden ser varias si
     // los faltantes se derivaron a más de una sucursal). El vínculo explícito
@@ -1366,16 +1390,28 @@ export async function voidDelivery(user: AuthUser, ip: string | undefined, id: n
   });
 }
 
-export async function getDelivery(id: number) {
-  const result = await withTx(async (c) => loadDelivery(c, id));
+export async function getDelivery(id: number, user: AuthUser) {
+  const result = await withTx(async (c) => {
+    const delivery = await loadDelivery(c, id);
+    if (delivery) assertLocationAccess(user, Number((delivery as any).location_id));
+    return delivery;
+  });
   return result;
 }
 
 export async function listDeliveries(opts: {
   status?: string; locationId?: number; q?: string; page: number; pageSize: number; offset: number;
-}) {
+}, user: AuthUser) {
   const params: unknown[] = [];
   const where: string[] = [];
+  if (user.role !== 'ADMIN' && user.restrictToLocation) {
+    if (!user.locationId) throw ApiError.forbidden('Tu usuario está restringido a una ubicación pero no tiene ninguna asignada.');
+    if (opts.locationId && Number(opts.locationId) !== Number(user.locationId)) {
+      throw ApiError.forbidden('No tenés acceso a las entregas de esa ubicación.');
+    }
+    params.push(user.locationId);
+    where.push(`d.location_id = ${params.length}`);
+  }
   if (opts.status) { params.push(opts.status); where.push(`d.status = $${params.length}`); }
   if (opts.locationId) { params.push(opts.locationId); where.push(`d.location_id = $${params.length}`); }
   if (opts.q) {
@@ -1467,13 +1503,14 @@ export interface AvailabilityCheckResult {
   hasShortfalls: boolean;
 }
 
-export async function checkDeliveryAvailability(deliveryId: number): Promise<AvailabilityCheckResult> {
+export async function checkDeliveryAvailability(deliveryId: number, user: AuthUser): Promise<AvailabilityCheckResult> {
   return withTx(async (c) => {
     const delivery = await c.query<{ id: number; location_id: number }>(
       'SELECT id, location_id FROM deliveries WHERE id = $1',
       [deliveryId]
     );
-    if (!delivery.rows[0]) throw new Error('Entrega no encontrada');
+    if (!delivery.rows[0]) throw ApiError.notFound('Entrega no encontrada');
+    assertLocationAccess(user, delivery.rows[0].location_id);
     
     const items = await c.query<{
       product_id: number; quantity: string; requested_quantity: string | null; name: string; code: string;
