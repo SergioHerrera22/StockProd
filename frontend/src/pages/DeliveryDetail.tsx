@@ -24,10 +24,15 @@ export default function DeliveryDetail() {
   const [pendingOrders, setPendingOrders] = useState<DeliveryPendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [voidOpen, setVoidOpen] = useState(false);
-  const [reason, setReason] = useState('');\n  const [approverUsername, setApproverUsername] = useState('');\n  const [approverPassword, setApproverPassword] = useState('');
+  const [reason, setReason] = useState('');
+  const [approverUsername, setApproverUsername] = useState('');
+  const [approverPassword, setApproverPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [deriving, setDeriving] = useState(false);
-  const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);\n  const [receiptOpen, setReceiptOpen] = useState(false);\n  const [receivedBy, setReceivedBy] = useState('');\n  const [receiptNotes, setReceiptNotes] = useState('');
+  const [availabilityItems, setAvailabilityItems] = useState<import('../types').DeliveryAvailabilityItem[]>([]);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receivedBy, setReceivedBy] = useState('');
+  const [receiptNotes, setReceiptNotes] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
