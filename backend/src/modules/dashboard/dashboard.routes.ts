@@ -27,6 +27,11 @@ router.get(
       debtPickupsOverdue,
       debtPickupList,
       debtUnderived,
+      lowStockItems,
+      outOfStockItems,
+      purchaseSuggestions,
+      productRankings,
+      stockoutStats,
     ] = await Promise.all([
       query<{ active_products: string; inventory_value: string; low_stock: string; out_of_stock: string }>(
         `WITH product_stock AS (
@@ -88,6 +93,100 @@ router.get(
            ON m.created_at >= d AND m.created_at < d + interval '1 day' ${locFilter}
          GROUP BY d ORDER BY d`,
         [days]
+      ),
+
+      // Indicadores de reposición: se usa disponibilidad real (físico menos reservas).
+      query(
+        `SELECT p.id, p.code, p.name, p.unit, p.min_stock,
+                COALESCE(a.available_qty, 0) AS available_qty
+         FROM products p
+         LEFT JOIN (
+           SELECT product_id, SUM(available_quantity) AS available_qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ) a ON a.product_id = p.id
+         WHERE p.is_active AND COALESCE(a.available_qty, 0) > 0
+           AND COALESCE(a.available_qty, 0) <= p.min_stock
+         ORDER BY COALESCE(a.available_qty, 0), p.name
+         LIMIT 8`,
+        [locationId || null]
+      ),
+      query(
+        `SELECT p.id, p.code, p.name, p.unit, p.min_stock,
+                COALESCE(a.available_qty, 0) AS available_qty
+         FROM products p
+         LEFT JOIN (
+           SELECT product_id, SUM(available_quantity) AS available_qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ) a ON a.product_id = p.id
+         WHERE p.is_active AND COALESCE(a.available_qty, 0) <= 0
+         ORDER BY p.name
+         LIMIT 8`,
+        [locationId || null]
+      ),
+      // Reposición sugerida = demanda de los últimos 30 días menos disponibilidad.
+      query(
+        `WITH available AS (
+           SELECT product_id, SUM(available_quantity) AS qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ), sold AS (
+           SELECT product_id, SUM(quantity) AS qty
+           FROM stock_movements
+           WHERE type = 'SALIDA' AND created_at >= now() - interval '30 days'
+             ${locFilter}
+           GROUP BY product_id
+         )
+         SELECT p.id, p.code, p.name, p.unit,
+                COALESCE(a.qty, 0) AS available_qty,
+                COALESCE(s.qty, 0) AS sold_30d,
+                GREATEST(CEIL(COALESCE(s.qty, 0) - COALESCE(a.qty, 0)), 0) AS suggested_qty
+         FROM products p
+         LEFT JOIN available a ON a.product_id = p.id
+         LEFT JOIN sold s ON s.product_id = p.id
+         WHERE p.is_active AND COALESCE(s.qty, 0) > COALESCE(a.qty, 0)
+           AND COALESCE(s.qty, 0) > 0
+         ORDER BY suggested_qty DESC, sold_30d DESC
+         LIMIT 8`,
+        [locationId || null]
+      ),
+      // Ranking de salida por ventas registradas; la rotación baja incluye productos sin ventas.
+      query(
+        `WITH available AS (
+           SELECT product_id, SUM(available_quantity) AS qty
+           FROM get_available_stock(NULL, $1::integer)
+           GROUP BY product_id
+         ), sold AS (
+           SELECT product_id, SUM(quantity) AS qty
+           FROM stock_movements
+           WHERE type = 'SALIDA' AND created_at >= now() - interval '30 days'
+             ${locFilter}
+           GROUP BY product_id
+         )
+         SELECT p.id, p.code, p.name, p.unit,
+                COALESCE(s.qty, 0) AS sold_30d,
+                COALESCE(a.qty, 0) AS available_qty
+         FROM products p
+         LEFT JOIN sold s ON s.product_id = p.id
+         LEFT JOIN available a ON a.product_id = p.id
+         WHERE p.is_active
+         ORDER BY COALESCE(s.qty, 0) DESC, p.name
+         LIMIT 5`,
+        [locationId || null]
+      ),
+      query(
+        `SELECT
+           COUNT(*) FILTER (
+             WHERE GREATEST(di.quantity, COALESCE(di.requested_quantity, di.quantity))
+                   > COALESCE(di.quantity_delivered, 0)
+           )::text AS stockout_events,
+           COUNT(*)::text AS requested_lines
+         FROM delivery_items di
+         JOIN deliveries d ON d.id = di.delivery_id
+         WHERE d.status IN ('CONFIRMADO', 'PARCIAL')
+           AND d.created_at >= now() - interval '30 days'
+           ${locationId ? 'AND d.location_id = ' + locationId : ''}`
       ),
       // ===== Deudas con clientes =====
       // Retiros activos (incluye PARCIAL: sigue debiendo saldo)
@@ -165,8 +264,20 @@ router.get(
     res.json({
       activeProducts: Number(inventoryStats.rows[0].active_products),
       inventoryValue: Number(inventoryStats.rows[0].inventory_value),
-      lowStock: Number(inventoryStats.rows[0].low_stock),
-      outOfStock: Number(inventoryStats.rows[0].out_of_stock),
+      lowStock: lowStockItems.rows.length,
+      outOfStock: outOfStockItems.rows.length,
+      stockInsights: {
+        lowStockItems: lowStockItems.rows.map((r: Record<string, unknown>) => ({ ...r, available_qty: Number(r.available_qty) })),
+        outOfStockItems: outOfStockItems.rows,
+        purchaseSuggestions: purchaseSuggestions.rows.map((r: Record<string, unknown>) => ({ ...r, available_qty: Number(r.available_qty), sold_30d: Number(r.sold_30d), suggested_qty: Number(r.suggested_qty) })),
+        topProducts: productRankings.rows.map((r: Record<string, unknown>) => ({ ...r, sold_30d: Number(r.sold_30d), available_qty: Number(r.available_qty) })),
+        lowRotation: [...productRankings.rows].reverse().map((r: Record<string, unknown>) => ({ ...r, sold_30d: Number(r.sold_30d), available_qty: Number(r.available_qty) })),
+        stockoutEvents: Number(stockoutStats.rows[0]?.stockout_events ?? 0),
+        requestedLines: Number(stockoutStats.rows[0]?.requested_lines ?? 0),
+        stockoutRate: Number(stockoutStats.rows[0]?.requested_lines ?? 0) > 0
+          ? Number(stockoutStats.rows[0]?.stockout_events ?? 0) / Number(stockoutStats.rows[0]?.requested_lines ?? 0) * 100
+          : 0,
+      },
       entriesToday: Number(today.rows[0].entradas),
       exitsToday: Number(today.rows[0].salidas),
       pendingTransfersCount: Number(pendingTransfersCount.rows[0].total),
