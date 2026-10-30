@@ -986,12 +986,12 @@ export async function rederiveShortfalls(user: AuthUser, ip: string | undefined,
     }
 
     if (newShortfalls.length === 0) {
-      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay stock existente en otras sucursales.' };
     }
 
     const { pendingItems } = autoAssignShortfalls(newShortfalls);
     if (pendingItems.length === 0) {
-      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay faltantes con stock disponible en otras sucursales' };
+      return { ok: true, created: [] as DeliveryPendingOrderRef[], message: 'No hay stock existente en otras sucursales.' };
     }
 
     const pendingOrders = await createPendingOrdersForShortfalls(
