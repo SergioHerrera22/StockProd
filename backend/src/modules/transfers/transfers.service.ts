@@ -282,11 +282,11 @@ export async function receiveTransfer(
     const transfer = t.rows[0];
     if (!transfer) throw ApiError.notFound('Transferencia no encontrada');
     assertLocationAccess(user, transfer.destination_location_id);
-    if (transfer.status !== 'EN_TRANSITO') {
-      throw ApiError.conflict(`La transferencia ${transfer.number} ya fue procesada`);
+    if (!['EN_TRANSITO', 'RECIBIDO_CON_DIF'].includes(transfer.status)) {
+      throw ApiError.conflict(`La transferencia ${transfer.number} no admite nuevas recepciones (estado: ${transfer.status})`);
     }
 
-    // Segregación: quien recibe NO puede ser quien despachó (configurable)
+    // Segregación: quien recibe NO puede ser quien despachó (configurable).
     const dispatched = await c.query<{ dispatched_by: number }>('SELECT dispatched_by FROM transfers WHERE id = $1', [id]);
     const cfgRecv = await getConfirmationSetting(c, 'TRANSFER', 'RECEIVE');
     if (cfgRecv?.enabled && cfgRecv.require_different_user && !cfgRecv.allow_same_user) {
@@ -295,74 +295,81 @@ export async function receiveTransfer(
       }
     }
 
-    const dbItems = await c.query<{ id: number; product_id: number; quantity_sent: string }>(
-      'SELECT id, product_id, quantity_sent FROM transfer_items WHERE transfer_id = $1', [id]
+    const dbItems = await c.query<{
+      id: number; product_id: number; quantity_sent: string; quantity_received: string | null
+    }>(
+      'SELECT id, product_id, quantity_sent, quantity_received FROM transfer_items WHERE transfer_id = $1 ORDER BY product_id, id',
+      [id]
     );
-    const byId = new Map(dbItems.rows.map((i) => [i.id, i]));
+    const byId = new Map(dbItems.rows.map((item) => [item.id, item]));
 
-    let allComplete = true;
-    let anyReceived = false;
-    const updates: { itemId: number; qty: number }[] = [];
-
-    // Si el cuerpo repite un itemId, las cantidades se SUMAN: duplicar el
-    // elemento con la mitad de las unidades era admitir una segreccion que
-    // validaba por item y acababa contabilizando el doble en destino.
-    const receivedByItem = new Map<number, number>();
-    for (const it of items) {
-      const dbItem = byId.get(it.itemId);
+    // quantityReceived representa SOLO las unidades de esta recepción.
+    // La acumulación se realiza contra lo ya registrado, nunca se sobrescribe.
+    const receivedThisCall = new Map<number, number>();
+    for (const item of items) {
+      const dbItem = byId.get(item.itemId);
       if (!dbItem) throw ApiError.badRequest('Item de transferencia invalido');
-      if (!Number.isFinite(it.quantityReceived) || it.quantityReceived < 0) {
+      if (!Number.isFinite(item.quantityReceived) || item.quantityReceived < 0) {
         throw ApiError.badRequest('Cantidades recibidas invalidas');
       }
-      receivedByItem.set(it.itemId, (receivedByItem.get(it.itemId) ?? 0) + it.quantityReceived);
-    }
-
-    for (const [itemId, qty] of receivedByItem) {
-      const dbItem = byId.get(itemId)!;
-      if (qty > Number(dbItem.quantity_sent)) {
-        throw ApiError.conflict(`No se puede recibir mas de lo enviado (${dbItem.quantity_sent})`);
+      if (Math.abs(item.quantityReceived * 1000 - Math.round(item.quantityReceived * 1000)) > 1e-7) {
+        throw ApiError.badRequest('Las cantidades recibidas admiten hasta 3 decimales');
       }
-      if (qty > 0) anyReceived = true;
-      if (qty !== Number(dbItem.quantity_sent)) allComplete = false;
-      updates.push({ itemId, qty });
+      receivedThisCall.set(item.itemId, (receivedThisCall.get(item.itemId) ?? 0) + item.quantityReceived);
     }
 
-    for (const dbItem of dbItems.rows) {
-      if (!updates.some((u) => u.itemId === dbItem.id)) {
-        updates.push({ itemId: dbItem.id, qty: 0 });
-        allComplete = false;
+    const deltas = [...receivedThisCall.entries()]
+      .filter(([, quantity]) => quantity > 0)
+      .map(([itemId, quantity]) => ({ itemId, quantity }));
+    if (!deltas.length) {
+      throw ApiError.badRequest('Debes indicar cantidades recibidas mayores a cero');
+    }
+
+    for (const delta of deltas) {
+      const dbItem = byId.get(delta.itemId)!;
+      const alreadyReceived = Number(dbItem.quantity_received ?? 0);
+      const remaining = Number(dbItem.quantity_sent) - alreadyReceived;
+      if (delta.quantity - remaining > 0.0005) {
+        throw ApiError.conflict(
+          `La cantidad recibida supera el pendiente del producto (enviado: ${dbItem.quantity_sent}, recibido: ${alreadyReceived}, pendiente: ${Math.max(0, remaining)})`
+        );
       }
     }
 
-    if (!anyReceived) throw ApiError.badRequest('Debes indicar cantidades recibidas para al menos un producto');
-
-    // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
-    const sortedUpdates = [...updates].sort((a, b) =>
-      (byId.get(a.itemId)!.product_id - byId.get(b.itemId)!.product_id));
-    for (const u of sortedUpdates) {
-      if (u.qty <= 0) continue;
-      const dbItem = byId.get(u.itemId)!;
+    // El lock FOR UPDATE de la transferencia serializa las recepciones.
+    // Bloqueamos stock en orden estable y aplicamos únicamente el delta nuevo.
+    const sortedDeltas = [...deltas].sort((a, b) =>
+      byId.get(a.itemId)!.product_id - byId.get(b.itemId)!.product_id
+    );
+    for (const delta of sortedDeltas) {
+      const dbItem = byId.get(delta.itemId)!;
       await applyStockChange(c, {
         productId: dbItem.product_id,
         locationId: transfer.destination_location_id,
-        delta: u.qty,
+        delta: delta.quantity,
         type: 'TRANS_ENTRADA',
         referenceType: 'TRANSFER',
         referenceId: transfer.id,
         referenceNumber: transfer.number,
         userId: user.id,
-        reason: `Recepcion de transferencia ${transfer.number}`,
+        reason: `Recepcion parcial de transferencia ${transfer.number}`,
       });
     }
 
-    // Todos los items en una sola query (unnest) en vez de N round-trips
+    // Sumar cantidades por línea; no tocar las líneas omitidas del request.
     await c.query(
-      `UPDATE transfer_items ti SET quantity_received = v.qty
+      `UPDATE transfer_items ti
+       SET quantity_received = COALESCE(ti.quantity_received, 0) + v.qty
        FROM unnest($2::int[], $3::numeric[]) AS v(iid, qty)
        WHERE ti.id = v.iid AND ti.transfer_id = $1`,
-      [id, updates.map(u => u.itemId), updates.map(u => u.qty)]
+      [id, deltas.map((item) => item.itemId), deltas.map((item) => item.quantity)]
     );
 
+    const allComplete = dbItems.rows.every((dbItem) => {
+      const previous = Number(dbItem.quantity_received ?? 0);
+      const additional = receivedThisCall.get(dbItem.id) ?? 0;
+      return previous + additional >= Number(dbItem.quantity_sent) - 0.0005;
+    });
     const status = allComplete ? 'RECIBIDO' : 'RECIBIDO_CON_DIF';
     await c.query(
       `UPDATE transfers SET status = $1, received_by = $2, received_at = now() WHERE id = $3`,
@@ -371,9 +378,19 @@ export async function receiveTransfer(
 
     await writeAudit(c, {
       userId: user.id, action: 'TRANSFER_RECEIVE', entity: 'transfer', entityId: id,
-      details: { status, items: updates, receivedBy: user.id }, ip,
+      details: {
+        status,
+        receivedThisCall: deltas,
+        cumulativeReceived: dbItems.rows.map((dbItem) => ({
+          itemId: dbItem.id,
+          quantity: Number(dbItem.quantity_received ?? 0) + (receivedThisCall.get(dbItem.id) ?? 0),
+          quantitySent: Number(dbItem.quantity_sent),
+        })),
+        receivedBy: user.id,
+      },
+      ip,
     });
-    return { ok: true, status };
+    return { ok: true, status, receivedItems: deltas };
   });
 }
 
