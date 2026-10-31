@@ -67,9 +67,19 @@ async function createProductWithStock(T, TE, dep, suc1, stamp, depQty, sucQty, s
       token: T,
       body: { locationId: loc.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: qty, unitCost: 1000 }] },
     });
+    // No intentar confirmar si el alta falló: hacerlo genera un 404 secundario
+    // sobre /entries/undefined/confirm y oculta el error real del POST /entries.
+    if (entry.status !== 201 || !entry.json?.id) {
+      throw new Error(
+        `Creación de entrada falló (cantidad=${qty}, ubicación=${loc.id}, producto=${pid}, proveedor=${supplierId}): HTTP ${entry.status}; respuesta=${JSON.stringify(entry.json)}`
+      );
+    }
+
     const confirmed = await api('POST', `/entries/${entry.json.id}/confirm`, { token: TE });
-    if (entry.status !== 201 || confirmed.status !== 200) {
-      throw new Error(`Entrada de ${qty} en loc ${loc.id} falló: ${entry.status}/${confirmed.status} ${JSON.stringify(confirmed.json)}`);
+    if (confirmed.status !== 200) {
+      throw new Error(
+        `Confirmación de entrada ${entry.json.id} falló (cantidad=${qty}, ubicación=${loc.id}): HTTP ${confirmed.status}; respuesta=${JSON.stringify(confirmed.json)}`
+      );
     }
   }
   return pid;
