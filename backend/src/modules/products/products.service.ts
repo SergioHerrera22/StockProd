@@ -269,6 +269,38 @@ export async function bulkDeleteProducts(user: AuthUser, ip: string | undefined,
 }
 
 
+/** Actualización puntual de código de barras desde el listado.
+ *  Evita enviar/reescribir el resto de los datos del producto. */
+export async function updateProductBarcode(
+  user: AuthUser, ip: string | undefined, id: number, barcode: string
+): Promise<void> {
+  const cleanBarcode = barcode.trim() || null;
+  await withTx(async (c) => {
+    const product = await c.query<{ id: number; barcode: string | null }>(
+      'SELECT id, barcode FROM products WHERE id = $1 FOR UPDATE', [id]
+    );
+    if (!product.rows[0]) throw ApiError.notFound('Producto no encontrado');
+
+    if (cleanBarcode) {
+      const duplicate = await c.query<{ id: number }>(
+        'SELECT id FROM products WHERE barcode = $1 AND id <> $2 LIMIT 1',
+        [cleanBarcode, id]
+      );
+      if (duplicate.rows[0]) throw ApiError.conflict('Ese código de barras ya está asignado a otro producto');
+    }
+
+    await c.query('UPDATE products SET barcode = $1, updated_at = now() WHERE id = $2', [cleanBarcode, id]);
+    await writeAudit(c, {
+      userId: user.id,
+      action: 'PRODUCT_BARCODE_UPDATE',
+      entity: 'product',
+      entityId: id,
+      details: { previousBarcode: product.rows[0].barcode, barcode: cleanBarcode },
+      ip,
+    });
+  });
+}
+
 export async function updateProduct(user: AuthUser, ip: string | undefined, id: number, input: Partial<ProductInput>) {
   if (input.unit) assertUnit(input.unit);
   return withTx(async (c) => {
