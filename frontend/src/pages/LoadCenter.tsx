@@ -151,8 +151,12 @@ export default function LoadCenter() {
     const esc=(s:string)=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     const labels=items.flatMap((p)=>Array.from({length:Math.max(1,Math.min(20,labelCopies))},()=> {
       const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-      try { JsBarcode(svg,p.barcode!,{format:/^\d{13}$/.test(p.barcode!)?'EAN13':'CODE128',height:35,width:1.35,displayValue:true,margin:2}); }
-      catch { return ''; }
+      try {
+        if (/^\d{13}$/.test(p.barcode!)) {
+          try { JsBarcode(svg,p.barcode!,{format:'EAN13',height:35,width:1.35,displayValue:true,margin:2}); }
+          catch { JsBarcode(svg,p.barcode!,{format:'CODE128',height:35,width:1.35,displayValue:true,margin:2}); }
+        } else JsBarcode(svg,p.barcode!,{format:'CODE128',height:35,width:1.35,displayValue:true,margin:2});
+      } catch { return ''; }
       return `<div class="label"><b>${esc(p.name)}</b><small>${esc(p.code)}</small>${p.brand?'<small>'+esc(p.brand)+'</small>':''}${svg.outerHTML}</div>`;
     })).join('');
     const win=window.open('','_blank','width=1000,height=800');
@@ -176,7 +180,7 @@ export default function LoadCenter() {
     {tab==='home' && <>
       {!canWrite && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Tenés acceso de consulta. Para cargar o modificar productos necesitás el permiso products.write.</div>}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <ActionCard icon="📄" title="Importar catálogo" label="Importar Excel / CSV / HTML" description="Importación existente con revisión previa. También admite exportes HTML con CODART, DESC y RAZON desde la edición masiva." disabled={!canWrite} onClick={()=>navigate('/productos?accion=importar')}/>
+        <ActionCard icon="📄" title="Importar catálogo" label="Importar Excel / CSV / HTML" description="Importación Excel/CSV con revisión previa. Para actualización de datos desde exportes HTML CODART, DESC y RAZON, usá Edición masiva." disabled={!canWrite} onClick={()=>navigate('/productos?accion=importar')}/>
         <ActionCard icon="📷" title="Carga continua de barras" label="Abrir lector continuo" description="Identificá cada producto, escaneá su EAN con lector USB/Bluetooth o generá un EAN-13 interno." disabled={!canWrite} onClick={()=>navigate('/productos?accion=barras')}/>
         <ActionCard icon="➕" title="Alta individual" label="Crear producto" description="Alta con descripción, unidad, categoría y proveedores asociados." disabled={!canWrite} onClick={()=>navigate('/productos?accion=nuevo')}/>
         <ActionCard icon="🔎" title="Productos pendientes" label="Revisar calidad" description="Detectá productos activos sin barras, proveedor o descripción." onClick={()=>setTab('quality')}/>
