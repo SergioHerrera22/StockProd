@@ -215,6 +215,8 @@ export default function Products() {
   // Acciones profundas invocadas desde el Centro de Carga.
   useEffect(() => {
     const action = searchParams.get('accion');
+    const initialQuery = searchParams.get('q');
+    if (initialQuery) { setQ(initialQuery); setPage(1); }
     if (!action) return;
     if (action === 'importar' && can('products.write')) setImportOpen(true);
     if (action === 'barras' && can('products.write')) openBarcodeBatch();
