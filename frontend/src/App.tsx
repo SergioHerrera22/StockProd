@@ -8,6 +8,7 @@ import { hasPermission, type Permission } from './lib/permissions';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Products from './pages/Products';
+import LoadCenter from './pages/LoadCenter';
 import Suppliers from './pages/Suppliers';
 import StockPage from './pages/Stock';
 import Deliveries from './pages/Deliveries';
@@ -74,6 +75,7 @@ export default function App() {
               <Route path="entregas/:id" element={<RequirePerm perm="deliveries.read"><DeliveryDetail /></RequirePerm>} />
               <Route path="stock" element={<RequirePerm perm="stock.read"><StockPage /></RequirePerm>} />
               <Route path="productos" element={<RequirePerm perm="products.read"><Products /></RequirePerm>} />
+              <Route path="centro-carga" element={<RequirePerm perm="products.read"><LoadCenter /></RequirePerm>} />
               <Route path="proveedores" element={<RequirePerm perm="suppliers.manage"><Suppliers /></RequirePerm>} />
               <Route path="entradas" element={<RequirePerm perm="entries.read"><Entries /></RequirePerm>} />
               <Route path="transferencias" element={<RequirePerm perm="transfers.read"><Transfers /></RequirePerm>} />

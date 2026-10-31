@@ -12,6 +12,7 @@ import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 import { CameraScanner } from '../components/CameraScanner';
 import Barcode from '../components/Barcode';
+import { useSearchParams } from 'react-router-dom';
 
 const UNIT_LABELS: Record<string, string> = {
   UNIDAD: 'Unidad', LITRO: 'Litro', KG: 'Kilogramo', METRO: 'Metro', OTRO: 'Otro',
@@ -161,6 +162,7 @@ const emptyForm = {
 };
 
 export default function Products() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const can = useAuth((s) => s.can);
   const toast = useToast();
   const confirm = useConfirm();
@@ -194,6 +196,39 @@ export default function Products() {
   const [genBusy, setGenBusy] = useState(false);
   // Escaneo del buscador del listado: localizar/editar un producto leyendo su barras
   const [searchScanOpen, setSearchScanOpen] = useState(false);
+  const [barcodeEditId, setBarcodeEditId] = useState<number | null>(null);
+  const [barcodeDraft, setBarcodeDraft] = useState('');
+  const [barcodeSaving, setBarcodeSaving] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  // Modo continuo para completar códigos con lector USB/Bluetooth (teclado).
+  const [barcodeBatchOpen, setBarcodeBatchOpen] = useState(false);
+  const [batchLookup, setBatchLookup] = useState('');
+  const [batchBarcode, setBatchBarcode] = useState('');
+  const [batchProduct, setBatchProduct] = useState<Product | null>(null);
+  const [batchMatches, setBatchMatches] = useState<Product[]>([]);
+  const [batchSearching, setBatchSearching] = useState(false);
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
+  const batchLookupRef = useRef<HTMLInputElement>(null);
+  const batchBarcodeRef = useRef<HTMLInputElement>(null);
+
+  // Acciones profundas invocadas desde el Centro de Carga.
+  useEffect(() => {
+    const action = searchParams.get('accion');
+    if (!action) return;
+    if (action === 'importar' && can('products.write')) setImportOpen(true);
+    if (action === 'barras' && can('products.write')) openBarcodeBatch();
+    if (action === 'nuevo' && can('products.write')) openNew();
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('accion');
+      return next;
+    }, { replace: true });
+    // Se procesa una sola vez al entrar con una acción explícita.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
 
   // ===== Etiquetas de código de barras (mejora 12) =====
   const [labelsTarget, setLabelsTarget] = useState<Product | null>(null);
@@ -381,6 +416,122 @@ export default function Products() {
     } catch (e) {
       toast.error((e as Error).message);
     }
+  }
+
+  function startBarcodeEdit(p: Product) {
+    setBarcodeEditId(p.id);
+    setBarcodeDraft(p.barcode ?? '');
+    window.setTimeout(() => barcodeInputRef.current?.focus(), 0);
+  }
+
+  function cancelBarcodeEdit() {
+    if (barcodeSaving) return;
+    setBarcodeEditId(null);
+    setBarcodeDraft('');
+  }
+
+  async function saveBarcode(p: Product) {
+    if (barcodeSaving) return;
+    const barcode = barcodeDraft.trim();
+    if (barcode.length > 60) {
+      toast.error('El código de barras no puede superar los 60 caracteres');
+      return;
+    }
+    if (barcode === (p.barcode ?? '')) {
+      cancelBarcodeEdit();
+      return;
+    }
+    setBarcodeSaving(true);
+    try {
+      await api('/products/' + p.id + '/barcode', { method: 'PATCH', body: { barcode } });
+      setRows((current) => current.map((row) => row.id === p.id ? { ...row, barcode: barcode || null } : row));
+      setBarcodeEditId(null);
+      setBarcodeDraft('');
+      toast.success(barcode ? 'Código de barras guardado' : 'Código de barras eliminado');
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBarcodeSaving(false);
+    }
+  }
+
+
+  function openBarcodeBatch() {
+    setBatchLookup(''); setBatchBarcode(''); setBatchProduct(null); setBatchMatches([]);
+    setBarcodeBatchOpen(true);
+    window.setTimeout(() => batchLookupRef.current?.focus(), 50);
+  }
+
+  function closeBarcodeBatch() {
+    if (batchSaving || batchSearching) return;
+    setBarcodeBatchOpen(false); setBatchProduct(null); setBatchMatches([]);
+  }
+
+  async function findBatchProduct() {
+    const term = batchLookup.trim();
+    if (!term || batchSearching) return;
+    setBatchSearching(true); setBatchMatches([]);
+    try {
+      const result = await api<{ products: Product[]; total: number }>(
+        '/products' + qs({ q: term, active: '', page: 1, pageSize: 100 })
+      );
+      const matches = result.products ?? [];
+      const exact = matches.find((p) =>
+        p.code.toLocaleLowerCase() === term.toLocaleLowerCase() ||
+        (p.barcode ?? '').toLocaleLowerCase() === term.toLocaleLowerCase()
+      );
+      if (exact || matches.length === 1) {
+        setBatchProduct(exact ?? matches[0]);
+        setBatchBarcode('');
+        window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+      } else if (matches.length > 1) {
+        setBatchMatches(matches);
+      } else {
+        toast.error('No se encontró el producto. Probá con su código interno o descripción.');
+        setBatchLookup('');
+        window.setTimeout(() => batchLookupRef.current?.focus(), 50);
+      }
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBatchSearching(false); }
+  }
+
+  function chooseBatchProduct(product: Product) {
+    setBatchProduct(product); setBatchMatches([]); setBatchBarcode('');
+    window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+  }
+
+
+  async function generateBatchBarcode() {
+    if (batchGenerating || batchSaving) return;
+    setBatchGenerating(true);
+    try {
+      const result = await api<{ barcode: string }>('/products/barcode/new');
+      setBatchBarcode(result.barcode);
+      toast.success('EAN-13 generado. Presioná Enter para asignarlo al producto.');
+      window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBatchGenerating(false);
+    }
+  }
+
+  async function saveBatchBarcode() {
+    if (!batchProduct || batchSaving) return;
+    const barcode = batchBarcode.trim();
+    if (!barcode) { toast.error('Escaneá o escribí el código de barras antes de guardar.'); return; }
+    if (barcode.length > 60) { toast.error('El código de barras no puede superar los 60 caracteres.'); return; }
+    setBatchSaving(true);
+    try {
+      await api('/products/' + batchProduct.id + '/barcode', { method: 'PATCH', body: { barcode } });
+      setRows((current) => current.map((row) => row.id === batchProduct.id ? { ...row, barcode } : row));
+      toast.success('Código guardado: ' + batchProduct.code);
+      setBatchProduct(null); setBatchBarcode(''); setBatchLookup(''); setBatchMatches([]);
+      window.setTimeout(() => batchLookupRef.current?.focus(), 60);
+    } catch (e) {
+      toast.error((e as Error).message);
+      window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+    } finally { setBatchSaving(false); }
   }
 
   async function save() {
@@ -624,7 +775,49 @@ export default function Products() {
         {p.brand && <div className="text-xs text-slate-400">{p.brand}</div>}
       </div>
     ) },
-    { key: 'barcode', label: 'Barras', render: (p) => <span className="font-mono text-xs text-slate-400">{p.barcode ?? '—'}</span> },
+    { key: 'barcode', label: 'Barras', render: (p) => (
+      <div className="flex min-w-[190px] items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        {barcodeEditId === p.id ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-1"
+            onSubmit={(e) => { e.preventDefault(); void saveBarcode(p); }}
+          >
+            <Input
+              ref={barcodeInputRef}
+              value={barcodeDraft}
+              onChange={(e) => setBarcodeDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') cancelBarcodeEdit(); }}
+              placeholder="Escanear o escribir"
+              aria-label={'Código de barras de ' + p.name}
+              maxLength={60}
+              className="min-w-0 px-2 py-1 font-mono text-xs"
+              disabled={barcodeSaving}
+            />
+            <Button size="sm" type="submit" loading={barcodeSaving} title="Guardar código (Enter)">↵</Button>
+            <Button size="sm" type="button" variant="ghost" onClick={cancelBarcodeEdit} disabled={barcodeSaving} title="Cancelar">×</Button>
+          </form>
+        ) : (
+          <>
+            <span className={'min-w-0 truncate font-mono text-xs ' + (p.barcode ? 'text-slate-600' : 'text-amber-600')}>
+              {p.barcode ?? 'Sin código'}
+            </span>
+            {can('products.write') && (
+              <button
+                type="button"
+                onClick={() => startBarcodeEdit(p)}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                title={p.barcode ? 'Editar código de barras' : 'Asignar código de barras'}
+                aria-label={p.barcode ? 'Editar código de barras de ' + p.name : 'Asignar código de barras a ' + p.name}
+              >
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M3 5v14M6 5v14M9 5v14M13 5v14M16 5v14M18 5v14M21 5v14" />
+                </svg>
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    ) },
     { key: 'category_name', label: 'Categoría', sortable: true, render: (p) => p.category_name ?? '—' },
     { key: 'unit', label: 'Unidad', render: (p) => UNIT_LABELS[p.unit] ?? p.unit },
     { key: 'min_stock', label: 'Mín.', align: 'right', render: (p) => fmtQty(p.min_stock) },
@@ -661,6 +854,7 @@ export default function Products() {
           <>
             <Button variant="secondary" onClick={doExport}>⬇ Exportar CSV</Button>
             {can('products.write') && <Button variant="secondary" onClick={() => setImportOpen(true)}>⬆ Importar</Button>}
+            {can('products.write') && <Button variant="secondary" onClick={openBarcodeBatch}>▥ Carga rápida de barras</Button>}
             {can('products.write') && <Button onClick={openNew}>+ Nuevo producto</Button>}
           </>
         }
@@ -821,6 +1015,73 @@ export default function Products() {
             <Textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </Field>
         </FormRow>
+      </Modal>
+
+
+      {/* Carga continua de códigos de barras */}
+      <Modal open={barcodeBatchOpen} onClose={closeBarcodeBatch} title="Carga rápida de códigos de barras" width="lg">
+        <div className="space-y-4">
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+            <strong>Lector USB/Bluetooth:</strong> identificá el producto por código interno o descripción y presioná Enter. Después escaneá su código de barras y presioná Enter para guardarlo. El sistema vuelve al buscador para continuar con el siguiente producto.
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">1. Identificar producto</label>
+            <form onSubmit={(e) => { e.preventDefault(); void findBatchProduct(); }}>
+              <div className="flex gap-2">
+                <Input ref={batchLookupRef} value={batchLookup} onChange={(e) => setBatchLookup(e.target.value)}
+                  placeholder="Escaneá el código interno o escribí código/nombre…" autoComplete="off"
+                  disabled={batchSearching || batchSaving || !!batchProduct} />
+                <Button type="submit" loading={batchSearching} disabled={!batchLookup.trim() || !!batchProduct}>Buscar</Button>
+              </div>
+            </form>
+          </div>
+          {batchMatches.length > 0 && (
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200">
+              {batchMatches.map((product) => (
+                <button key={product.id} type="button" onClick={() => chooseBatchProduct(product)}
+                  className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left last:border-0 hover:bg-slate-50">
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-slate-700">{product.name}</span>
+                    <span className="block font-mono text-xs text-slate-400">{product.code} · {product.barcode || 'Sin barras'}</span>
+                  </span>
+                  <span className="text-xs font-semibold text-brand-700">Elegir</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {batchProduct && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Producto seleccionado</span>
+                  <p className="truncate font-semibold text-slate-800">{batchProduct.name}</p>
+                  <p className="font-mono text-xs text-slate-500">Código interno: {batchProduct.code}</p>
+                </div>
+                <Button size="sm" variant="ghost" disabled={batchSaving} onClick={() => {
+                  setBatchProduct(null); setBatchBarcode(''); window.setTimeout(() => batchLookupRef.current?.focus(), 50);
+                }}>Cambiar</Button>
+              </div>
+              <form onSubmit={(e) => { e.preventDefault(); void saveBatchBarcode(); }}>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">2. Escanear o escribir código de barras</label>
+                <div className="flex gap-2">
+                  <Input ref={batchBarcodeRef} value={batchBarcode} onChange={(e) => setBatchBarcode(e.target.value)}
+                    placeholder="Escaneá o escribí el código…" autoComplete="off" maxLength={60} disabled={batchSaving || batchGenerating} />
+                  <Button type="submit" loading={batchSaving} disabled={!batchBarcode.trim() || batchGenerating}>Guardar ↵</Button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-500">El código se guarda en este producto y queda registrado en auditoría. No cambia el stock.</p>
+                  <Button type="button" size="sm" variant="secondary" loading={batchGenerating}
+                    disabled={batchSaving || batchGenerating} onClick={() => void generateBatchBarcode()}>
+                    Generar EAN-13
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+          <div className="flex justify-end border-t border-slate-100 pt-3">
+            <Button variant="secondary" onClick={closeBarcodeBatch} disabled={batchSaving || batchSearching}>Cerrar carga</Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Modal detalle con stock por ubicación */}

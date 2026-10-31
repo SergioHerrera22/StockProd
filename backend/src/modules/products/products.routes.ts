@@ -5,7 +5,7 @@ import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { pageParams, intParam, strParam, pathId } from '../../lib/pagination';
-import { createProduct, checkDuplicates, generateBarcode, updateProduct, importProducts, ProductInput, scanDuplicates, bulkDeleteProducts } from './products.service';
+import { createProduct, checkDuplicates, generateBarcode, updateProduct, updateProductBarcode, importProducts, ProductInput, scanDuplicates, bulkDeleteProducts } from './products.service';
 
 const router = Router();
 router.use(authRequired, requirePerm('products.read'));
@@ -211,6 +211,17 @@ router.post(
     }
     const id = await createProduct(req.user!, req.ip, input);
     res.status(201).json({ id });
+  })
+);
+
+router.patch(
+  '/:id/barcode',
+  requirePerm('products.write'),
+  asyncH(async (req, res) => {
+    const id = pathId(req.params.id);
+    const input = z.object({ barcode: z.string().trim().max(60) }).parse(req.body);
+    await updateProductBarcode(req.user!, req.ip, id, input.barcode);
+    res.json({ ok: true, barcode: input.barcode || null });
   })
 );
 
