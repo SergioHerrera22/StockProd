@@ -205,11 +205,20 @@ async function main() {
   ok(Number(stockNow.find((s) => s.location_id === suc1.id)?.quantity) === 15, 'Sucursal 1 recibió 15');
   ok(Number(stockNow.find((s) => s.location_id === suc2.id)?.quantity) === 0, 'Sucursal 2 sigue en cero (stocks independientes)');
 
-  const doubleReceive = await api('POST', `/transfers/${transfer.json.id}/receive`, {
+  const secondReceive = await api('POST', `/transfers/${transfer.json.id}/receive`, {
     token: TE,
     body: { items: [{ itemId: tDetail.items[0].id, quantityReceived: 5 }] },
   });
-  ok(doubleReceive.status === 409, 'Doble recepción bloqueada (409)');
+  ok(secondReceive.status === 200 && secondReceive.json.status === 'RECIBIDO', 'Segunda recepción acumulativa completa la transferencia');
+
+  stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
+  ok(Number(stockNow.find((s) => s.location_id === suc1.id)?.quantity) === 20, 'Destino acumula 15 + 5 sin sobrescribir ni duplicar');
+
+  const doubleReceive = await api('POST', `/transfers/${transfer.json.id}/receive`, {
+    token: TE,
+    body: { items: [{ itemId: tDetail.items[0].id, quantityReceived: 1 }] },
+  });
+  ok(doubleReceive.status === 409, 'Recepción posterior al cierre bloqueada (409)');
 
   // ---------- Inventario físico ----------
   console.log('[7] Inventario físico');
@@ -217,14 +226,14 @@ async function main() {
   ok(count.status === 201 && count.json.number.startsWith('INV-'), `Inventario ${count.json?.number} creado`);
   const cDetail = (await api('GET', `/counts/${count.json.id}`, { token: T })).json.count;
   const cItem = cDetail.items.find((i) => i.product_id === pid);
-  ok(Number(cItem.system_quantity) === 15, 'Snapshot del sistema correcto (15)');
+  ok(Number(cItem.system_quantity) === 20, 'Snapshot del sistema correcto (20)');
 
-  await api('POST', `/counts/${count.json.id}/items`, { token: T, body: { items: [{ itemId: cItem.id, countedQuantity: 14 }] } });
+  await api('POST', `/counts/${count.json.id}/items`, { token: T, body: { items: [{ itemId: cItem.id, countedQuantity: 19 }] } });
   const applied = await api('POST', `/counts/${count.json.id}/apply`, { token: TE, body: { reason: 'Diferencia de recuento físico' } });
   ok(applied.status === 200 && applied.json.adjustments === 1, 'Ajuste aplicado (1 producto)');
 
   stockNow = (await api('GET', `/products/${pid}`, { token: T })).json.stock;
-  ok(Number(stockNow.find((s) => s.location_id === suc1.id)?.quantity) === 14, 'Stock ajustado a lo contado (14)');
+  ok(Number(stockNow.find((s) => s.location_id === suc1.id)?.quantity) === 19, 'Stock ajustado a lo contado (19)');
 
   // ---------- Movimientos ----------
   console.log('[8] Historial de movimientos');
