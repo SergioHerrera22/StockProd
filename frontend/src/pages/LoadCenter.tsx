@@ -5,7 +5,6 @@ type ActionCardProps = {
   icon: string;
   title: string;
   description: string;
-  action: string;
   label: string;
   disabled?: boolean;
   onClick: () => void;
