@@ -216,7 +216,7 @@ router.post('/bulk-edit/apply', requirePerm('products.write'), asyncH(async (req
         await c.query(`
           INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
           VALUES($1,$2,NOT EXISTS(SELECT 1 FROM product_suppliers WHERE product_id=$1 AND is_primary))
-          ON CONFLICT(product_id,supplier_id) DO NOTHING
+          ON CONFLICT(product_id,supplier_id) DO UPDATE SET is_primary = product_suppliers.is_primary OR NOT EXISTS(SELECT 1 FROM product_suppliers WHERE product_id=$1 AND is_primary)
         `, [current.rows[0].id, supplierId]);
       }
       await writeAudit(c, { userId: req.user!.id, action: 'PRODUCT_BULK_EDIT', entity: 'product',
