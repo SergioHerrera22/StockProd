@@ -194,6 +194,11 @@ export default function Products() {
   const [genBusy, setGenBusy] = useState(false);
   // Escaneo del buscador del listado: localizar/editar un producto leyendo su barras
   const [searchScanOpen, setSearchScanOpen] = useState(false);
+  const [barcodeEditId, setBarcodeEditId] = useState<number | null>(null);
+  const [barcodeDraft, setBarcodeDraft] = useState('');
+  const [barcodeSaving, setBarcodeSaving] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+
 
   // ===== Etiquetas de código de barras (mejora 12) =====
   const [labelsTarget, setLabelsTarget] = useState<Product | null>(null);
@@ -380,6 +385,43 @@ export default function Products() {
       }
     } catch (e) {
       toast.error((e as Error).message);
+    }
+  }
+
+  function startBarcodeEdit(p: Product) {
+    setBarcodeEditId(p.id);
+    setBarcodeDraft(p.barcode ?? '');
+    window.setTimeout(() => barcodeInputRef.current?.focus(), 0);
+  }
+
+  function cancelBarcodeEdit() {
+    if (barcodeSaving) return;
+    setBarcodeEditId(null);
+    setBarcodeDraft('');
+  }
+
+  async function saveBarcode(p: Product) {
+    if (barcodeSaving) return;
+    const barcode = barcodeDraft.trim();
+    if (barcode.length > 60) {
+      toast.error('El código de barras no puede superar los 60 caracteres');
+      return;
+    }
+    if (barcode === (p.barcode ?? '')) {
+      cancelBarcodeEdit();
+      return;
+    }
+    setBarcodeSaving(true);
+    try {
+      await api('/products/' + p.id + '/barcode', { method: 'PATCH', body: { barcode } });
+      setRows((current) => current.map((row) => row.id === p.id ? { ...row, barcode: barcode || null } : row));
+      setBarcodeEditId(null);
+      setBarcodeDraft('');
+      toast.success(barcode ? 'Código de barras guardado' : 'Código de barras eliminado');
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBarcodeSaving(false);
     }
   }
 
@@ -624,7 +666,49 @@ export default function Products() {
         {p.brand && <div className="text-xs text-slate-400">{p.brand}</div>}
       </div>
     ) },
-    { key: 'barcode', label: 'Barras', render: (p) => <span className="font-mono text-xs text-slate-400">{p.barcode ?? '—'}</span> },
+    { key: 'barcode', label: 'Barras', render: (p) => (
+      <div className="flex min-w-[190px] items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        {barcodeEditId === p.id ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-1"
+            onSubmit={(e) => { e.preventDefault(); void saveBarcode(p); }}
+          >
+            <Input
+              ref={barcodeInputRef}
+              value={barcodeDraft}
+              onChange={(e) => setBarcodeDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') cancelBarcodeEdit(); }}
+              placeholder="Escanear o escribir"
+              aria-label={'Código de barras de ' + p.name}
+              maxLength={60}
+              className="min-w-0 px-2 py-1 font-mono text-xs"
+              disabled={barcodeSaving}
+            />
+            <Button size="sm" type="submit" loading={barcodeSaving} title="Guardar código (Enter)">↵</Button>
+            <Button size="sm" type="button" variant="ghost" onClick={cancelBarcodeEdit} disabled={barcodeSaving} title="Cancelar">×</Button>
+          </form>
+        ) : (
+          <>
+            <span className={'min-w-0 truncate font-mono text-xs ' + (p.barcode ? 'text-slate-600' : 'text-amber-600')}>
+              {p.barcode ?? 'Sin código'}
+            </span>
+            {can('products.write') && (
+              <button
+                type="button"
+                onClick={() => startBarcodeEdit(p)}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                title={p.barcode ? 'Editar código de barras' : 'Asignar código de barras'}
+                aria-label={p.barcode ? 'Editar código de barras de ' + p.name : 'Asignar código de barras a ' + p.name}
+              >
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M3 5v14M6 5v14M9 5v14M13 5v14M16 5v14M18 5v14M21 5v14" />
+                </svg>
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    ) },
     { key: 'category_name', label: 'Categoría', sortable: true, render: (p) => p.category_name ?? '—' },
     { key: 'unit', label: 'Unidad', render: (p) => UNIT_LABELS[p.unit] ?? p.unit },
     { key: 'min_stock', label: 'Mín.', align: 'right', render: (p) => fmtQty(p.min_stock) },
