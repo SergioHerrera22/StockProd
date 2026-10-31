@@ -28,6 +28,7 @@ export default function Counts() {
 
   const [detail, setDetail] = useState<StockCount | null>(null);
   const [counted, setCounted] = useState<Record<number, string>>({});
+  const [countSearch, setCountSearch] = useState('');
   const [applyOpen, setApplyOpen] = useState(false);
   const [applyReason, setApplyReason] = useState('');
   const [voidOpen, setVoidOpen] = useState(false);
@@ -63,6 +64,7 @@ export default function Counts() {
     try {
       const res = await api<{ count: StockCount }>(`/counts/${c.id}`);
       setDetail(res.count);
+      setCountSearch('');
       const map: Record<number, string> = {};
       for (const it of res.count.items ?? []) {
         map[it.id] = it.counted_quantity === null ? '' : String(it.counted_quantity);
@@ -148,6 +150,13 @@ export default function Counts() {
     }
   }
 
+  const normalizedCountSearch = countSearch.trim().toLocaleLowerCase('es');
+  const filteredCountItems = (detail?.items ?? []).filter((it) => {
+    if (!normalizedCountSearch) return true;
+    const haystack = `${it.code ?? ''} ${it.name ?? ''}`.toLocaleLowerCase('es');
+    return haystack.includes(normalizedCountSearch);
+  });
+
   const columns: Column<StockCount>[] = [
     { key: 'number', label: 'N°', render: (c) => <span className="font-mono font-semibold text-brand-700">{c.number}</span> },
     { key: 'created_at', label: 'Fecha', render: (c) => fmtDateTime(c.created_at) },
@@ -232,7 +241,20 @@ export default function Counts() {
         {!detail ? (
           <div className="flex justify-center py-8"><Spinner /></div>
         ) : (
-          <div className="max-h-[55vh] overflow-y-auto">
+          <div>
+            <div className="sticky top-0 z-10 mb-3 space-y-2 bg-white pb-2">
+              <Input
+                value={countSearch}
+                onChange={(e) => setCountSearch(e.target.value)}
+                placeholder="Buscar producto por código o descripción…"
+                aria-label="Buscar productos del inventario"
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">
+                {filteredCountItems.length} de {(detail.items ?? []).length} productos · Los cambios siguen siendo provisionales hasta aplicar el inventario.
+              </p>
+            </div>
+            <div className="max-h-[48vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-white">
                 <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
@@ -243,7 +265,7 @@ export default function Counts() {
                 </tr>
               </thead>
               <tbody>
-                {(detail.items ?? []).map((it) => {
+                {filteredCountItems.map((it) => {
                   const val = counted[it.id];
                   const countedVal = val === undefined || val === '' ? null : Number(val);
                   const sys = Number(it.system_quantity);
@@ -281,6 +303,10 @@ export default function Counts() {
                 })}
               </tbody>
             </table>
+            {filteredCountItems.length === 0 && (
+              <p className="py-8 text-center text-sm text-slate-400">No se encontraron productos con esa búsqueda.</p>
+            )}
+            </div>
           </div>
         )}
       </Modal>
