@@ -77,20 +77,27 @@ export async function applyStockChange(client: PoolClient, p: StockChangeParams)
          AND location_id = $2
          AND $3 >= 0
          AND $3 >= reserved_quantity
-       RETURNING quantity AS balance_before, $3 AS balance_after
+       -- UPDATE ... RETURNING quantity devuelve el valor NUEVO, no el anterior.
+       -- El saldo anterior ya fue leído y bloqueado arriba en esta transacción.
+       RETURNING $12::numeric AS balance_before, quantity AS balance_after
      ),
      mov AS (
        INSERT INTO stock_movements
           (product_id, location_id, type, quantity, balance_before, balance_after,
            reference_type, reference_id, reference_number, user_id, reason, notes)
-       SELECT $1, $2, $4, $5, balance_before, balance_after, $6, $7, $8, $9, $10, $11
+       SELECT $1, $2, $4, $5, upd.balance_before, upd.balance_after, $6, $7, $8, $9, $10, $11
        FROM upd
+       RETURNING id
      )
-     SELECT balance_before, balance_after FROM upd`,
+     -- La unión fuerza a que la operación solo se considere exitosa si se
+     -- insertó también su movimiento de auditoría en la misma transacción.
+     SELECT upd.balance_before, upd.balance_after
+     FROM upd
+     INNER JOIN mov ON true`,
     [
       p.productId, p.locationId, after, p.type, qty,
       p.referenceType, p.referenceId, p.referenceNumber ?? null,
-      p.userId, p.reason ?? null, p.notes ?? null,
+      p.userId, p.reason ?? null, p.notes ?? null, before,
     ]
   );
 
