@@ -12,6 +12,7 @@ import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 import { CameraScanner } from '../components/CameraScanner';
 import Barcode from '../components/Barcode';
+import { useSearchParams } from 'react-router-dom';
 
 const UNIT_LABELS: Record<string, string> = {
   UNIDAD: 'Unidad', LITRO: 'Litro', KG: 'Kilogramo', METRO: 'Metro', OTRO: 'Otro',
@@ -161,6 +162,7 @@ const emptyForm = {
 };
 
 export default function Products() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const can = useAuth((s) => s.can);
   const toast = useToast();
   const confirm = useConfirm();
@@ -209,6 +211,22 @@ export default function Products() {
   const [batchGenerating, setBatchGenerating] = useState(false);
   const batchLookupRef = useRef<HTMLInputElement>(null);
   const batchBarcodeRef = useRef<HTMLInputElement>(null);
+
+  // Acciones profundas invocadas desde el Centro de Carga.
+  useEffect(() => {
+    const action = searchParams.get('accion');
+    if (!action) return;
+    if (action === 'importar' && can('products.write')) setImportOpen(true);
+    if (action === 'barras' && can('products.write')) openBarcodeBatch();
+    if (action === 'nuevo' && can('products.write')) openNew();
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('accion');
+      return next;
+    }, { replace: true });
+    // Se procesa una sola vez al entrar con una acción explícita.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
 
 
