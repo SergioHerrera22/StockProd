@@ -66,7 +66,7 @@ export default function LoadCenter() {
       const bytes=await file.arrayBuffer();
       let workbook:XLSX.WorkBook;
       if(/\.html?$/i.test(file.name)) {
-        const html=new TextDecoder('windows-1252').decode(bytes);
+        let html:string; try { html=new TextDecoder('utf-8',{fatal:true}).decode(bytes); } catch { html=new TextDecoder('windows-1252').decode(bytes); }
         const table=html.match(/<table[\s\S]*?<\/table>/i)?.[0];
         if(!table) throw new Error('No se encontró una tabla HTML en el archivo');
         workbook=XLSX.read(table,{type:'string'});
