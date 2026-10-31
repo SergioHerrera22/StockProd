@@ -282,6 +282,9 @@ export async function updateProductBarcode(
     if (!product.rows[0]) throw ApiError.notFound('Producto no encontrado');
 
     if (cleanBarcode) {
+      // Serializa asignaciones concurrentes del mismo código para evitar duplicados
+      // aunque dos usuarios intenten guardarlo prácticamente al mismo tiempo.
+      await c.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [cleanBarcode]);
       const duplicate = await c.query<{ id: number }>(
         'SELECT id FROM products WHERE barcode = $1 AND id <> $2 LIMIT 1',
         [cleanBarcode, id]
