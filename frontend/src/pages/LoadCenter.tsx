@@ -11,7 +11,7 @@ type QualityProduct = {
   brand:string|null; has_supplier:boolean; updated_at:string;
 };
 type BulkRow = { code:string; name?:string; description?:string; brand?:string; barcode?:string; supplier?:string };
-type PreviewRow = { code:string; id?:number; updatedAt?:string; status:'not_found'|'changes'|'unchanged'; changes:{field:string;from:unknown;to:unknown}[] };
+type PreviewRow = { code:string; id?:number; updatedAt?:string; status:'not_found'|'changes'|'unchanged'|'conflict'; changes:{field:string;from:unknown;to:unknown}[] };
 type CatalogProduct = { id:number; code:string; name:string; barcode:string|null; brand:string|null };
 
 const issueLabels:Record<Issue,string> = {
@@ -40,7 +40,7 @@ export default function LoadCenter() {
   const [qualityLoading,setQualityLoading]=useState(false);
   const [bulkRows,setBulkRows]=useState<BulkRow[]>([]);
   const [bulkPreview,setBulkPreview]=useState<PreviewRow[]>([]);
-  const [bulkTotals,setBulkTotals]=useState({found:0,notFound:0,changed:0,unchanged:0});
+  const [bulkTotals,setBulkTotals]=useState({found:0,notFound:0,changed:0,unchanged:0,conflicts:0});
   const [bulkBusy,setBulkBusy]=useState(false);
   const [bulkFileName,setBulkFileName]=useState('');
   const [labelQ,setLabelQ]=useState('');
@@ -203,7 +203,7 @@ export default function LoadCenter() {
       {bulkRows.length>0&&<><div className="max-h-56 overflow-auto rounded border"><table className="w-full text-xs"><thead><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Nombre</th><th className="p-2 text-left">Proveedor</th></tr></thead><tbody>{bulkRows.slice(0,30).map((r,i)=><tr key={i} className="border-t"><td className="p-2 font-mono">{r.code}</td><td className="p-2">{r.name??'—'}</td><td className="p-2">{r.supplier??'—'}</td></tr>)}</tbody></table></div>
       <button disabled={!canWrite||bulkBusy} onClick={()=>void previewBulk()} className="rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{bulkBusy?'Procesando…':'Comparar con catálogo'}</button></>}
       {bulkPreview.length>0&&<><div className="grid grid-cols-2 gap-2 md:grid-cols-4">{Object.entries(bulkTotals).map(([k,v])=><div key={k} className="rounded bg-slate-50 p-3"><div className="text-xs capitalize text-slate-500">{k}</div><b className="text-xl">{v}</b></div>)}</div>
-      <div className="max-h-72 overflow-auto rounded border"><table className="w-full text-xs"><thead><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Estado</th><th className="p-2 text-left">Diferencias</th></tr></thead><tbody>{bulkPreview.map((p,i)=><tr key={i} className="border-t"><td className="p-2 font-mono">{p.code}</td><td className="p-2">{p.status==='changes'?'Con cambios':p.status==='not_found'?'No encontrado':'Sin cambios'}</td><td className="p-2">{p.changes.map(c=>c.field).join(', ')||'—'}</td></tr>)}</tbody></table></div>
+      <div className="max-h-72 overflow-auto rounded border"><table className="w-full text-xs"><thead><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Estado</th><th className="p-2 text-left">Diferencias</th></tr></thead><tbody>{bulkPreview.map((p,i)=><tr key={i} className="border-t"><td className="p-2 font-mono">{p.code}</td><td className="p-2">{p.status==='changes'?'Con cambios':p.status==='not_found'?'No encontrado':p.status==='conflict'?'Conflicto de barras':'Sin cambios'}</td><td className="p-2">{p.changes.map(c=>c.field).join(', ')||'—'}</td></tr>)}</tbody></table></div>
       <button disabled={!canWrite||bulkBusy||!bulkTotals.changed} onClick={()=>void applyBulk()} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{bulkBusy?'Aplicando…':`Aplicar ${bulkTotals.changed} productos modificados`}</button></>}
     </section>}
 
