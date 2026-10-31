@@ -92,14 +92,18 @@ export default function LoadCenter() {
         const code=cell(codeCol).replace(/\.0+$/,'');
         if(!code) continue;
         const row:BulkRow={code};
-        if(descCol>=0 && cell(descCol)) row.name=cell(descCol);
+        if(descCol>=0 && cell(descCol)) row.description=cell(descCol).slice(0,2000);
         if(supplierCol>=0 && cell(supplierCol)) row.supplier=cell(supplierCol);
         if(brandCol>=0 && cell(brandCol)) row.brand=cell(brandCol);
         if(barcodeCol>=0 && cell(barcodeCol)) row.barcode=cell(barcodeCol);
         rows.push(row);
       }
       if(!rows.length) throw new Error('No se encontraron filas con código de artículo');
-      setBulkRows(rows);
+      const unique=new Map<string,BulkRow>();
+      for(const row of rows) if(!unique.has(row.code.toLowerCase())) unique.set(row.code.toLowerCase(),row);
+      const deduplicated=[...unique.values()];
+      if(deduplicated.length>1000) throw new Error('La edición masiva admite hasta 1.000 productos por lote. Dividí el archivo en partes.');
+      setBulkRows(deduplicated);
     } catch(e) { window.alert((e as Error).message); }
   }
 
@@ -187,7 +191,7 @@ export default function LoadCenter() {
       <div className="flex flex-wrap gap-3">{[['no_barcode','Sin barras',summary.no_barcode],['no_supplier','Sin proveedor',summary.no_supplier],['no_description','Sin descripción',summary.no_description]] .map(([key,label,count])=><div key={String(key)} className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">{label}</div><b className="text-xl">{count}</b></div>)}</div>
       <div className="flex flex-wrap gap-2"><select value={issue} onChange={(e)=>{setIssue(e.target.value as Issue);setQualityPage(1)}} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">{Object.entries(issueLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
         <input value={qualityQ} onChange={(e)=>{setQualityQ(e.target.value);setQualityPage(1)}} placeholder="Buscar por código o descripción" className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
-      {qualityLoading?<p className="py-8 text-center text-sm text-slate-500">Consultando catálogo…</p>:<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-slate-500"><th className="p-2">Código</th><th className="p-2">Producto</th><th className="p-2">Barras</th><th className="p-2">Proveedor</th><th className="p-2">Descripción</th><th/></tr></thead><tbody>{quality.map(p=><tr key={p.id} className="border-b border-slate-100"><td className="p-2 font-mono">{p.code}</td><td className="p-2">{p.name}</td><td className="p-2">{p.barcode?'Sí':'<escape>—</escape>'}</td><td className="p-2">{p.has_supplier?'Sí':'No'}</td><td className="p-2">{p.description?.trim()?'Sí':'No'}</td><td className="p-2"><button onClick={()=>navigate('/productos?q='+encodeURIComponent(p.code))} className="text-brand-700 underline">Abrir</button></td></tr>)}</tbody></table></div>}
+      {qualityLoading?<p className="py-8 text-center text-sm text-slate-500">Consultando catálogo…</p>:<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-slate-500"><th className="p-2">Código</th><th className="p-2">Producto</th><th className="p-2">Barras</th><th className="p-2">Proveedor</th><th className="p-2">Descripción</th><th/></tr></thead><tbody>{quality.map(p=><tr key={p.id} className="border-b border-slate-100"><td className="p-2 font-mono">{p.code}</td><td className="p-2">{p.name}</td><td className="p-2">{p.barcode?'Sí':'—'}</td><td className="p-2">{p.has_supplier?'Sí':'No'}</td><td className="p-2">{p.description?.trim()?'Sí':'No'}</td><td className="p-2"><button onClick={()=>navigate('/productos?q='+encodeURIComponent(p.code))} className="text-brand-700 underline">Abrir</button></td></tr>)}</tbody></table></div>}
       <div className="flex items-center justify-between text-sm"><span>{qualityTotal} resultados</span><div className="flex gap-2"><button disabled={qualityPage<=1} onClick={()=>setQualityPage(p=>p-1)} className="rounded border px-3 py-1 disabled:opacity-40">Anterior</button><span className="py-1">Página {qualityPage}</span><button disabled={qualityPage*25>=qualityTotal} onClick={()=>setQualityPage(p=>p+1)} className="rounded border px-3 py-1 disabled:opacity-40">Siguiente</button></div></div>
     </section>}
 
