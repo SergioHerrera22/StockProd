@@ -139,6 +139,12 @@ router.post('/bulk-edit/preview', requirePerm('products.write'), asyncH(async (r
     FROM products p WHERE lower(p.code)=ANY($1::text[])
   `, [codes]);
   const byCode = new Map(found.rows.map((p: Record<string, unknown>) => [String(p.code).toLowerCase(), p]));
+  const requestedBarcodes = rows.map((r) => r.barcode).filter((v): v is string => Boolean(v));
+  const barcodeMatches = requestedBarcodes.length ? await query(
+    'SELECT id,barcode FROM products WHERE barcode=ANY($1::text[])',
+    [requestedBarcodes]
+  ) : { rows: [] as Array<{id:number;barcode:string}> };
+  const barcodeOwners = new Map(barcodeMatches.rows.map((r: {id:number;barcode:string}) => [r.barcode,r.id]));
   const preview = rows.map((row) => {
     const current = byCode.get(row.code.toLowerCase());
     if (!current) return { code: row.code, status: 'not_found', changes: [] };
@@ -149,13 +155,17 @@ router.post('/bulk-edit/preview', requirePerm('products.write'), asyncH(async (r
       }
     }
     if (row.supplier) changes.push({ field: 'supplier', from: 'Se conservarán los vínculos actuales', to: row.supplier });
-    return { code: row.code, id: current.id, updatedAt: current.updated_at, status: changes.length ? 'changes' : 'unchanged', changes };
+    const barcodeOwner = row.barcode ? barcodeOwners.get(row.barcode) : undefined;
+    const barcodeConflict = barcodeOwner !== undefined && barcodeOwner !== current.id;
+    if (barcodeConflict) changes.push({ field: 'barcode_conflict', from: row.barcode, to: 'Ese código ya pertenece a otro producto' });
+    return { code: row.code, id: current.id, updatedAt: current.updated_at, status: barcodeConflict ? 'conflict' : changes.length ? 'changes' : 'unchanged', changes };
   });
   res.json({ preview, totals: {
     found: preview.filter((p) => p.status !== 'not_found').length,
     notFound: preview.filter((p) => p.status === 'not_found').length,
     changed: preview.filter((p) => p.status === 'changes').length,
     unchanged: preview.filter((p) => p.status === 'unchanged').length,
+    conflicts: preview.filter((p) => p.status === 'conflict').length,
   }});
 }));
 
