@@ -206,6 +206,7 @@ export default function Products() {
   const [batchMatches, setBatchMatches] = useState<Product[]>([]);
   const [batchSearching, setBatchSearching] = useState(false);
   const [batchSaving, setBatchSaving] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
   const batchLookupRef = useRef<HTMLInputElement>(null);
   const batchBarcodeRef = useRef<HTMLInputElement>(null);
 
@@ -454,7 +455,7 @@ export default function Products() {
     setBatchSearching(true); setBatchMatches([]);
     try {
       const result = await api<{ products: Product[]; total: number }>(
-        '/products' + qs({ q: term, active: '', page: 1, pageSize: 20 })
+        '/products' + qs({ q: term, active: '', page: 1, pageSize: 100 })
       );
       const matches = result.products ?? [];
       const exact = matches.find((p) =>
@@ -479,6 +480,22 @@ export default function Products() {
   function chooseBatchProduct(product: Product) {
     setBatchProduct(product); setBatchMatches([]); setBatchBarcode('');
     window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+  }
+
+
+  async function generateBatchBarcode() {
+    if (batchGenerating || batchSaving) return;
+    setBatchGenerating(true);
+    try {
+      const result = await api<{ barcode: string }>('/products/barcode/new');
+      setBatchBarcode(result.barcode);
+      toast.success('EAN-13 generado. Presioná Enter para asignarlo al producto.');
+      window.setTimeout(() => batchBarcodeRef.current?.focus(), 50);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBatchGenerating(false);
+    }
   }
 
   async function saveBatchBarcode() {
@@ -1030,10 +1047,16 @@ export default function Products() {
                 <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">2. Escanear o escribir código de barras</label>
                 <div className="flex gap-2">
                   <Input ref={batchBarcodeRef} value={batchBarcode} onChange={(e) => setBatchBarcode(e.target.value)}
-                    placeholder="Esperando lectura del lector…" autoComplete="off" maxLength={60} disabled={batchSaving} />
-                  <Button type="submit" loading={batchSaving} disabled={!batchBarcode.trim()}>Guardar ↵</Button>
+                    placeholder="Escaneá o escribí el código…" autoComplete="off" maxLength={60} disabled={batchSaving || batchGenerating} />
+                  <Button type="submit" loading={batchSaving} disabled={!batchBarcode.trim() || batchGenerating}>Guardar ↵</Button>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">El código se guarda en este producto y queda registrado en auditoría. No cambia el stock.</p>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-500">El código se guarda en este producto y queda registrado en auditoría. No cambia el stock.</p>
+                  <Button type="button" size="sm" variant="secondary" loading={batchGenerating}
+                    disabled={batchSaving || batchGenerating} onClick={() => void generateBatchBarcode()}>
+                    Generar EAN-13
+                  </Button>
+                </div>
               </form>
             </div>
           )}
