@@ -140,11 +140,14 @@ router.post('/bulk-edit/preview', requirePerm('products.write'), asyncH(async (r
   `, [codes]);
   const byCode = new Map(found.rows.map((p: Record<string, unknown>) => [String(p.code).toLowerCase(), p]));
   const requestedBarcodes = rows.map((r) => r.barcode).filter((v): v is string => Boolean(v));
-  const barcodeMatches = requestedBarcodes.length ? await query(
+  const barcodeMatches = requestedBarcodes.length ? await query<{id:number;barcode:string}>(
     'SELECT id,barcode FROM products WHERE barcode=ANY($1::text[])',
     [requestedBarcodes]
-  ) : { rows: [] as Array<{id:number;barcode:string}> };
-  const barcodeOwners = new Map(barcodeMatches.rows.map((r: {id:number;barcode:string}) => [r.barcode,r.id]));
+  ) : null;
+  const barcodeOwners = new Map<string, number>();
+  if (barcodeMatches) {
+    for (const owner of barcodeMatches.rows) barcodeOwners.set(owner.barcode, owner.id);
+  }
   const preview = rows.map((row) => {
     const current = byCode.get(row.code.toLowerCase());
     if (!current) return { code: row.code, status: 'not_found', changes: [] };
