@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { query, pool } from '../../db/pool';
+import { query, pool, withTx } from '../../db/pool';
+import { writeAudit } from '../../services/audit.service';
 import { ApiError } from '../../lib/errors';
 import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
@@ -83,6 +84,129 @@ router.get(
     res.send('\uFEFF' + [header, ...lines].join('\n'));
   })
 );
+
+
+/** Calidad del catálogo: paginado en servidor, nunca descarga el catálogo completo. */
+router.get('/quality', asyncH(async (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 25));
+  const issue = strParam(req.query.issue) || 'all';
+  const where = ["p.is_active = true"];
+  if (issue === 'no_barcode') where.push("(p.barcode IS NULL OR trim(p.barcode) = '')");
+  else if (issue === 'no_supplier') where.push("NOT EXISTS (SELECT 1 FROM product_suppliers ps WHERE ps.product_id = p.id)");
+  else if (issue === 'no_description') where.push("(p.description IS NULL OR trim(p.description) = '')");
+  else if (issue === 'multiple') where.push("(p.barcode IS NULL OR trim(p.barcode) = '' OR p.description IS NULL OR trim(p.description) = '' OR NOT EXISTS (SELECT 1 FROM product_suppliers ps WHERE ps.product_id = p.id))");
+  else if (issue !== 'all') throw ApiError.badRequest('Filtro de calidad inválido');
+  const q = strParam(req.query.q);
+  const params: unknown[] = [];
+  if (q) { params.push(`%${q}%`); where.push(`(p.code ILIKE ${params.length} OR p.name ILIKE ${params.length})`); }
+  const whereSql = where.join(' AND ');
+  const offset = (page - 1) * pageSize;
+  const result = await query(
+    `SELECT p.id,p.code,p.name,p.barcode,p.description,p.brand,p.updated_at,
+       EXISTS(SELECT 1 FROM product_suppliers ps WHERE ps.product_id=p.id) AS has_supplier,
+       COUNT(*) OVER() AS total
+     FROM products p WHERE ${whereSql}
+     ORDER BY p.name LIMIT ${pageSize} OFFSET ${offset}`,
+    params
+  );
+  const summary = await query(`
+    SELECT
+      COUNT(*) FILTER (WHERE p.is_active AND (p.barcode IS NULL OR trim(p.barcode)=''))::int AS no_barcode,
+      COUNT(*) FILTER (WHERE p.is_active AND (p.description IS NULL OR trim(p.description)=''))::int AS no_description,
+      COUNT(*) FILTER (WHERE p.is_active AND NOT EXISTS (SELECT 1 FROM product_suppliers ps WHERE ps.product_id=p.id))::int AS no_supplier
+    FROM products p
+  `);
+  res.json({ products: result.rows.map(({ total: _total, ...row }: Record<string, unknown>) => row),
+    total: result.rows[0] ? Number(result.rows[0].total) : 0, page, pageSize, summary: summary.rows[0] });
+}));
+
+const bulkEditRowSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  name: z.string().trim().min(2).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  brand: z.string().max(100).optional(),
+  barcode: z.string().max(60).optional(),
+  supplier: z.string().trim().min(2).max(180).optional(),
+});
+const bulkEditSchema = z.object({ rows: z.array(bulkEditRowSchema).min(1).max(1000) });
+
+router.post('/bulk-edit/preview', requirePerm('products.write'), asyncH(async (req, res) => {
+  const { rows } = bulkEditSchema.parse(req.body);
+  const codes = [...new Set(rows.map((r) => r.code.toLowerCase()))];
+  const found = await query(`
+    SELECT p.id,p.code,p.name,p.description,p.brand,p.barcode,p.updated_at
+    FROM products p WHERE lower(p.code)=ANY($1::text[])
+  `, [codes]);
+  const byCode = new Map(found.rows.map((p: Record<string, unknown>) => [String(p.code).toLowerCase(), p]));
+  const preview = rows.map((row) => {
+    const current = byCode.get(row.code.toLowerCase());
+    if (!current) return { code: row.code, status: 'not_found', changes: [] };
+    const changes: Array<{ field: string; from: unknown; to: unknown }> = [];
+    for (const field of ['name','description','brand','barcode'] as const) {
+      if (row[field] !== undefined && String(row[field] ?? '') !== String(current[field] ?? '')) {
+        changes.push({ field, from: current[field] ?? '', to: row[field] });
+      }
+    }
+    if (row.supplier) changes.push({ field: 'supplier', from: 'Se conservarán los vínculos actuales', to: row.supplier });
+    return { code: row.code, id: current.id, updatedAt: current.updated_at, status: changes.length ? 'changes' : 'unchanged', changes };
+  });
+  res.json({ preview, totals: {
+    found: preview.filter((p) => p.status !== 'not_found').length,
+    notFound: preview.filter((p) => p.status === 'not_found').length,
+    changed: preview.filter((p) => p.status === 'changes').length,
+    unchanged: preview.filter((p) => p.status === 'unchanged').length,
+  }});
+}));
+
+router.post('/bulk-edit/apply', requirePerm('products.write'), asyncH(async (req, res) => {
+  const input = z.object({ rows: z.array(bulkEditRowSchema.extend({ updatedAt: z.string().min(1) })).min(1).max(1000) }).parse(req.body);
+  let updated = 0, conflicts = 0, notFound = 0;
+  const conflictCodes: string[] = [];
+  await withTx(async (c) => {
+    for (const row of input.rows) {
+      const current = await c.query<{ id: number; updated_at: Date }>(
+        'SELECT id,updated_at FROM products WHERE lower(code)=lower($1) FOR UPDATE', [row.code]
+      );
+      if (!current.rows[0]) { notFound++; continue; }
+      if (new Date(current.rows[0].updated_at).getTime() !== new Date(row.updatedAt).getTime()) {
+        conflicts++; conflictCodes.push(row.code); continue;
+      }
+      await c.query(`
+        UPDATE products SET
+          name=COALESCE($1,name),
+          description=CASE WHEN $2::boolean THEN $3 ELSE description END,
+          brand=CASE WHEN $4::boolean THEN NULLIF($5,'') ELSE brand END,
+          barcode=CASE WHEN $6::boolean THEN NULLIF($7,'') ELSE barcode END,
+          updated_at=now()
+        WHERE id=$8
+      `, [row.name ?? null, row.description !== undefined, row.description ?? null,
+        row.brand !== undefined, row.brand ?? '', row.barcode !== undefined, row.barcode ?? '', current.rows[0].id]);
+      if (row.supplier) {
+        const existingSupplier = await c.query<{ id: number }>(
+          'SELECT id FROM suppliers WHERE lower(name)=lower($1) AND is_active LIMIT 1', [row.supplier]
+        );
+        let supplierId = existingSupplier.rows[0]?.id;
+        if (!supplierId) {
+          const createdSupplier = await c.query<{ id: number }>(
+            'INSERT INTO suppliers(name) VALUES($1) RETURNING id', [row.supplier]
+          );
+          supplierId = createdSupplier.rows[0].id;
+          await writeAudit(c, { userId: req.user!.id, action: 'SUPPLIER_CREATE_FROM_BULK_EDIT', entity: 'supplier', entityId: supplierId, details: { name: row.supplier }, ip: req.ip });
+        }
+        await c.query(`
+          INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
+          VALUES($1,$2,NOT EXISTS(SELECT 1 FROM product_suppliers WHERE product_id=$1 AND is_primary))
+          ON CONFLICT(product_id,supplier_id) DO NOTHING
+        `, [current.rows[0].id, supplierId]);
+      }
+      await writeAudit(c, { userId: req.user!.id, action: 'PRODUCT_BULK_EDIT', entity: 'product',
+        entityId: current.rows[0].id, details: { code: row.code, fields: Object.keys(row).filter((k) => !['code','updatedAt'].includes(k)) }, ip: req.ip });
+      updated++;
+    }
+  });
+  res.json({ updated, conflicts, notFound, conflictCodes });
+}));
 
 router.get(
   '/duplicates',
