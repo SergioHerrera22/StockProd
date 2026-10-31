@@ -238,9 +238,9 @@ async function main() {
   // ---------- Movimientos ----------
   console.log('[8] Historial de movimientos');
   const movs = (await api('GET', `/movements?productId=${pid}&pageSize=100`, { token: T })).json;
-  ok(movs.total === 5, `Historial completo y consistente (${movs.total} movimientos)`);
+  ok(movs.total === 6, `Historial completo y consistente (${movs.total} movimientos)`);
   const last = movs.movements[0];
-  ok(last.type === 'AJUSTE_NEG' && last.balance_after === 14, 'Último movimiento: ajuste con saldo anterior y posterior');
+  ok(last.type === 'AJUSTE_NEG' && Number(last.balance_before) === 20 && Number(last.balance_after) === 19, 'Último movimiento: ajuste con saldo anterior y posterior');
 
   // ---------- Entrega pendiente: reserva sin descontar hasta efectivizar ----------
   console.log('[8b] Entrega pendiente');
