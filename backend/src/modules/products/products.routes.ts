@@ -172,6 +172,14 @@ router.post('/bulk-edit/apply', requirePerm('products.write'), asyncH(async (req
       if (new Date(current.rows[0].updated_at).getTime() !== new Date(row.updatedAt).getTime()) {
         conflicts++; conflictCodes.push(row.code); continue;
       }
+      if (row.barcode) {
+        await c.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [row.barcode]);
+        const duplicateBarcode = await c.query(
+          'SELECT id FROM products WHERE barcode=$1 AND id<>$2 LIMIT 1',
+          [row.barcode, current.rows[0].id]
+        );
+        if (duplicateBarcode.rows[0]) { conflicts++; conflictCodes.push(row.code + ' (barras duplicadas)'); continue; }
+      }
       await c.query(`
         UPDATE products SET
           name=COALESCE($1,name),
@@ -183,6 +191,7 @@ router.post('/bulk-edit/apply', requirePerm('products.write'), asyncH(async (req
       `, [row.name ?? null, row.description !== undefined, row.description ?? null,
         row.brand !== undefined, row.brand ?? '', row.barcode !== undefined, row.barcode ?? '', current.rows[0].id]);
       if (row.supplier) {
+        await c.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['supplier:' + row.supplier.trim().toLowerCase()]);
         const existingSupplier = await c.query<{ id: number }>(
           'SELECT id FROM suppliers WHERE lower(name)=lower($1) AND is_active LIMIT 1', [row.supplier]
         );
