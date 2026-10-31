@@ -89,10 +89,12 @@ export default function LoadCenter() {
       const rows:BulkRow[]=[];
       for(const line of matrix.slice(1)) {
         const cell=(i:number)=>i<0?'':String((line as unknown[])[i]??'').replace(/[\u00A0\u200B\uFEFF]/g,' ').replace(/\s+/g,' ').trim();
+        const description=descCol<0?'':String((line as unknown[])[descCol]??'').replace(/[\u00A0\u200B\uFEFF]/g,' ').trim();
         const code=cell(codeCol).replace(/\.0+$/,'');
         if(!code) continue;
+        if(description.length>2000) throw new Error('La descripción del artículo '+code+' supera los 2.000 caracteres admitidos. No se recortó ningún dato.');
         const row:BulkRow={code};
-        if(descCol>=0 && cell(descCol)) row.description=cell(descCol).slice(0,2000);
+        if(description) row.description=description;
         if(supplierCol>=0 && cell(supplierCol)) row.supplier=cell(supplierCol);
         if(brandCol>=0 && cell(brandCol)) row.brand=cell(brandCol);
         if(barcodeCol>=0 && cell(barcodeCol)) row.barcode=cell(barcodeCol);
