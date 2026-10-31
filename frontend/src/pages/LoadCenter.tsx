@@ -78,7 +78,13 @@ export default function LoadCenter() {
       const matrix=XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]],{header:1,defval:''});
       if(!matrix.length) throw new Error('El archivo no contiene filas');
       const norm=(v:unknown)=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
-      const headers=(matrix[0] as unknown[]).map(norm);
+      const headerIndex=matrix.slice(0,14).findIndex((row)=> {
+        const keys=(row as unknown[]).map(norm);
+        return keys.some((k)=>['codart','codigo','cod','code','articulo'].includes(k)) &&
+          keys.some((k)=>['desc','descripcion','nombre','detalle','denominacion'].includes(k));
+      });
+      if(headerIndex<0) throw new Error('No se encontraron encabezados CODART y DESC en las primeras 14 filas.');
+      const headers=(matrix[headerIndex] as unknown[]).map(norm);
       const find=(...names:string[])=>headers.findIndex((h)=>names.includes(h));
       const codeCol=find('codart','codigo','cod','code','articulo');
       const descCol=find('desc','descripcion','nombre','detalle','denominacion');
@@ -87,7 +93,7 @@ export default function LoadCenter() {
       const barcodeCol=find('barcode','barras','codigodebarras','ean');
       if(codeCol<0) throw new Error('No se detectó CODART/código. Revisá los encabezados del archivo.');
       const rows:BulkRow[]=[];
-      for(const line of matrix.slice(1)) {
+      for(const line of matrix.slice(headerIndex+1)) {
         const cell=(i:number)=>i<0?'':String((line as unknown[])[i]??'').replace(/[\u00A0\u200B\uFEFF]/g,' ').replace(/\s+/g,' ').trim();
         const description=descCol<0?'':String((line as unknown[])[descCol]??'').replace(/[\u00A0\u200B\uFEFF]/g,' ').trim();
         const code=cell(codeCol).replace(/\.0+$/,'');
