@@ -46,9 +46,9 @@ export function createApp() {
 
   app.disable('x-powered-by');
   app.use(cors({ origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(','), credentials: false }));
-  // 1 MB basta para todo uso real (los importes de Excel se procesan en el
-  // navegador): baja el costo de un payload gigante para agotar memoria.
-  app.use(express.json({ limit: '1mb' }));
+  // El Centro de Carga envía lotes acotados; 2 MB cubren descripciones completas
+  // sin permitir cuerpos arbitrariamente grandes.
+  app.use(express.json({ limit: '2mb' }));
 
   // ===== Barrera 2: freno general por IP contra abuso/DoS =====
   app.use('/api', apiLimiter);
