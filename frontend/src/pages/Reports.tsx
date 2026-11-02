@@ -131,7 +131,7 @@ const REPORTS: ReportDef[] = [
     key: 'low-stock-by-supplier',
     title: 'Stock bajo por proveedor',
     icon: '🏭',
-    desc: 'Productos por debajo del stock mínimo, agrupados por última compra confirmada',
+    desc: 'Productos por debajo del stock mínimo, filtrados por proveedor asignado a la marca',
     needsLocation: true,
     needsSupplier: true,
     headers: () => ['Proveedor', 'Código', 'Producto', 'Marca', 'Ubicación', 'Stock disponible', 'Stock mínimo'],
