@@ -51,6 +51,9 @@ export default function Suppliers(){
  async function assignBrand(brand:string){
   const supplierId=Number(brandAssignments[brand]);
   if(!supplierId){toast.error('Seleccioná un proveedor para esta marca');return;}
+  const supplierName=activeSuppliers.find(s=>s.id===supplierId)?.name??'el proveedor elegido';
+  const productCount=brands.find(b=>b.brand===brand)?.product_count??0;
+  if(!window.confirm(`Vas a asignar ${brand} a ${supplierName} para sus ${productCount} productos activos. Esta operación reemplaza las asociaciones actuales de proveedor de esos productos. ¿Continuar?`))return;
   setAssigning(brand);
   try{
    const r=await api<{productCount:number}>('/suppliers/brands/assign',{method:'POST',body:{brand,supplierId}});
