@@ -26,9 +26,9 @@ router.get('/',asyncH(async(req,res)=>{
 router.get('/brands',requirePerm('suppliers.manage'),asyncH(async(_req,res)=>{
  const result=await query(`
   SELECT MIN(trim(p.brand)) AS brand, COUNT(DISTINCT p.id)::int AS product_count,
-         COUNT(DISTINCT ps.supplier_id)::int AS supplier_count,
-         CASE WHEN COUNT(DISTINCT ps.supplier_id)=1 THEN MIN(s.id) ELSE NULL END AS supplier_id,
-         COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name), '') AS supplier_names
+         COUNT(DISTINCT ps.supplier_id) FILTER (WHERE ps.is_primary)::int AS supplier_count,
+         CASE WHEN COUNT(DISTINCT ps.supplier_id) FILTER (WHERE ps.is_primary)=1 THEN MIN(s.id) FILTER (WHERE ps.is_primary) ELSE NULL END AS supplier_id,
+         COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name) FILTER (WHERE ps.is_primary), '') AS supplier_names
   FROM products p
   LEFT JOIN product_suppliers ps ON ps.product_id=p.id
   LEFT JOIN suppliers s ON s.id=ps.supplier_id
