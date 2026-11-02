@@ -54,15 +54,18 @@ router.post('/brands/assign',requirePerm('suppliers.manage'),asyncH(async(req,re
   `,[brand]);
   if(!products.rows.length) throw ApiError.notFound('No hay productos activos para esa marca');
   const ids=products.rows.map(p=>p.id);
-  // La asignación por marca es exclusiva: cada producto queda con un único proveedor principal.
-  // Se sustituyen los vínculos anteriores del catálogo, pero las entradas históricas conservan supplier_id.
+  // Registrar proveedores anteriores sin guardar miles de IDs en la auditoría.
+  const previous=await c.query<{supplier_id:number}>('SELECT DISTINCT supplier_id FROM product_suppliers WHERE product_id=ANY($1::int[])',[ids]);
+  const previousSupplierIds=previous.rows.map(x=>x.supplier_id);
+  // La asignación por marca es exclusiva: cada producto queda con un único proveedor.
+  // Las entradas históricas conservan su supplier_id.
   await c.query('DELETE FROM product_suppliers WHERE product_id=ANY($1::int[])',[ids]);
   await c.query(`
    INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
    SELECT product_id,$2,true FROM unnest($1::int[]) AS x(product_id)
   `,[ids,supplierId]);
   await writeAudit(c,{userId:req.user!.id,action:'SUPPLIER_BRAND_ASSIGN',entity:'supplier',entityId:supplierId,
-   details:{brand,productCount:ids.length,productIds:ids},ip:req.ip});
+   details:{brand,productCount:ids.length,previousSupplierIds,supplierId},ip:req.ip});
   return ids.length;
  });
  res.json({ok:true,brand,productCount:result});
