@@ -18,8 +18,14 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   }
 
   const anyErr = err as {
-    code?: string; detail?: string; constraint?: string; column?: string; table?: string; message?: string;
+    code?: string; detail?: string; constraint?: string; column?: string; table?: string;
+    message?: string; type?: string; status?: number; statusCode?: number;
   };
+
+  // Un cuerpo demasiado grande es un error del cliente, no un fallo interno.
+  if (anyErr?.type === 'entity.too.large' || anyErr?.status === 413 || anyErr?.statusCode === 413) {
+    return res.status(413).json({ error: 'El archivo o lote es demasiado grande. Dividí la carga e intentá nuevamente.' });
+  }
 
   // Violaciones de unicidad / FK / CHECK / NOT NULL de PostgreSQL.
   // Se incluye el detalle del motor (constraint, columna) para poder diagnosticar

@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast';
 type ReportKey =
   | 'stock-by-location' | 'low-stock' | 'out-of-stock' | 'in-out-period'
   | 'movements-by-user' | 'deliveries-by-location' | 'pending-transfers'
-  | 'inventory-differences' | 'rotation' | 'debts-customers' | 'low-stock-by-supplier';
+  | 'inventory-differences' | 'rotation' | 'debts-customers' | 'low-stock-by-supplier' | 'products-by-supplier';
 
 interface ReportDef {
   key: ReportKey;
@@ -119,10 +119,19 @@ const REPORTS: ReportDef[] = [
     },
   },
   {
+    key: 'products-by-supplier',
+    title: 'Catálogo de productos por proveedor',
+    icon: '🏭',
+    desc: 'Todos los productos asociados al proveedor según la asignación principal por marca',
+    needsSupplier: true,
+    headers: () => ['Proveedor', 'Marca', 'Código', 'Producto', 'Unidad', 'Stock disponible', 'Stock mínimo'],
+    rowToCells: (r) => [r.supplier, r.brand, r.code, r.name, r.unit, fmtQty(Number(r.total_qty)), fmtQty(Number(r.min_stock))],
+  },
+  {
     key: 'low-stock-by-supplier',
     title: 'Stock bajo por proveedor',
     icon: '🏭',
-    desc: 'Productos por debajo del stock mínimo, agrupados por última compra confirmada',
+    desc: 'Productos por debajo del stock mínimo, filtrados por proveedor asignado a la marca',
     needsLocation: true,
     needsSupplier: true,
     headers: () => ['Proveedor', 'Código', 'Producto', 'Marca', 'Ubicación', 'Stock disponible', 'Stock mínimo'],

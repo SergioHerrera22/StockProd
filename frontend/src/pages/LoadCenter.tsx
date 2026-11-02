@@ -115,13 +115,33 @@ export default function LoadCenter() {
     } catch(e) { window.alert((e as Error).message); }
   }
 
+  // Los cuerpos se dividen para evitar el límite HTTP y mantener transacciones cortas.
+  const BULK_REQUEST_SIZE = 100;
+  function chunks<T>(items:T[], size:number):T[][] {
+    const result:T[][]=[];
+    for(let i=0;i<items.length;i+=size) result.push(items.slice(i,i+size));
+    return result;
+  }
+
   async function previewBulk() {
     if(!bulkRows.length) return;
     setBulkBusy(true);
     try {
-      const r=await api<{preview:PreviewRow[];totals:typeof bulkTotals}>('/products/bulk-edit/preview',{method:'POST',body:{rows:bulkRows}});
-      setBulkPreview(r.preview); setBulkTotals(r.totals);
-    } catch(e) { window.alert((e as Error).message); }
+      const batches=chunks(bulkRows,BULK_REQUEST_SIZE);
+      const previews:PreviewRow[]=[];
+      for(let i=0;i<batches.length;i++) {
+        const r=await api<{preview:PreviewRow[]}>('/products/bulk-edit/preview',{method:'POST',body:{rows:batches[i]}});
+        previews.push(...r.preview);
+      }
+      setBulkPreview(previews);
+      setBulkTotals({
+        found:previews.filter(p=>p.status!=='not_found').length,
+        notFound:previews.filter(p=>p.status==='not_found').length,
+        changed:previews.filter(p=>p.status==='changes').length,
+        unchanged:previews.filter(p=>p.status==='unchanged').length,
+        conflicts:previews.filter(p=>p.status==='conflict').length,
+      });
+    } catch(e) { window.alert('No se pudo completar la vista previa. No se guardó ningún cambio. '+(e as Error).message); }
     finally { setBulkBusy(false); }
   }
 
@@ -131,14 +151,24 @@ export default function LoadCenter() {
       return {...original,updatedAt:p.updatedAt!};
     });
     if(!rows.length) return;
-    if(!window.confirm('Se aplicarán únicamente los campos presentes en el archivo. Los proveedores actuales se conservan y el proveedor indicado se agrega sin borrar vínculos. ¿Continuar?')) return;
+    if(!window.confirm('Se aplicarán únicamente los campos presentes en el archivo. Los proveedores actuales se conservan y el proveedor indicado se agrega sin borrar vínculos. La carga se guardará en lotes; si uno falla, los anteriores quedarán confirmados y se informará exactamente el avance. ¿Continuar?')) return;
     setBulkBusy(true);
+    let updated=0, conflicts=0, notFound=0;
+    const conflictCodes:string[]=[];
+    let completedBatches=0;
     try {
-      const r=await api<{updated:number;conflicts:number;notFound:number;conflictCodes:string[]}>('/products/bulk-edit/apply',{method:'POST',body:{rows}});
-      window.alert(`Actualizados: ${r.updated}\nConflictos por cambios concurrentes: ${r.conflicts}\nNo encontrados: ${r.notFound}${r.conflictCodes.length?'\nRevisar: '+r.conflictCodes.join(', '):''}`);
+      const batches=chunks(rows,50);
+      for(let i=0;i<batches.length;i++) {
+        const r=await api<{updated:number;conflicts:number;notFound:number;conflictCodes:string[]}>('/products/bulk-edit/apply',{method:'POST',body:{rows:batches[i]}});
+        updated+=r.updated; conflicts+=r.conflicts; notFound+=r.notFound;
+        conflictCodes.push(...r.conflictCodes);
+        completedBatches++;
+      }
+      window.alert(`Carga finalizada.\nActualizados: ${updated}\nConflictos por cambios concurrentes: ${conflicts}\nNo encontrados: ${notFound}${conflictCodes.length?'\nRevisar: '+conflictCodes.join(', '):''}`);
       setBulkPreview([]);
-    } catch(e) { window.alert((e as Error).message); }
-    finally { setBulkBusy(false); }
+    } catch(e) {
+      window.alert(`La carga se interrumpió en el lote ${completedBatches+1} de ${Math.ceil(rows.length/50)}.\nLotes guardados: ${completedBatches}. Productos actualizados: ${updated}.\nLos lotes confirmados no se revierten. Podés volver a comparar el archivo: los cambios ya guardados aparecerán como sin cambios.\nDetalle: ${(e as Error).message}`);
+    } finally { setBulkBusy(false); }
   }
 
   async function searchLabels() {
