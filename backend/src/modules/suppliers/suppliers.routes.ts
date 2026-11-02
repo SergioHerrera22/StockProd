@@ -21,6 +21,56 @@ router.get('/',asyncH(async(req,res)=>{
  WHERE ($1::boolean OR is_active) ORDER BY name`,[req.query.includeInactive==='true']);
  res.json({suppliers:result.rows});
 }));
+
+// Marcas agrupadas: una asignación de proveedor alcanza a todos los productos activos de esa marca.
+router.get('/brands',requirePerm('suppliers.manage'),asyncH(async(_req,res)=>{
+ const result=await query(`
+  SELECT MIN(trim(p.brand)) AS brand, COUNT(DISTINCT p.id)::int AS product_count,
+         COUNT(DISTINCT ps.supplier_id) FILTER (WHERE ps.is_primary)::int AS supplier_count,
+         CASE WHEN COUNT(DISTINCT ps.supplier_id) FILTER (WHERE ps.is_primary)=1 THEN MIN(s.id) FILTER (WHERE ps.is_primary) ELSE NULL END AS supplier_id,
+         COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name) FILTER (WHERE ps.is_primary), '') AS supplier_names
+  FROM products p
+  LEFT JOIN product_suppliers ps ON ps.product_id=p.id
+  LEFT JOIN suppliers s ON s.id=ps.supplier_id
+  WHERE p.is_active AND p.brand IS NOT NULL AND trim(p.brand)<>''
+  GROUP BY lower(trim(p.brand))
+  ORDER BY lower(MIN(trim(p.brand)))
+ `);
+ res.json({brands:result.rows});
+}));
+
+router.post('/brands/assign',requirePerm('suppliers.manage'),asyncH(async(req,res)=>{
+ const {brand,supplierId}=z.object({
+  brand:z.string().trim().min(1).max(100),
+  supplierId:z.number().int().positive()
+ }).parse(req.body);
+ const result=await withTx(async(c)=>{
+  const supplier=await c.query<{id:number}>('SELECT id FROM suppliers WHERE id=$1 AND is_active FOR UPDATE',[supplierId]);
+  if(!supplier.rows[0]) throw ApiError.badRequest('El proveedor no existe o está inactivo');
+  const products=await c.query<{id:number}>(`
+   SELECT id FROM products
+   WHERE is_active AND brand IS NOT NULL AND lower(trim(brand))=lower(trim($1))
+   FOR UPDATE
+  `,[brand]);
+  if(!products.rows.length) throw ApiError.notFound('No hay productos activos para esa marca');
+  const ids=products.rows.map(p=>p.id);
+  // Registrar proveedores anteriores sin guardar miles de IDs en la auditoría.
+  const previous=await c.query<{supplier_id:number}>('SELECT DISTINCT supplier_id FROM product_suppliers WHERE product_id=ANY($1::int[])',[ids]);
+  const previousSupplierIds=previous.rows.map(x=>x.supplier_id);
+  // La asignación por marca es exclusiva: cada producto queda con un único proveedor.
+  // Las entradas históricas conservan su supplier_id.
+  await c.query('DELETE FROM product_suppliers WHERE product_id=ANY($1::int[])',[ids]);
+  await c.query(`
+   INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
+   SELECT product_id,$2,true FROM unnest($1::int[]) AS x(product_id)
+  `,[ids,supplierId]);
+  await writeAudit(c,{userId:req.user!.id,action:'SUPPLIER_BRAND_ASSIGN',entity:'supplier',entityId:supplierId,
+   details:{brand,productCount:ids.length,previousSupplierIds,supplierId},ip:req.ip});
+  return ids.length;
+ });
+ res.json({ok:true,brand,productCount:result});
+}));
+
 router.post('/',requirePerm('suppliers.manage'),asyncH(async(req,res)=>{
  const d=schema.parse(req.body);
  const id=await withTx(async(c)=>{
@@ -56,4 +106,26 @@ router.put('/:id',requirePerm('suppliers.manage'),asyncH(async(req,res)=>{
  });
  res.json({ok:true});
 }));
+
+router.delete('/:id',requirePerm('suppliers.manage'),asyncH(async(req,res)=>{
+ const id=pathId(req.params.id);
+ await withTx(async(c)=>{
+  const found=await c.query<{id:number;name:string}>('SELECT id,name FROM suppliers WHERE id=$1 FOR UPDATE',[id]);
+  if(!found.rows[0]) throw ApiError.notFound('Proveedor no encontrado');
+  const linked=await c.query<{count:string}>('SELECT COUNT(*)::text AS count FROM product_suppliers WHERE supplier_id=$1',[id]);
+  if(Number(linked.rows[0]?.count??0)>0) {
+   throw ApiError.conflict('No se puede eliminar: el proveedor sigue asociado a productos. Reasigná primero sus marcas o productos.');
+  }
+  const historical=await c.query('SELECT 1 FROM stock_entries WHERE supplier_id=$1 LIMIT 1',[id]);
+  if(historical.rows[0]) {
+   await c.query('UPDATE suppliers SET is_active=false,updated_at=now() WHERE id=$1',[id]);
+  } else {
+   await c.query('DELETE FROM suppliers WHERE id=$1',[id]);
+  }
+  await writeAudit(c,{userId:req.user!.id,action:'SUPPLIER_DELETE_OR_ARCHIVE',entity:'supplier',entityId:id,
+   details:{name:found.rows[0].name,archived:Boolean(historical.rows[0])},ip:req.ip});
+ });
+ res.json({ok:true});
+}));
+
 export default router;

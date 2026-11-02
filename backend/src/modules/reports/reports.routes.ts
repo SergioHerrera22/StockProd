@@ -40,6 +40,31 @@ router.get(
   })
 );
 
+
+// Catálogo completo por proveedor. La relación primaria define el proveedor asignado
+// a cada producto; se conserva la relación secundaria para compras históricas.
+router.get(
+  '/products-by-supplier',
+  asyncH(async (req,res)=>{
+    const supplierId=intParam(req.query.supplierId);
+    const rows=await query(`
+      SELECT s.id AS supplier_id,s.name AS supplier,
+             p.id AS product_id,p.code,p.name,p.brand,p.unit,p.min_stock,
+             COALESCE(stock.total_qty,0) AS total_qty
+      FROM products p
+      JOIN product_suppliers ps ON ps.product_id=p.id AND ps.is_primary=true
+      JOIN suppliers s ON s.id=ps.supplier_id AND s.is_active
+      LEFT JOIN (
+        SELECT product_id,SUM(quantity-COALESCE(reserved_quantity,0)) AS total_qty
+        FROM stock_balances GROUP BY product_id
+      ) stock ON stock.product_id=p.id
+      WHERE p.is_active AND ($1::int IS NULL OR s.id=$1)
+      ORDER BY s.name,p.brand,p.name
+    `,[supplierId??null]);
+    res.json({rows:rows.rows.map((r:Record<string,unknown>)=>({...r,total_qty:Number(r.total_qty)}))});
+  })
+);
+
 // Productos bajo mínimo agrupados por cada proveedor relacionado en el maestro.
 // El mínimo se compara contra stock disponible (físico menos reservas activas).
 router.get(
@@ -60,7 +85,7 @@ router.get(
               COALESCE(stock_summary.available_qty, 0) AS total_qty
        FROM products p
        LEFT JOIN stock_summary ON stock_summary.product_id = p.id
-       LEFT JOIN product_suppliers ps ON ps.product_id = p.id
+       LEFT JOIN product_suppliers ps ON ps.product_id = p.id AND ps.is_primary=true
          AND EXISTS (SELECT 1 FROM suppliers active_supplier WHERE active_supplier.id = ps.supplier_id AND active_supplier.is_active)
        LEFT JOIN suppliers s ON s.id = ps.supplier_id AND s.is_active
        LEFT JOIN locations selected_location ON selected_location.id = $1
