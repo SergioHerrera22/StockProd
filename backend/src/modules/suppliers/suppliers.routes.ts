@@ -54,11 +54,12 @@ router.post('/brands/assign',requirePerm('suppliers.manage'),asyncH(async(req,re
   `,[brand]);
   if(!products.rows.length) throw ApiError.notFound('No hay productos activos para esa marca');
   const ids=products.rows.map(p=>p.id);
-  await c.query('UPDATE product_suppliers SET is_primary=false WHERE product_id=ANY($1::int[])',[ids]);
+  // La asignación por marca es exclusiva: cada producto queda con un único proveedor principal.
+  // Se sustituyen los vínculos anteriores del catálogo, pero las entradas históricas conservan supplier_id.
+  await c.query('DELETE FROM product_suppliers WHERE product_id=ANY($1::int[])',[ids]);
   await c.query(`
    INSERT INTO product_suppliers(product_id,supplier_id,is_primary)
    SELECT product_id,$2,true FROM unnest($1::int[]) AS x(product_id)
-   ON CONFLICT(product_id,supplier_id) DO UPDATE SET is_primary=true
   `,[ids,supplierId]);
   await writeAudit(c,{userId:req.user!.id,action:'SUPPLIER_BRAND_ASSIGN',entity:'supplier',entityId:supplierId,
    details:{brand,productCount:ids.length,productIds:ids},ip:req.ip});
