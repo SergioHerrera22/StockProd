@@ -19,7 +19,7 @@ router.get('/products',requirePerm('merchandise_requests.use'),asyncH(async(req,
 }));
 router.get('/',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>res.json({requests:await listMerchandiseRequests(req.user!,strParam(req.query.status))})));
 router.get('/:id',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>res.json({request:await getMerchandiseRequest(req.user!,pathId(req.params.id))})));
-router.post('/',requirePerm('merchandise_requests.use'),idempotent(asyncH(async(req,res)=>{const d=z.object({items:itemsSchema,notes:z.string().max(1000).optional()}).parse(req.body);res.status(201).json(await createMerchandiseRequest(req.user!,d.items,d.notes));})));
+router.post('/',requirePerm('merchandise_requests.use'),idempotent(asyncH(async(req,res)=>{const d=z.object({items:itemsSchema,notes:z.string().max(1000).optional()}).parse(req.body);res.status(201).json(await createMerchandiseRequest(req.user!,d.items,d.notes,req.ip));})));
 router.post('/:id/preparing',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>res.json(await setMerchandiseRequestStatus(req.user!,pathId(req.params.id),'EN_PREPARACION',undefined,req.ip))));
 router.post('/:id/reject',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>{const d=z.object({reason:z.string().min(5).max(255)}).parse(req.body);res.json(await setMerchandiseRequestStatus(req.user!,pathId(req.params.id),'RECHAZADO',d.reason,req.ip));}));
 router.post('/:id/dispatch',requirePerm('merchandise_requests.manage'),idempotent(asyncH(async(req,res)=>{const d=z.object({items:itemsSchema}).parse(req.body);res.json(await dispatchMerchandiseRequest(req.user!,pathId(req.params.id),d.items,req.ip));})));
