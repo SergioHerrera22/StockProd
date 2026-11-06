@@ -7,6 +7,7 @@ import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { writeAudit } from '../../services/audit.service';
 import { pathId } from '../../lib/pagination';
+import { Permission } from '../../lib/permissions';
 
 const router = Router();
 router.use(authRequired);
@@ -19,6 +20,7 @@ const userSchema = z.object({
   password: z.string().min(6).max(100).optional(),
   isActive: z.boolean().optional(),
   restrictToLocation: z.boolean().optional(),
+  permissions: z.array(z.string()).max(100).nullable().optional(),
 });
 
 function validateRestriction(data: { restrictToLocation?: boolean; defaultLocationId?: number | null }) {
@@ -33,7 +35,7 @@ router.get(
   asyncH(async (_req, res) => {
     const r = await query(
       `SELECT u.id, u.username, u.full_name, u.role_code, u.default_location_id,
-              l.name AS location_name, u.is_active, u.restrict_to_location, u.last_login_at, u.created_at
+              l.name AS location_name, u.is_active, u.restrict_to_location, u.permissions, u.last_login_at, u.created_at
        FROM users u
        LEFT JOIN locations l ON l.id = u.default_location_id
        ORDER BY u.username`
@@ -90,8 +92,9 @@ router.put(
            role_code = COALESCE($3, role_code),
            default_location_id = $4,
            is_active = COALESCE($5, is_active),
-           restrict_to_location = COALESCE($6, restrict_to_location)
-         WHERE id = $7`,
+           restrict_to_location = COALESCE($6, restrict_to_location),
+           permissions = CASE WHEN $7::boolean THEN $8::jsonb ELSE permissions END
+         WHERE id = $9`,
         [
           data.username ?? null,
           data.fullName ?? null,
@@ -99,6 +102,8 @@ router.put(
           locParam,
           data.isActive ?? null,
           data.restrictToLocation ?? null,
+          data.permissions !== undefined,
+          data.permissions === null ? null : JSON.stringify(data.permissions ?? []),
           id,
         ]
       );
