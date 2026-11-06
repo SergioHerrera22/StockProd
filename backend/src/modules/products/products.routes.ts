@@ -99,7 +99,7 @@ router.get('/quality', asyncH(async (req, res) => {
   else if (issue !== 'all') throw ApiError.badRequest('Filtro de calidad inválido');
   const q = strParam(req.query.q);
   const params: unknown[] = [];
-  if (q) { params.push(`%${q}%`); where.push(`(p.code ILIKE ${params.length} OR p.name ILIKE ${params.length})`); }
+  if (q) { params.push(`%${q}%`); where.push(`(p.code ILIKE $${params.length} OR p.name ILIKE $${params.length})`); }
   const whereSql = where.join(' AND ');
   const offset = (page - 1) * pageSize;
   const result = await query(
