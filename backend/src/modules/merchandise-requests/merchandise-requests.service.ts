@@ -82,7 +82,8 @@ export async function dispatchMerchandiseRequest(user: AuthUser, id: number, ite
     const stored=await c.query('SELECT product_id,quantity_requested FROM merchandise_request_items WHERE request_id=$1 ORDER BY product_id',[id]);
     const allowed=new Map(stored.rows.map(x=>[Number(x.product_id),Number(x.quantity_requested)]));
     const merged=new Map<number,number>();
-    for(const it of items){ if(!allowed.has(it.productId)||!Number.isFinite(it.quantity)||it.quantity<3||it.quantity>allowed.get(it.productId)!) throw ApiError.badRequest('Las cantidades despachadas deben ser de al menos 3 y no superar lo solicitado.'); merged.set(it.productId,(merged.get(it.productId)||0)+it.quantity); }
+    for(const it of items){ if(!allowed.has(it.productId)||!Number.isFinite(it.quantity)||!Number.isInteger(it.quantity)||it.quantity<3) throw ApiError.badRequest('Las cantidades despachadas deben ser enteras y de al menos 3 unidades.'); merged.set(it.productId,(merged.get(it.productId)||0)+it.quantity); }
+    for(const [productId,quantity] of merged){ if(quantity>allowed.get(productId)!) throw ApiError.badRequest('La cantidad total despachada no puede superar lo solicitado.'); }
     if(!merged.size) throw ApiError.badRequest('El pedido debe incluir productos para despachar.');
     const transfer=await createTransferInTransaction(c,user,ip,{originLocationId:Number(r.origin_location_id),destinationLocationId:Number(r.destination_location_id),notes:`Pedido ${r.number}`,items:[...merged].map(([productId,quantity])=>({productId,quantity}))});
     if(transfer.status!=='EN_TRANSITO') throw ApiError.conflict('La transferencia requiere aprobación y no pudo despacharse automáticamente. Resuelve la aprobación desde Transferencias.');
