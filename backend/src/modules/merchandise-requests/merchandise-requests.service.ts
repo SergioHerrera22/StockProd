@@ -4,7 +4,6 @@ import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../services/audit.service';
 import { AuthUser } from '../../middleware/auth';
 import { hasPermission } from '../../lib/permissions';
-import { createTransferInTransaction } from '../transfers/transfers.service';
 
 type RequestItem = { productId: number; quantity: number };
 async function assertWarehouseManager(user: AuthUser, c?: PoolClient) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
@@ -26,11 +25,9 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
     `SELECT r.id,r.number,r.status,r.notes,r.created_at,r.destination_location_id,
       dst.name destination_name,u.full_name created_by_name,u.username,
       (SELECT count(*)::int FROM merchandise_request_items i WHERE i.request_id=r.id) item_count,
-      r.transfer_id,t.number transfer_number
      FROM merchandise_requests r
      JOIN locations dst ON dst.id=r.destination_location_id
      JOIN users u ON u.id=r.created_by
-     LEFT JOIN transfers t ON t.id=r.transfer_id
      ${where} ORDER BY r.created_at DESC LIMIT 200`, params);
   return result.rows;
 }
@@ -73,31 +70,10 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
     return {id,number,status:'PENDIENTE'};
   });
 }
-export async function dispatchMerchandiseRequest(user: AuthUser, id: number, items: RequestItem[], ip?: string) {
-  await assertWarehouseManager(user);
-  return withTx(async c=>{
-    const req=await c.query(`SELECT * FROM merchandise_requests WHERE id=$1 FOR UPDATE`,[id]);
-    const r=req.rows[0]; if(!r) throw ApiError.notFound('Pedido no encontrado');
-    if(r.transfer_id) return {transferId:r.transfer_id,alreadyDispatched:true};
-    if(!['PENDIENTE','EN_PREPARACION'].includes(r.status)) throw ApiError.conflict('El pedido ya no se puede despachar.');
-    const stored=await c.query('SELECT product_id,quantity_requested FROM merchandise_request_items WHERE request_id=$1 ORDER BY product_id',[id]);
-    const allowed=new Map(stored.rows.map(x=>[Number(x.product_id),Number(x.quantity_requested)]));
-    const merged=new Map<number,number>();
-    for(const it of items){ if(!allowed.has(it.productId)||!Number.isFinite(it.quantity)||!Number.isInteger(it.quantity)||it.quantity<3) throw ApiError.badRequest('Las cantidades despachadas deben ser enteras y de al menos 3 unidades.'); merged.set(it.productId,(merged.get(it.productId)||0)+it.quantity); }
-    for(const [productId,quantity] of merged){ if(quantity>allowed.get(productId)!) throw ApiError.badRequest('La cantidad total despachada no puede superar lo solicitado.'); }
-    if(!merged.size) throw ApiError.badRequest('El pedido debe incluir productos para despachar.');
-    const transfer=await createTransferInTransaction(c,user,ip,{originLocationId:Number(r.origin_location_id),destinationLocationId:Number(r.destination_location_id),notes:`Pedido ${r.number}`,items:[...merged].map(([productId,quantity])=>({productId,quantity}))});
-    if(transfer.status!=='EN_TRANSITO') throw ApiError.conflict('La transferencia requiere aprobación y no pudo despacharse automáticamente. Resuelve la aprobación desde Transferencias.');
-    for(const [productId,quantity] of merged) await c.query('UPDATE merchandise_request_items SET quantity_to_dispatch=$1 WHERE request_id=$2 AND product_id=$3',[quantity,id,productId]);
-    await c.query("UPDATE merchandise_requests SET status='DESPACHADO',transfer_id=$1,handled_by=$2,handled_at=now(),updated_at=now() WHERE id=$3",[transfer.id,user.id,id]);
-    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_DISPATCH',entity:'merchandise_request',entityId:id,details:{transferId:transfer.id,transferNumber:transfer.number},ip});
-    return {transferId:transfer.id,transferNumber:transfer.number,status:'EN_TRANSITO'};
-  });
-}
-export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'EN_PREPARACION'|'RECHAZADO',reason?:string,ip?:string){
+export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'VISTO'|'EN_PREPARACION'|'ATENDIDO'|'RECHAZADO',reason?:string,ip?:string){
  await assertWarehouseManager(user);
- return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(!['PENDIENTE','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
+ return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
  if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
- await c.query('UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=now(),updated_at=now() WHERE id=$4',[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
+ await c.query("UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1 IN ('ATENDIDO','RECHAZADO') THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
  await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip}); return {ok:true,status};});
 }
