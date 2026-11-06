@@ -16,8 +16,6 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   let where = '';
   if (user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage')) {
     await assertWarehouseManager(user);
-    const warehouse = await query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true");
-    if (warehouse.rows.length !== 1 || Number(user.locationId) !== Number(warehouse.rows[0].id)) throw ApiError.forbidden();
   }
   const manager = user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage');
   if (!manager) { params.push(user.locationId); where = 'WHERE r.destination_location_id=$1'; }
