@@ -84,15 +84,46 @@ jobs:
           PGPASSWORD: postgres
           JWT_SECRET: test-secret-key-for-testing-only-do-not-use-in-production
           NODE_ENV: test
+          SEED_ADMIN_PASSWORD: robles2026
         run: |
+          set -euo pipefail
+
           # Start PostgreSQL and configure a password for the isolated CI runner.
           sudo systemctl start postgresql
-          sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
-          # Create the isolated test database.
-          psql -h localhost -U postgres -c "CREATE DATABASE robles_stock_test;" || true
-          psql -h localhost -U postgres -d robles_stock_test -v ON_ERROR_STOP=1 -f migrations/001_init.sql
-          psql -h localhost -U postgres -d robles_stock_test -v ON_ERROR_STOP=1 -f migrations/002_sessions_and_restrictions.sql
-          # Run tests.
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'postgres';"
+
+          # Create a disposable database and apply every migration in order.
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE robles_stock_test;"
+          npm run db:migrate
+          npm run db:seed
+
+          # Build and start the API required by tests/smoke.mjs.
+          npm run build
+          nohup npm start > /tmp/robles-stock-api.log 2>&1 &
+          API_PID=$!
+          trap 'kill "$API_PID" 2>/dev/null || true' EXIT
+
+          # Wait for the API and its database health check before running HTTP tests.
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4000/api/health | grep -q '"db":"ok"'; then
+              echo "API disponible y PostgreSQL saludable."
+              break
+            fi
+
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              echo "La API terminó antes de estar disponible."
+              cat /tmp/robles-stock-api.log
+              exit 1
+            fi
+
+            if [ "$attempt" -eq 30 ]; then
+              echo "La API no respondió al health check dentro de 60 segundos."
+              cat /tmp/robles-stock-api.log
+              exit 1
+            fi
+            sleep 2
+          done
+
           npm run test:smoke
 
   # ============================================
