@@ -19,7 +19,7 @@ export default function MerchandiseRequests(){
  const manager=can('merchandise_requests.manage');
  const load=useCallback(async()=>{try{const r=await api<{requests:Req[]}>('/merchandise-requests');setRows(r.requests);}catch(e){toast.error((e as Error).message);}},[]);
  useEffect(()=>{void load();},[load]);
- const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return;try{const r=await api<{products:StockRow[]}>(`/stock${qs({q:v,limit:20})}`);setResults(r.products);if(!r.products.length)toast.info?.('No se encontraron productos');}catch(e){toast.error((e as Error).message);}},[]);
+ const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return;try{const r=await api<{products:StockRow[]}>(`/stock${qs({q:v,limit:20})}`);setResults(r.products);}catch(e){toast.error((e as Error).message);}},[]);
  async function addByCode(code:string){setQ(code);await search(code);}
  function add(p:StockRow){setCart(old=>old.some(x=>x.productId===p.id)?old.map(x=>x.productId===p.id?{...x,quantity:x.quantity+1}:x):[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
  async function submit(){if(!cart.length)return;for(const x of cart)if(x.quantity<3){toast.error('La cantidad mínima es 3 unidades por producto.');return;}setBusy(true);try{const r=await api<{number:string}>('/merchandise-requests',{method:'POST',body:{items:cart.map(x=>({productId:x.productId,quantity:x.quantity})),notes}});toast.success(`Pedido ${r.number} enviado`);setCart([]);setNotes('');void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
