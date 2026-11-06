@@ -5,7 +5,7 @@ import { AuthUser } from '../../middleware/auth';
 import { createTransferInTransaction } from '../transfers/transfers.service';
 
 type RequestItem = { productId: number; quantity: number };
-async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(!user.permissions?.includes('merchandise_requests.manage')) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
+async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(user.role!=='ENCARGADO' && !user.permissions?.includes('merchandise_requests.manage')) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
 async function centralWarehouseId(c: any): Promise<number> {
   const r = await c.query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true ORDER BY id");
   if (r.rows.length !== 1) throw ApiError.conflict('Debe existir exactamente un Depósito Central activo para gestionar pedidos.');
@@ -15,6 +15,7 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   const params: unknown[] = [];
   let where = '';
   if (user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage')) {
+    await assertWarehouseManager(user);
     const warehouse = await query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true");
     if (warehouse.rows.length !== 1 || Number(user.locationId) !== Number(warehouse.rows[0].id)) throw ApiError.forbidden();
   }
@@ -41,6 +42,7 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
       WHERE r.id=$1`,[id]);
     const row=r.rows[0]; if(!row) throw ApiError.notFound('Pedido no encontrado');
     const manager=user.role==='ADMIN'||user.role==='ENCARGADO'||user.permissions?.includes('merchandise_requests.manage');
+    if(manager) await assertWarehouseManager(user,c);
     if(!manager && Number(row.destination_location_id)!==Number(user.locationId)) throw ApiError.forbidden();
     const items=await c.query(`SELECT i.*,p.code,p.barcode,p.name,p.unit FROM merchandise_request_items i
       JOIN products p ON p.id=i.product_id WHERE i.request_id=$1 ORDER BY p.name`,[id]);
@@ -85,6 +87,8 @@ export async function dispatchMerchandiseRequest(user: AuthUser, id: number, ite
     if(!merged.size) throw ApiError.badRequest('El pedido debe incluir productos para despachar.');
     const transfer=await createTransferInTransaction(c,user,ip,{originLocationId:Number(r.origin_location_id),destinationLocationId:Number(r.destination_location_id),notes:`Pedido ${r.number}`,items:[...merged].map(([productId,quantity])=>({productId,quantity}))});
     if(transfer.status!=='EN_TRANSITO') throw ApiError.conflict('La transferencia requiere aprobación y no pudo despacharse automáticamente. Resuelve la aprobación desde Transferencias.');
+    await c.query('UPDATE merchandise_request_items SET quantity_to_dispatch=$1 WHERE request_id=$2 AND product_id=$3',[[...merged.values()],id,0]).catch(()=>undefined);
+    for(const [productId,quantity] of merged) await c.query('UPDATE merchandise_request_items SET quantity_to_dispatch=$1 WHERE request_id=$2 AND product_id=$3',[quantity,id,productId]);
     await c.query("UPDATE merchandise_requests SET status='DESPACHADO',transfer_id=$1,handled_by=$2,handled_at=now(),updated_at=now() WHERE id=$3",[transfer.id,user.id,id]);
     await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_DISPATCH',entity:'merchandise_request',entityId:id,details:{transferId:transfer.id,transferNumber:transfer.number},ip});
     return {transferId:transfer.id,transferNumber:transfer.number,status:'EN_TRANSITO'};
