@@ -81,16 +81,18 @@ jobs:
         working-directory: ${{ env.BACKEND_DIR }}
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/robles_stock_test
+          PGPASSWORD: postgres
           JWT_SECRET: test-secret-key-for-testing-only-do-not-use-in-production
           NODE_ENV: test
         run: |
-          # Start PostgreSQL for tests
+          # Start PostgreSQL and configure a password for the isolated CI runner.
           sudo systemctl start postgresql
-          # Create test database
+          sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
+          # Create the isolated test database.
           psql -h localhost -U postgres -c "CREATE DATABASE robles_stock_test;" || true
-          psql -h localhost -U postgres -d robles_stock_test -f migrations/001_init.sql
-          psql -h localhost -U postgres -d robles_stock_test -f migrations/002_sessions_and_restrictions.sql
-          # Run tests
+          psql -h localhost -U postgres -d robles_stock_test -v ON_ERROR_STOP=1 -f migrations/001_init.sql
+          psql -h localhost -U postgres -d robles_stock_test -v ON_ERROR_STOP=1 -f migrations/002_sessions_and_restrictions.sql
+          # Run tests.
           npm run test:smoke
 
   # ============================================
