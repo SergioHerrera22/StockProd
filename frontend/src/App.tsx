@@ -32,6 +32,7 @@ import Reconciliation from './pages/Reconciliation';
 import SettingsConfirmations from './pages/SettingsConfirmations';
 import MiReparto from './pages/MiReparto';
 import DeliveryDelays from './pages/DeliveryDelays';
+import MerchandiseRequests from './pages/MerchandiseRequests';
 
 function Protected({ children }: { children: ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -42,7 +43,7 @@ function Protected({ children }: { children: ReactNode }) {
 function RequirePerm({ perm, children }: { perm: Permission; children: ReactNode }) {
   const user = useAuth((s) => s.user);
   if (!user) return <Navigate to="/login" replace />;
-  if (!hasPermission(user.role, perm)) {
+  if (!hasPermission(user.role, perm, user.permissions)) {
     return (
       <div className="rounded-xl bg-white p-8 text-center shadow-sm">
         <div className="text-4xl">🔒</div>
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="proveedores" element={<RequirePerm perm="suppliers.manage"><Suppliers /></RequirePerm>} />
               <Route path="entradas" element={<RequirePerm perm="entries.read"><Entries /></RequirePerm>} />
               <Route path="transferencias" element={<RequirePerm perm="transfers.read"><Transfers /></RequirePerm>} />
+              <Route path="pedir-mercaderia" element={<RequirePerm perm="merchandise_requests.use"><MerchandiseRequests /></RequirePerm>} />
               <Route path="inventarios" element={<RequirePerm perm="counts.read"><Counts /></RequirePerm>} />
               <Route path="movimientos" element={<RequirePerm perm="movements.read"><Movements /></RequirePerm>} />
               <Route path="reportes" element={<RequirePerm perm="reports.read"><Reports /></RequirePerm>} />
