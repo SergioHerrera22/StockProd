@@ -2,26 +2,26 @@ import { useCallback,useEffect,useState } from 'react';
 import { api,qs } from '../lib/api';
 import { useAuth } from '../store/auth';
 import { fmtDateTime,fmtQty } from '../lib/format';
-import type { StockRow } from '../types';
 import { ScanInput } from '../components/ScanInput';
 import { Badge,Button,Card,Field,Input,PageHeader,Textarea,useConfirm } from '../components/ui';
 import { useToast } from '../components/Toast';
 
 type Req={id:number;number:string;status:string;notes:string|null;created_at:string;destination_name:string;created_by_name:string;item_count:number;transfer_id:number|null;transfer_number:string|null};
+type ProductOption={id:number;code:string;barcode:string|null;name:string;brand:string|null;unit:string};
 type Item={productId:number;code:string;name:string;quantity:number;unit:string};
 type Detail=Req & {origin_name:string;items:Array<{id:number;product_id:number;quantity_requested:string;quantity_to_dispatch:string|null;code:string;name:string;unit:string}>};
 const stateLabel:Record<string,string>={PENDIENTE:'Pendiente',EN_PREPARACION:'En preparación',DESPACHADO:'Despachado',RECHAZADO:'Rechazado',CANCELADO:'Cancelado'};
 export default function MerchandiseRequests(){
  const {user,can}=useAuth(); const toast=useToast(); const confirm=useConfirm();
- const [q,setQ]=useState(''); const [results,setResults]=useState<StockRow[]>([]); const [cart,setCart]=useState<Item[]>([]);
+ const [q,setQ]=useState(''); const [results,setResults]=useState<ProductOption[]>([]); const [cart,setCart]=useState<Item[]>([]);
  const [notes,setNotes]=useState(''); const [rows,setRows]=useState<Req[]>([]); const [detail,setDetail]=useState<Detail|null>(null);
  const [qty,setQty]=useState<Record<number,string>>({}); const [busy,setBusy]=useState(false);
  const manager=can('merchandise_requests.manage');
  const load=useCallback(async()=>{try{const r=await api<{requests:Req[]}>('/merchandise-requests');setRows(r.requests);}catch(e){toast.error((e as Error).message);}},[]);
  useEffect(()=>{void load();},[load]);
- const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return;try{const r=await api<{products:StockRow[]}>(`/stock${qs({q:v,limit:20})}`);setResults(r.products);}catch(e){toast.error((e as Error).message);}},[]);
+ const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return;try{const r=await api<{products:ProductOption[]}>(`/merchandise-requests/products${qs({q:v})}`);setResults(r.products);}catch(e){toast.error((e as Error).message);}},[]);
  async function addByCode(code:string){setQ(code);await search(code);}
- function add(p:StockRow){setCart(old=>old.some(x=>x.productId===p.id)?old.map(x=>x.productId===p.id?{...x,quantity:x.quantity+1}:x):[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
+ function add(p:ProductOption){setCart(old=>old.some(x=>x.productId===p.id)?old.map(x=>x.productId===p.id?{...x,quantity:x.quantity+1}:x):[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
  async function submit(){if(!cart.length)return;for(const x of cart)if(x.quantity<3){toast.error('La cantidad mínima es 3 unidades por producto.');return;}setBusy(true);try{const r=await api<{number:string}>('/merchandise-requests',{method:'POST',body:{items:cart.map(x=>({productId:x.productId,quantity:x.quantity})),notes}});toast.success(`Pedido ${r.number} enviado`);setCart([]);setNotes('');void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
  async function openDetail(r:Req){try{const d=await api<{request:Detail}>(`/merchandise-requests/${r.id}`);setDetail(d.request);setQty(Object.fromEntries(d.request.items.map(i=>[i.product_id,String(i.quantity_requested)])));}catch(e){toast.error((e as Error).message);}}
  async function action(path:string,body?:unknown){if(!detail)return;setBusy(true);try{await api(path,{method:'POST',body});toast.success('Pedido actualizado');setDetail(null);void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
