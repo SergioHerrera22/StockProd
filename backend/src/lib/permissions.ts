@@ -54,7 +54,7 @@ export type Permission =
 
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write', 'suppliers.manage',
-  'stock.read', 'stock.adjust', 'merchandise_requests.use', 'merchandise_requests.manage',
+  'stock.read', 'stock.adjust', 'merchandise_requests.use',
   'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve',
   'entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve',
   'transfers.read', 'transfers.write', 'transfers.receive', 'transfers.dispatch', 'transfers.verify', 'transfers.void', 'transfers.approve',
