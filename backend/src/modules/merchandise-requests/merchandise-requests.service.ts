@@ -1,3 +1,4 @@
+import { PoolClient } from 'pg';
 import { withTx, query } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../services/audit.service';
@@ -6,8 +7,8 @@ import { hasPermission } from '../../lib/permissions';
 import { createTransferInTransaction } from '../transfers/transfers.service';
 
 type RequestItem = { productId: number; quantity: number };
-async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
-async function centralWarehouseId(c: any): Promise<number> {
+async function assertWarehouseManager(user: AuthUser, c?: PoolClient) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
+async function centralWarehouseId(c: PoolClient): Promise<number> {
   const r = await c.query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true ORDER BY id");
   if (r.rows.length !== 1) throw ApiError.conflict('Debe existir exactamente un Depósito Central activo para gestionar pedidos.');
   return r.rows[0].id;
