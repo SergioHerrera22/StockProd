@@ -47,6 +47,8 @@ export type Permission =
   | 'settings.write'
   | 'approvals.read'
   | 'approvals.approve'
+  | 'merchandise_requests.use'
+  | 'merchandise_requests.manage'
   | 'alerts.read'
   | 'alerts.manage';
 
@@ -67,6 +69,7 @@ const ENCARGADO: Permission[] = [
 const EMPLEADO: Permission[] = [
   'products.read',
   'stock.read',
+  'merchandise_requests.use',
   'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
@@ -77,7 +80,7 @@ const EMPLEADO: Permission[] = [
 
 export const PERMISSIONS: Record<Role, Permission[]> = {
   ADMIN: [
-    ...ENCARGADO,
+    ...ENCARGADO, 'merchandise_requests.use', 'merchandise_requests.manage',
     'locations.manage', 'users.manage', 'users.read', 'audit.read', 'settings.write',
   ],
   ENCARGADO,
@@ -87,6 +90,7 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
   TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps', 'deliveries.read', 'stock.read'],
 };
 
-export function hasPermission(role: Role, permission: Permission): boolean {
+export function hasPermission(role: Role, permission: Permission, custom?: Permission[] | null): boolean {
+  if (custom !== undefined && custom !== null) return custom.includes(permission);
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }
