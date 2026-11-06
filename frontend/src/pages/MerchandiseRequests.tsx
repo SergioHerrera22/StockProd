@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast';
 type Req={id:number;number:string;status:string;notes:string|null;created_at:string;destination_name:string;created_by_name:string;item_count:number};
 type ProductOption={id:number;code:string;barcode:string|null;name:string;brand:string|null;unit:string};
 type Item={productId:number;code:string;name:string;quantity:number;unit:string};
-type Detail=Req & {origin_name:string;items:Array<{id:number;product_id:number;quantity_requested:string;quantity_to_dispatch?:string|null;code:string;name:string;unit:string}>};
+type Detail=Req & {origin_name:string;items:Array<{id:number;product_id:number;quantity_requested:string;code:string;name:string;unit:string}>};
 const stateLabel:Record<string,string>={PENDIENTE:'Pendiente',VISTO:'Visto',EN_PREPARACION:'Preparado',ATENDIDO:'Atendido',RECHAZADO:'Rechazado'};
 export default function MerchandiseRequests(){
  const {user,can}=useAuth(); const toast=useToast();
