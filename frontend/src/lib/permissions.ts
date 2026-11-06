@@ -166,7 +166,8 @@ export function samePermissions(a: readonly Permission[], b: readonly Permission
   return set.size === b.length && b.every((permission) => set.has(permission));
 }
 
-export function hasPermission(role: Role | undefined | null, permission: Permission): boolean {
+export function hasPermission(role: Role | undefined | null, permission: Permission, custom?: Permission[] | null): boolean {
+  if (custom !== undefined && custom !== null) return custom.includes(permission);
   if (!role) return false;
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }
