@@ -77,6 +77,8 @@ const IDEMPOTENT_PATTERNS: RegExp[] = [
   /^\/entries$/,
   /^\/entries\/\d+\/(confirm|void)$/,
   /^\/transfers$/,
+  /^\/merchandise-requests$/,
+  /^\/merchandise-requests\/\d+\/dispatch$/,
   /^\/transfers\/\d+\/(receive|void)$/,
   /^\/pending-deliveries$/,
   /^\/pending-deliveries\/confirm-pickup$/,
