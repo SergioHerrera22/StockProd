@@ -10,7 +10,7 @@ const router=Router(); router.use(authRequired);
 const itemsSchema=z.array(z.object({productId:z.number().int().positive(),quantity:z.number().min(3)})).min(1).max(300);
 router.get('/products',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>{
  const term=strParam(req.query.q)?.trim(); if(!term || term.length<2) return res.json({products:[]});
- const pattern=`%${term.replace(/[\\%_]/g,'\\router.get('/',requirePerm')}%`;
+ const pattern='%' + term.replace(/[\\%_]/g, '\\\\$&') + '%';
  const result=await query(`SELECT id,code,barcode,name,brand,unit FROM products
   WHERE is_active=true AND (code ILIKE $1 OR barcode ILIKE $1 OR name ILIKE $1 OR brand ILIKE $1)
   ORDER BY CASE WHEN code=$2 OR barcode=$2 THEN 0 WHEN code ILIKE $1 OR barcode ILIKE $1 THEN 1 ELSE 2 END,name
