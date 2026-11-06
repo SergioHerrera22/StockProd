@@ -21,7 +21,7 @@ CREATE TABLE merchandise_request_items (
   id serial PRIMARY KEY,
   request_id integer NOT NULL REFERENCES merchandise_requests(id) ON DELETE CASCADE,
   product_id integer NOT NULL REFERENCES products(id),
-  quantity_requested numeric(14,3) NOT NULL CHECK (quantity_requested >= 3),
+  quantity_requested numeric(14,3) NOT NULL CHECK (quantity_requested >= 3 AND quantity_requested = trunc(quantity_requested)),
   UNIQUE (request_id, product_id)
 );
 CREATE INDEX idx_merch_requests_status_created ON merchandise_requests(status, created_at DESC);
