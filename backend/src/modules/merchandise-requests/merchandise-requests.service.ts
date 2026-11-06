@@ -5,6 +5,7 @@ import { AuthUser } from '../../middleware/auth';
 import { createTransferInTransaction } from '../transfers/transfers.service';
 
 type RequestItem = { productId: number; quantity: number };
+async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(!user.permissions?.includes('merchandise_requests.manage')) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
 async function centralWarehouseId(c: any): Promise<number> {
   const r = await c.query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true ORDER BY id");
   if (r.rows.length !== 1) throw ApiError.conflict('Debe existir exactamente un Depósito Central activo para gestionar pedidos.');
@@ -71,8 +72,7 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
   });
 }
 export async function dispatchMerchandiseRequest(user: AuthUser, id: number, items: RequestItem[], ip?: string) {
-  const manager=user.role==='ADMIN'||user.permissions?.includes('merchandise_requests.manage');
-  if(!manager) throw ApiError.forbidden();
+  await assertWarehouseManager(user);
   return withTx(async c=>{
     const req=await c.query(`SELECT * FROM merchandise_requests WHERE id=$1 FOR UPDATE`,[id]);
     const r=req.rows[0]; if(!r) throw ApiError.notFound('Pedido no encontrado');
@@ -91,7 +91,7 @@ export async function dispatchMerchandiseRequest(user: AuthUser, id: number, ite
   });
 }
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'EN_PREPARACION'|'RECHAZADO',reason?:string,ip?:string){
- const manager=user.role==='ADMIN'||user.permissions?.includes('merchandise_requests.manage'); if(!manager) throw ApiError.forbidden();
+ await assertWarehouseManager(user);
  return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(r.rows[0].status!=='PENDIENTE')throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
  if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
  await c.query('UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=now(),updated_at=now() WHERE id=$4',[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
