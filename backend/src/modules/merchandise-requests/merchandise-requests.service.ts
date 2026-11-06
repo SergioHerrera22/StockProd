@@ -2,10 +2,11 @@ import { withTx, query } from '../../db/pool';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../services/audit.service';
 import { AuthUser } from '../../middleware/auth';
+import { hasPermission } from '../../lib/permissions';
 import { createTransferInTransaction } from '../transfers/transfers.service';
 
 type RequestItem = { productId: number; quantity: number };
-async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(user.role!=='ENCARGADO' && !user.permissions?.includes('merchandise_requests.manage')) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
+async function assertWarehouseManager(user: AuthUser, c?: any) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
 async function centralWarehouseId(c: any): Promise<number> {
   const r = await c.query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true ORDER BY id");
   if (r.rows.length !== 1) throw ApiError.conflict('Debe existir exactamente un Depósito Central activo para gestionar pedidos.');
@@ -14,7 +15,7 @@ async function centralWarehouseId(c: any): Promise<number> {
 export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   const params: unknown[] = [];
   let where = '';
-  if (user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage')) {
+  if (hasPermission(user.role,'merchandise_requests.manage',user.permissions)) {
     await assertWarehouseManager(user);
   }
   const manager = user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage');
@@ -39,7 +40,7 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
       JOIN locations dst ON dst.id=r.destination_location_id JOIN users u ON u.id=r.created_by
       WHERE r.id=$1`,[id]);
     const row=r.rows[0]; if(!row) throw ApiError.notFound('Pedido no encontrado');
-    const manager=user.role==='ADMIN'||user.role==='ENCARGADO'||user.permissions?.includes('merchandise_requests.manage');
+    const manager=hasPermission(user.role,'merchandise_requests.manage',user.permissions);
     if(manager) await assertWarehouseManager(user,c);
     if(!manager && Number(row.destination_location_id)!==Number(user.locationId)) throw ApiError.forbidden();
     const items=await c.query(`SELECT i.*,p.code,p.barcode,p.name,p.unit FROM merchandise_request_items i
