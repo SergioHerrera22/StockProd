@@ -87,7 +87,6 @@ export async function dispatchMerchandiseRequest(user: AuthUser, id: number, ite
     if(!merged.size) throw ApiError.badRequest('El pedido debe incluir productos para despachar.');
     const transfer=await createTransferInTransaction(c,user,ip,{originLocationId:Number(r.origin_location_id),destinationLocationId:Number(r.destination_location_id),notes:`Pedido ${r.number}`,items:[...merged].map(([productId,quantity])=>({productId,quantity}))});
     if(transfer.status!=='EN_TRANSITO') throw ApiError.conflict('La transferencia requiere aprobación y no pudo despacharse automáticamente. Resuelve la aprobación desde Transferencias.');
-    await c.query('UPDATE merchandise_request_items SET quantity_to_dispatch=$1 WHERE request_id=$2 AND product_id=$3',[[...merged.values()],id,0]).catch(()=>undefined);
     for(const [productId,quantity] of merged) await c.query('UPDATE merchandise_request_items SET quantity_to_dispatch=$1 WHERE request_id=$2 AND product_id=$3',[quantity,id,productId]);
     await c.query("UPDATE merchandise_requests SET status='DESPACHADO',transfer_id=$1,handled_by=$2,handled_at=now(),updated_at=now() WHERE id=$3",[transfer.id,user.id,id]);
     await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_DISPATCH',entity:'merchandise_request',entityId:id,details:{transferId:transfer.id,transferNumber:transfer.number},ip});
