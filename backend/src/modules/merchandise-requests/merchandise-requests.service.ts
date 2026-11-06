@@ -14,11 +14,11 @@ async function centralWarehouseId(c: any): Promise<number> {
 export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   const params: unknown[] = [];
   let where = '';
-  if (user.role !== 'ADMIN' && user.permissions?.includes('merchandise_requests.manage')) {
+  if (user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage')) {
     const warehouse = await query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true");
     if (warehouse.rows.length !== 1 || Number(user.locationId) !== Number(warehouse.rows[0].id)) throw ApiError.forbidden();
   }
-  const manager = user.role === 'ADMIN' || user.permissions?.includes('merchandise_requests.manage');
+  const manager = user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage');
   if (!manager) { params.push(user.locationId); where = 'WHERE r.destination_location_id=$1'; }
   if (status) { params.push(status); where += (where ? ' AND ' : 'WHERE ') + 'r.status=$' + params.length; }
   const result = await query(
@@ -40,7 +40,7 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
       JOIN locations dst ON dst.id=r.destination_location_id JOIN users u ON u.id=r.created_by
       WHERE r.id=$1`,[id]);
     const row=r.rows[0]; if(!row) throw ApiError.notFound('Pedido no encontrado');
-    const manager=user.role==='ADMIN'||user.permissions?.includes('merchandise_requests.manage');
+    const manager=user.role==='ADMIN'||user.role==='ENCARGADO'||user.permissions?.includes('merchandise_requests.manage');
     if(!manager && Number(row.destination_location_id)!==Number(user.locationId)) throw ApiError.forbidden();
     const items=await c.query(`SELECT i.*,p.code,p.barcode,p.name,p.unit FROM merchandise_request_items i
       JOIN products p ON p.id=i.product_id WHERE i.request_id=$1 ORDER BY p.name`,[id]);
