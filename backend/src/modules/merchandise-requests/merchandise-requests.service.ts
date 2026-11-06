@@ -48,7 +48,7 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
     return { ...row, items:items.rows };
   });
 }
-export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string) {
+export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?: string) {
   if(!user.locationId) throw ApiError.forbidden('Tu usuario no tiene una sucursal asignada.');
   if(user.role==='TRANSPORTE') throw ApiError.forbidden();
   const merged=new Map<number,number>();
@@ -68,7 +68,7 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
     await c.query('UPDATE merchandise_requests SET number=$1 WHERE id=$2',[number,id]);
     await c.query(`INSERT INTO merchandise_request_items(request_id,product_id,quantity_requested)
       SELECT $1,p,q FROM unnest($2::int[],$3::numeric[]) AS x(p,q)`,[id,ids,[...merged.values()]]);
-    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_CREATE',entity:'merchandise_request',entityId:id,details:{number,items:ids.length,destination:user.locationId},ip:undefined});
+    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_CREATE',entity:'merchandise_request',entityId:id,details:{number,items:ids.length,destination:user.locationId},ip});
     return {id,number,status:'PENDIENTE'};
   });
 }
@@ -94,7 +94,7 @@ export async function dispatchMerchandiseRequest(user: AuthUser, id: number, ite
 }
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'EN_PREPARACION'|'RECHAZADO',reason?:string,ip?:string){
  await assertWarehouseManager(user);
- return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(r.rows[0].status!=='PENDIENTE')throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
+ return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(!['PENDIENTE','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
  if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
  await c.query('UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=now(),updated_at=now() WHERE id=$4',[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
  await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip}); return {ok:true,status};});
