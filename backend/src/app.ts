@@ -16,6 +16,7 @@ import stockRoutes from './modules/stock/stock.routes';
 import deliveryRoutes from './modules/deliveries/deliveries.routes';
 import entryRoutes from './modules/entries/entries.routes';
 import transferRoutes from './modules/transfers/transfers.routes';
+import merchandiseRequestRoutes from './modules/merchandise-requests/merchandise-requests.routes';
 import countRoutes from './modules/counts/counts.routes';
 import movementRoutes from './modules/movements/movements.routes';
 import dashboardRoutes from './modules/dashboard/dashboard.routes';
@@ -78,6 +79,7 @@ export function createApp() {
   app.use('/api/deliveries', deliveryRoutes);
   app.use('/api/entries', entryRoutes);
   app.use('/api/transfers', transferRoutes);
+  app.use('/api/merchandise-requests', merchandiseRequestRoutes);
   app.use('/api/pending-deliveries', pendingDeliveryRoutes);
   app.use('/api/counts', countRoutes);
   app.use('/api/movements', movementRoutes);
