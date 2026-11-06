@@ -7,7 +7,6 @@ import { asyncH } from '../../middleware/errorHandler';
 import { authRequired, requirePerm } from '../../middleware/auth';
 import { writeAudit } from '../../services/audit.service';
 import { pathId } from '../../lib/pagination';
-import { Permission } from '../../lib/permissions';
 
 const router = Router();
 router.use(authRequired);
@@ -55,9 +54,9 @@ router.post(
     const created = await withTx(async (c) => {
       validateRestriction(data);
       const r = await c.query<{ id: number }>(
-        `INSERT INTO users (username, password_hash, full_name, role_code, default_location_id, restrict_to_location)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-        [data.username, hash, data.fullName, data.role, data.defaultLocationId ?? null, data.restrictToLocation ?? false]
+        `INSERT INTO users (username, password_hash, full_name, role_code, default_location_id, restrict_to_location, permissions)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [data.username, hash, data.fullName, data.role, data.defaultLocationId ?? null, data.restrictToLocation ?? false, data.permissions == null ? null : JSON.stringify(data.permissions)]
       );
       await writeAudit(c, {
         userId: req.user!.id, action: 'USER_CREATE', entity: 'user',
