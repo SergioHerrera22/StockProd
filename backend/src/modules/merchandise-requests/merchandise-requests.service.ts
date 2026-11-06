@@ -18,7 +18,7 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   if (hasPermission(user.role,'merchandise_requests.manage',user.permissions)) {
     await assertWarehouseManager(user);
   }
-  const manager = user.role === 'ADMIN' || user.role === 'ENCARGADO' || user.permissions?.includes('merchandise_requests.manage');
+  const manager = hasPermission(user.role,'merchandise_requests.manage',user.permissions);
   if (!manager) { params.push(user.locationId); where = 'WHERE r.destination_location_id=$1'; }
   if (status) { params.push(status); where += (where ? ' AND ' : 'WHERE ') + 'r.status=$' + params.length; }
   const result = await query(
