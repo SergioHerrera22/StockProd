@@ -310,7 +310,6 @@ export default function Users() {
               <option value="ADMIN">Administrador — acceso total</option>
             </Select>
           </Field>
-          </Field>
           <Field label="Ubicación habitual" hint="Precarga la ubicación en entregas y transferencias">
             <Select value={form.defaultLocationId} onChange={(e) => setForm({ ...form, defaultLocationId: e.target.value })}>
               <option value="">Sin ubicación fija</option>
