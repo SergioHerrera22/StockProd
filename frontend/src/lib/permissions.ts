@@ -128,7 +128,7 @@ const PERMISSION_LABELS: Record<Permission, { label: string; description: string
   'approvals.read': { label: 'Ver aprobaciones', description: 'Consultar solicitudes de aprobación.' },
   'approvals.approve': { label: 'Resolver aprobaciones', description: 'Aprobar o rechazar solicitudes.' },
   'merchandise_requests.use': { label: 'Pedir mercadería', description: 'Crear pedidos de productos desde la sucursal.' },
-  'merchandise_requests.manage': { label: 'Gestionar pedidos de mercadería', description: 'Ver todos los pedidos y despachar desde Depósito Central.' },
+  'merchandise_requests.manage': { label: 'Gestionar pedidos de mercadería', description: 'Ver y actualizar los pedidos de las sucursales desde Depósito Central.' },
   'alerts.read': { label: 'Ver alertas', description: 'Consultar alertas operativas.' },
   'alerts.manage': { label: 'Gestionar alertas', description: 'Administrar alertas y sus reglas.' },
   'settings.write': { label: 'Configurar el sistema', description: 'Modificar la configuración global.' },
