@@ -303,7 +303,7 @@ export default function Users() {
             <Input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
           </Field>
           <Field label="Rol" required hint="Define los permisos del usuario">
-            <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
+            <Select value={form.role} onChange={(e) => { const role = e.target.value as Role; setForm({ ...form, role, permissions: [...PERMISSIONS[role]] }); }}>
               <option value="EMPLEADO">Empleado — entregas y consultas</option>
               <option value="ENCARGADO">Encargado — stock, movimientos e inventarios</option>
               <option value="TRANSPORTE">Transporte — repartos y GPS</option>
