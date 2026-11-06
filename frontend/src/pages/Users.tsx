@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { fmtDateTime, fmtDateTimeShort } from '../lib/format';
-import { ROLE_LABEL, type Role } from '../lib/permissions';
+import { ROLE_LABEL, PERMISSIONS, type Permission, type Role } from '../lib/permissions';
+import { PermissionsEditor } from '../components/PermissionsEditor';
 import type { Location, SessionRow, UserRow } from '../types';
 import {
   Badge, Button, Card, CardHeader, Field, FormRow, Input, Modal, PageHeader, Select, useConfirm,
@@ -18,9 +19,10 @@ interface FormState {
   password: string;
   isActive: boolean;
   restrictToLocation: boolean;
+  permissions: Permission[];
 }
 
-const emptyForm: FormState = { username: '', fullName: '', role: 'EMPLEADO', defaultLocationId: '', password: '', isActive: true, restrictToLocation: false };
+const emptyForm: FormState = { username: '', fullName: '', role: 'EMPLEADO', defaultLocationId: '', password: '', isActive: true, restrictToLocation: false, permissions: [...PERMISSIONS.EMPLEADO] };
 
 function prettyUA(ua: string | null): string {
   if (!ua) return '—';
@@ -159,6 +161,7 @@ export default function Users() {
       password: '',
       isActive: u.is_active,
       restrictToLocation: u.restrict_to_location,
+      permissions: u.permissions ?? [...PERMISSIONS[u.role_code]],
     });
     setOpen(true);
   }
@@ -180,6 +183,7 @@ export default function Users() {
       defaultLocationId: form.defaultLocationId ? Number(form.defaultLocationId) : null,
       isActive: form.isActive,
       restrictToLocation: form.restrictToLocation,
+      permissions: form.permissions,
     };
     try {
       if (form.id) {
@@ -306,6 +310,7 @@ export default function Users() {
               <option value="ADMIN">Administrador — acceso total</option>
             </Select>
           </Field>
+          </Field>
           <Field label="Ubicación habitual" hint="Precarga la ubicación en entregas y transferencias">
             <Select value={form.defaultLocationId} onChange={(e) => setForm({ ...form, defaultLocationId: e.target.value })}>
               <option value="">Sin ubicación fija</option>
@@ -329,6 +334,7 @@ export default function Users() {
                 : 'Sin restricción de ubicación'}
             </label>
           </Field>
+          <div className="sm:col-span-2"><PermissionsEditor role={form.role} value={form.permissions} onChange={(permissions) => setForm({ ...form, permissions })} lockedPermissions={form.role === 'ADMIN' ? ['users.manage'] : []} /></div>
           {!form.id && (
             <Field label="Contraseña inicial" required className="sm:col-span-2">
               <Input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Mínimo 6 caracteres" />
