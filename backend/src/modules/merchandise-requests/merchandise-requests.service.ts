@@ -24,7 +24,7 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
   const result = await query(
     `SELECT r.id,r.number,r.status,r.notes,r.created_at,r.destination_location_id,
       dst.name destination_name,u.full_name created_by_name,u.username,
-      (SELECT count(*)::int FROM merchandise_request_items i WHERE i.request_id=r.id) item_count,
+      (SELECT count(*)::int FROM merchandise_request_items i WHERE i.request_id=r.id) item_count
      FROM merchandise_requests r
      JOIN locations dst ON dst.id=r.destination_location_id
      JOIN users u ON u.id=r.created_by
