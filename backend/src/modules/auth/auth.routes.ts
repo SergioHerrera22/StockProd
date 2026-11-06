@@ -35,9 +35,9 @@ router.post(
     const r = await query<{
       id: number; username: string; password_hash: string; full_name: string;
       role_code: AuthUser['role']; default_location_id: number | null;
-      restrict_to_location: boolean; is_active: boolean;
+      restrict_to_location: boolean; is_active: boolean; permissions: string[] | null;
     }>(
-      `SELECT id, username, password_hash, full_name, role_code, default_location_id, restrict_to_location, is_active
+      `SELECT id, username, password_hash, full_name, role_code, default_location_id, restrict_to_location, is_active, permissions
        FROM users WHERE lower(username) = lower($1)`,
       [username.trim()]
     );
@@ -83,6 +83,7 @@ router.post(
       fullName: user.full_name,
       role: user.role_code,
       locationId: user.default_location_id,
+      permissions: user.permissions,
     };
 
     await writeAudit(pool, {

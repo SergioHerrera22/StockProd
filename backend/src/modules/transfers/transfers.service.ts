@@ -52,9 +52,8 @@ async function validateTransferItems(c: PoolClient, items: TransferDraftInput['i
  * La mercaderia queda EN_TRANSITO: no suma al destino hasta recibir.
  * Ahora con: evaluación de reglas, solicitud de aprobación si corresponde, segregación de funciones.
  */
-export async function createTransfer(user: AuthUser, ip: string | undefined, input: TransferDraftInput) {
+export async function createTransferInTransaction(c: PoolClient, user: AuthUser, ip: string | undefined, input: TransferDraftInput) {
   assertTransferAccess(user, input.originLocationId, input.destinationLocationId);
-  return withTx(async (c) => {
     if (input.originLocationId === input.destinationLocationId) {
       throw ApiError.badRequest('El origen y el destino deben ser distintos');
     }
@@ -167,7 +166,10 @@ export async function createTransfer(user: AuthUser, ip: string | undefined, inp
       details: { number, origin: input.originLocationId, destination: input.destinationLocationId, dispatchedBy: user.id }, ip,
     });
     return { id: transferId, number, status: 'EN_TRANSITO', requiresApproval: false };
-  });
+}
+
+export async function createTransfer(user: AuthUser, ip: string | undefined, input: TransferDraftInput) {
+  return withTx((c) => createTransferInTransaction(c, user, ip, input));
 }
 
 /**

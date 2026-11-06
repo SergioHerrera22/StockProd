@@ -15,13 +15,14 @@ export type Permission =
   | 'tracking.read' | 'tracking.write' | 'tracking.gps'
   | 'users.read' | 'users.manage' | 'audit.read'
   | 'approvals.read' | 'approvals.approve'
+  | 'merchandise_requests.use' | 'merchandise_requests.manage'
   | 'alerts.read' | 'alerts.manage'
   /** Configuración global (reglas de aprobación, reglas de negocio, umbrales). Espejo del backend. */
   | 'settings.write';
 
 const ENCARGADO: Permission[] = [
   'products.read', 'products.write', 'categories.write', 'suppliers.manage',
-  'stock.read', 'stock.adjust',
+  'stock.read', 'stock.adjust', 'merchandise_requests.use',
   'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve',
   'entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve',
   'transfers.read', 'transfers.write', 'transfers.receive', 'transfers.dispatch', 'transfers.verify', 'transfers.void', 'transfers.approve',
@@ -35,7 +36,7 @@ const ENCARGADO: Permission[] = [
 
 const EMPLEADO: Permission[] = [
   'products.read',
-  'stock.read',
+  'stock.read', 'merchandise_requests.use',
   'deliveries.read', 'deliveries.write', 'deliveries.confirm',
   'movements.read', 'dashboard.read',
   'locations.read',
@@ -46,7 +47,7 @@ const EMPLEADO: Permission[] = [
 
 export const PERMISSIONS: Record<Role, Permission[]> = {
   ADMIN: [
-    ...ENCARGADO,
+    ...ENCARGADO, 'merchandise_requests.manage',
     'locations.manage', 'users.manage', 'users.read', 'audit.read', 'settings.write',
   ],
   ENCARGADO,
@@ -58,7 +59,7 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
 /** Lista canónica que consume el editor de permisos. */
 export const ALL_PERMISSIONS: Permission[] = [
   'products.read', 'products.write', 'categories.write', 'products.import', 'suppliers.manage',
-  'stock.read', 'stock.adjust',
+  'stock.read', 'stock.adjust', 'merchandise_requests.use', 'merchandise_requests.manage',
   'deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve',
   'entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve',
   'transfers.read', 'transfers.write', 'transfers.receive', 'transfers.dispatch', 'transfers.verify', 'transfers.void', 'transfers.approve',
@@ -126,6 +127,8 @@ const PERMISSION_LABELS: Record<Permission, { label: string; description: string
   'audit.read': { label: 'Ver auditoría', description: 'Consultar el registro de auditoría.' },
   'approvals.read': { label: 'Ver aprobaciones', description: 'Consultar solicitudes de aprobación.' },
   'approvals.approve': { label: 'Resolver aprobaciones', description: 'Aprobar o rechazar solicitudes.' },
+  'merchandise_requests.use': { label: 'Pedir mercadería', description: 'Crear pedidos de productos desde la sucursal.' },
+  'merchandise_requests.manage': { label: 'Gestionar pedidos de mercadería', description: 'Ver y actualizar los pedidos de las sucursales desde Depósito Central.' },
   'alerts.read': { label: 'Ver alertas', description: 'Consultar alertas operativas.' },
   'alerts.manage': { label: 'Gestionar alertas', description: 'Administrar alertas y sus reglas.' },
   'settings.write': { label: 'Configurar el sistema', description: 'Modificar la configuración global.' },
@@ -146,6 +149,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   permissionGroup('stock', 'Stock', 'Consulta y ajustes de existencias.', '🏷️', ['stock.read', 'stock.adjust']),
   permissionGroup('deliveries', 'Entregas', 'Preparación, confirmación y aprobación de entregas.', '🚚', ['deliveries.read', 'deliveries.write', 'deliveries.confirm', 'deliveries.void', 'deliveries.approve']),
   permissionGroup('entries', 'Entradas', 'Ingresos de mercadería y sus aprobaciones.', '📥', ['entries.read', 'entries.write', 'entries.confirm', 'entries.void', 'entries.approve']),
+  permissionGroup('merchandise_requests', 'Pedidos de mercadería', 'Pedidos entre sucursales y Depósito Central.', '📦', ['merchandise_requests.use', 'merchandise_requests.manage']),
   permissionGroup('transfers', 'Transferencias', 'Movimientos entre sucursales y depósitos.', '🔁', ['transfers.read', 'transfers.write', 'transfers.dispatch', 'transfers.receive', 'transfers.verify', 'transfers.void', 'transfers.approve']),
   permissionGroup('counts', 'Inventarios', 'Conteos físicos y aplicación de diferencias.', '📋', ['counts.read', 'counts.write', 'counts.apply', 'counts.void', 'counts.approve']),
   permissionGroup('operations', 'Operaciones', 'Movimientos y panel de control.', '📊', ['movements.read', 'dashboard.read', 'reports.read']),
@@ -162,7 +166,8 @@ export function samePermissions(a: readonly Permission[], b: readonly Permission
   return set.size === b.length && b.every((permission) => set.has(permission));
 }
 
-export function hasPermission(role: Role | undefined | null, permission: Permission): boolean {
+export function hasPermission(role: Role | undefined | null, permission: Permission, custom?: Permission[] | null): boolean {
+  if (custom !== undefined && custom !== null) return custom.includes(permission);
   if (!role) return false;
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }

@@ -9,6 +9,7 @@ export interface AuthUser {
   fullName: string;
   role: Role;
   locationId: number | null;
+  permissions?: Permission[] | null;
 }
 
 interface AuthState {
@@ -65,6 +66,6 @@ export const useAuth = create<AuthState>((set, get) => {
       set({ user: null });
     },
 
-    can: (permission) => hasPermission(get().user?.role, permission),
+    can: (permission) => hasPermission(get().user?.role, permission, get().user?.permissions),
   };
 });

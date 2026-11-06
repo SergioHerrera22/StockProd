@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   { to: '/proveedores', label: 'Proveedores', icon: '🏭', perm: 'suppliers.manage' },
   { to: '/entradas', label: 'Entradas', icon: '📥', perm: 'entries.read' },
   { to: '/transferencias', label: 'Transferencias', icon: '🚚', perm: 'transfers.read' },
+  { to: '/pedir-mercaderia', label: 'Pedir Mercadería', icon: '📦', perm: 'merchandise_requests.use' },
   { to: '/repartos', label: 'Repartos', icon: '🗺️', perm: 'tracking.read' },
   { to: '/mi-reparto', label: 'Mi Reparto', icon: '🚛', perm: 'tracking.gps' },
   { to: '/entregas-atrasos', label: 'Atrasos', icon: '⏱️', perm: 'tracking.read' },

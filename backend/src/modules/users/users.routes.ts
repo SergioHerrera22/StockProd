@@ -19,6 +19,7 @@ const userSchema = z.object({
   password: z.string().min(6).max(100).optional(),
   isActive: z.boolean().optional(),
   restrictToLocation: z.boolean().optional(),
+  permissions: z.array(z.string()).max(100).nullable().optional(),
 });
 
 function validateRestriction(data: { restrictToLocation?: boolean; defaultLocationId?: number | null }) {
@@ -33,7 +34,7 @@ router.get(
   asyncH(async (_req, res) => {
     const r = await query(
       `SELECT u.id, u.username, u.full_name, u.role_code, u.default_location_id,
-              l.name AS location_name, u.is_active, u.restrict_to_location, u.last_login_at, u.created_at
+              l.name AS location_name, u.is_active, u.restrict_to_location, u.permissions, u.last_login_at, u.created_at
        FROM users u
        LEFT JOIN locations l ON l.id = u.default_location_id
        ORDER BY u.username`
@@ -53,9 +54,9 @@ router.post(
     const created = await withTx(async (c) => {
       validateRestriction(data);
       const r = await c.query<{ id: number }>(
-        `INSERT INTO users (username, password_hash, full_name, role_code, default_location_id, restrict_to_location)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-        [data.username, hash, data.fullName, data.role, data.defaultLocationId ?? null, data.restrictToLocation ?? false]
+        `INSERT INTO users (username, password_hash, full_name, role_code, default_location_id, restrict_to_location, permissions)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [data.username, hash, data.fullName, data.role, data.defaultLocationId ?? null, data.restrictToLocation ?? false, data.permissions == null ? null : JSON.stringify(data.permissions)]
       );
       await writeAudit(c, {
         userId: req.user!.id, action: 'USER_CREATE', entity: 'user',
@@ -90,8 +91,9 @@ router.put(
            role_code = COALESCE($3, role_code),
            default_location_id = $4,
            is_active = COALESCE($5, is_active),
-           restrict_to_location = COALESCE($6, restrict_to_location)
-         WHERE id = $7`,
+           restrict_to_location = COALESCE($6, restrict_to_location),
+           permissions = CASE WHEN $7::boolean THEN $8::jsonb ELSE permissions END
+         WHERE id = $9`,
         [
           data.username ?? null,
           data.fullName ?? null,
@@ -99,6 +101,8 @@ router.put(
           locParam,
           data.isActive ?? null,
           data.restrictToLocation ?? null,
+          data.permissions !== undefined,
+          data.permissions === null ? null : JSON.stringify(data.permissions ?? []),
           id,
         ]
       );

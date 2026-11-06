@@ -232,6 +232,7 @@ export interface UserRow {
   location_name: string | null;
   is_active: boolean;
   restrict_to_location: boolean;
+  permissions?: import('./lib/permissions').Permission[] | null;
   last_login_at: string | null;
 }
 

@@ -17,6 +17,7 @@ export interface AuthUser {
   restrictToLocation: boolean;
   /** Id de sesión activa (tabla sessions). */
   sessionId: string;
+  permissions: Permission[] | null;
 }
 
 declare global {
@@ -55,9 +56,9 @@ export function authRequired(req: Request, _res: Response, next: NextFunction) {
   // Se recarga el usuario en cada pedido: si lo desactivan o cambian su rol, aplica al instante.
   query<{
     id: number; username: string; full_name: string; role_code: Role;
-    default_location_id: number | null; restrict_to_location: boolean; is_active: boolean;
+    default_location_id: number | null; restrict_to_location: boolean; is_active: boolean; permissions: Permission[] | null;
   }>(
-    `SELECT id, username, full_name, role_code, default_location_id, restrict_to_location, is_active
+    `SELECT id, username, full_name, role_code, default_location_id, restrict_to_location, is_active, permissions
      FROM users WHERE id = $1`,
     [payload.sub]
   )
@@ -114,6 +115,7 @@ export function authRequired(req: Request, _res: Response, next: NextFunction) {
         locationId: u.default_location_id,
         restrictToLocation: u.restrict_to_location,
         sessionId: payload.sid,
+        permissions: u.permissions,
       };
       next();
     })
@@ -126,7 +128,7 @@ export function authRequired(req: Request, _res: Response, next: NextFunction) {
 export function requirePerm(permission: Permission) {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) return next(ApiError.unauthorized());
-    if (!hasPermission(req.user.role, permission)) {
+    if (!hasPermission(req.user.role, permission, req.user.permissions)) {
       return next(ApiError.forbidden());
     }
     next();
