@@ -237,6 +237,9 @@ export default function DeliveryDetail() {
         <Button variant="secondary" onClick={() => navigate('/entregas')}>← Volver</Button>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => window.print()}>🖨 Imprimir comprobante</Button>
+          {delivery.status === 'BORRADOR' && can('deliveries.write') && (
+            <Button variant="secondary" onClick={() => navigate('/entregas/' + delivery.id + '/editar')}>✏️ Editar borrador</Button>
+          )}
           {delivery.status === 'BORRADOR' && can('deliveries.confirm') && (
             <Button variant="success" loading={saving} onClick={confirmDraft}>{delivery.is_pending_delivery ? '📦 Registrar entrega efectiva' : '✅ Confirmar entrega'}</Button>
           )}
