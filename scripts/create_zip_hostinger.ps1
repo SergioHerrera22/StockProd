@@ -18,6 +18,7 @@ $items = @(
   @{ Path = '.env';              Recursive = $false },
   @{ Path = 'README_DEPLOY.txt'; Recursive = $false },
   @{ Path = 'migrations';          Recursive = $true },
+  @{ Path = 'backend/migrations'; Recursive = $true },
   @{ Path = 'scripts/migrate.mjs'; Recursive = $false }
 )
 
