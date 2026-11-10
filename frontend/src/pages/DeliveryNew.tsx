@@ -160,7 +160,7 @@ export default function DeliveryNew() {
           unit: p.unit ?? 'UNIDAD',
           stock,
           minStock: Number(p.min_stock ?? 0),
-          quantity: 1,
+          quantity,
         },
       ];
     });
