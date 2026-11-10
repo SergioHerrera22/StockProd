@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api, qs, checkDeliveryAvailability, confirmDeliveryWithAlternatives, getDrivers, geocodeAddressApi } from '../lib/api';
 import { fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
@@ -31,6 +31,8 @@ export default function DeliveryNew() {
   const toast = useToast();
   const navigate = useNavigate();
   const user = useAuth((s) => s.user);
+  const { id: editId } = useParams();
+  const editing = Boolean(editId);
 
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationId, setLocationId] = useState<string>(user?.locationId ? String(user.locationId) : '');
@@ -79,6 +81,41 @@ export default function DeliveryNew() {
   useEffect(() => {
     getDrivers().then((d) => setDrivers(d || [])).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (!editId) return;
+    let active = true;
+    setSaving(true);
+    api('/deliveries/' + editId).then((response: any) => {
+      if (!active) return;
+      const delivery = response.delivery;
+      if (delivery.status !== 'BORRADOR') {
+        toast.error('Solo se pueden editar entregas en borrador');
+        navigate('/entregas/' + editId, { replace: true });
+        return;
+      }
+      setLocationId(String(delivery.location_id));
+      setInvoiceNumber(delivery.invoice_number || '');
+      setNotes(delivery.notes || '');
+      setPendingDelivery(Boolean(delivery.is_pending_delivery));
+      setDeliveryType(delivery.delivery_type === 'DOMICILIO' ? 'DOMICILIO' : 'LOCAL');
+      setDriverUserId(delivery.driver_user_id ? String(delivery.driver_user_id) : '');
+      setCustomerName(delivery.customer_name || '');
+      setCustomerPhone(delivery.customer_phone || '');
+      setDeliveryAddress(delivery.delivery_address || '');
+      setDeliveryLat(delivery.delivery_lat == null ? null : Number(delivery.delivery_lat));
+      setDeliveryLng(delivery.delivery_lng == null ? null : Number(delivery.delivery_lng));
+      setDueAt(delivery.due_at ? new Date(delivery.due_at).toISOString().slice(0, 16) : '');
+      setDeliveryObservations(delivery.delivery_observations || '');
+      setLines((delivery.items || []).map((it: any) => ({
+        ...emptyLine, productId: Number(it.product_id), code: it.code || '',
+        name: it.name || '', unit: it.unit || 'UNIDAD', stock: Number(it.stock_now || 0),
+        minStock: Number(it.min_stock || 0), quantity: Number(it.quantity),
+        requestedQuantity: it.requested_quantity == null ? null : Number(it.requested_quantity),
+      })));
+    }).catch((e: any) => toast.error(e.message)).finally(() => { if (active) setSaving(false); });
+    return () => { active = false; };
+  }, [editId, navigate, toast]);
+
 
   /** Busca un producto por código exacto (escaneo) y lo agrega o suma cantidad. */
   const handleScan = useCallback(async (code: string) => {
@@ -184,8 +221,10 @@ export default function DeliveryNew() {
     if (err) { toast.error(err); return; }
     setSaving(true);
     try {
-      const res = await api<{ id: number; number: string }>('/deliveries', { method: 'POST', body });
-      toast.success(pendingDelivery ? `Entrega ${res.number} creada como pendiente: stock reservado, sin descontar` : `Borrador ${res.number} guardado (el stock no cambió)`);
+      const res: any = editing
+        ? await api('/deliveries/' + editId, { method: 'PUT', body })
+        : await api('/deliveries', { method: 'POST', body });
+      toast.success(editing ? 'Borrador ' + res.number + ' actualizado' : (pendingDelivery ? `Entrega ${res.number} creada como pendiente: stock reservado, sin descontar` : `Borrador ${res.number} guardado (el stock no cambió)`));
       navigate(`/entregas/${res.id}`);
     } catch (e) {
       toast.error((e as Error).message);
@@ -301,8 +340,8 @@ export default function DeliveryNew() {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader
-        title="Nueva entrega de mercadería"
-        subtitle="Verificá y cargá solo lo que realmente se entrega. Si falta stock, podés derivar a otra sucursal."
+        title={editing ? "Editar borrador de entrega" : "Nueva entrega de mercadería"}
+        subtitle={editing ? "Modificá los productos, cantidades y datos de esta entrega. Se conserva el mismo número." : "Verificá y cargá solo lo que realmente se entrega. Si falta stock, podés derivar a otra sucursal."}
         actions={<Button variant="secondary" onClick={() => navigate('/entregas')}>← Volver</Button>}
       />
 
@@ -321,7 +360,7 @@ export default function DeliveryNew() {
           </Field>
         </FormRow>
         <label className="mt-3 flex items-start gap-2 text-sm text-slate-700">
-          <input type="checkbox" checked={pendingDelivery} onChange={(e) => setPendingDelivery(e.target.checked)} className="mt-0.5 rounded border-slate-300" />
+          <input type="checkbox" checked={pendingDelivery} onChange={(e) => setPendingDelivery(e.target.checked)} disabled={editing} className="mt-0.5 rounded border-slate-300" />
           <span><strong>Pendiente de entrega</strong><span className="block text-xs text-slate-500">Reserva las unidades disponibles sin descontarlas. El stock se descuenta al registrar la entrega efectiva.</span></span>
         </label>
       </Card>
@@ -473,7 +512,7 @@ export default function DeliveryNew() {
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={saveDraft} loading={saving} disabled={!lines.length}>
-            💾 Guardar borrador
+            💾 {editing ? "Guardar cambios" : "Guardar borrador"}
           </Button>
           <Button
             variant="success"
