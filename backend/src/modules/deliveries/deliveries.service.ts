@@ -332,39 +332,42 @@ export async function createDelivery(user: AuthUser, ip: string | undefined, inp
 export async function updateDelivery(user: AuthUser, ip: string | undefined, id: number, input: DeliveryDraftInput) {
   assertLocationAccess(user, input.locationId);
   return withTx(async (c) => {
-    const d = await c.query<{ status: string; number: string; is_pending_delivery: boolean }>(
-      'SELECT status, number, is_pending_delivery FROM deliveries WHERE id = $1 FOR UPDATE',
+    const d = await c.query<{ status: string; number: string; is_pending_delivery: boolean; location_id: number }>(
+      'SELECT status, number, is_pending_delivery, location_id FROM deliveries WHERE id = $1 FOR UPDATE',
       [id]
     );
     if (!d.rows[0]) throw ApiError.notFound('Entrega no encontrada');
     if (d.rows[0].status !== 'BORRADOR') {
       throw ApiError.conflict('Solo se pueden modificar entregas en borrador');
     }
-    if (d.rows[0].is_pending_delivery) throw ApiError.conflict('La entrega ya tiene stock reservado. Anulala y creá una nueva para cambiar sus productos.');
     if (!input.invoiceNumber?.trim()) throw ApiError.badRequest('El número de factura es obligatorio');
     await validateItems(c, input.items);
+    const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
+    if (!loc.rows[0]) throw ApiError.badRequest('Ubicación de salida inválida');
+
+    // Si el borrador reserva stock, liberar las reservas anteriores y reconstruirlas
+    // dentro de la misma transacción. Si una nueva cantidad no puede reservarse,
+    // toda la edición revierte y el borrador conserva sus datos y reservas previas.
+    if (d.rows[0].is_pending_delivery) {
+      await releaseAllReservationsForReference(c, 'DELIVERY', id, user.id, 'Edición del borrador de entrega');
+    }
 
     const driverUserId = input.driverUserId ?? input.driverId ?? null;
-    const deliveryType = input.deliveryType || (driverUserId || input.deliveryAddress ? 'DOMICILIO' : undefined);
+    const deliveryType = input.deliveryType || (driverUserId || input.deliveryAddress ? 'DOMICILIO' : 'LOCAL');
     await c.query(
       `UPDATE deliveries SET location_id = $1, invoice_number = $2, notes = $3,
-                              delivery_type = COALESCE($5, delivery_type),
-                              customer_name = COALESCE($6, customer_name),
-                              customer_phone = COALESCE($7, customer_phone),
-                              delivery_address = COALESCE($8, delivery_address),
-                              delivery_lat = COALESCE($9, delivery_lat),
-                              delivery_lng = COALESCE($10, delivery_lng),
-                              driver_user_id = COALESCE($11, driver_user_id),
-                              driver_assigned_at = CASE WHEN $11 IS NOT NULL AND driver_assigned_at IS NULL THEN now() ELSE driver_assigned_at END,
-                              due_at = COALESCE($12, due_at),
-                              delivery_observations = COALESCE($13, delivery_observations)
+                              delivery_type = $5, customer_name = $6, customer_phone = $7,
+                              delivery_address = $8, delivery_lat = $9, delivery_lng = $10,
+                              driver_user_id = $11,
+                              driver_assigned_at = CASE WHEN $11 IS NOT NULL THEN COALESCE(driver_assigned_at, now()) ELSE NULL END,
+                              due_at = $12, delivery_observations = $13
        WHERE id = $4`,
       [
         input.locationId,
-        input.invoiceNumber?.trim() || null,
+        input.invoiceNumber.trim(),
         input.notes?.trim() || null,
         id,
-        deliveryType || null,
+        deliveryType,
         input.customerName?.trim() || null,
         input.customerPhone?.trim() || null,
         input.deliveryAddress?.trim() || null,
@@ -376,7 +379,6 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
       ]
     );
     await c.query('DELETE FROM delivery_items WHERE delivery_id = $1', [id]);
-    // Reinsercion de items en UNA sola query (unnest)
     await c.query(
       `INSERT INTO delivery_items (delivery_id, product_id, quantity, requested_quantity)
        SELECT $1, p, q, rq FROM unnest($2::int[], $3::numeric[], $4::numeric[]) AS t(p, q, rq)`,
@@ -387,8 +389,28 @@ export async function updateDelivery(user: AuthUser, ip: string | undefined, id:
         input.items.map((it) => it.requestedQuantity ?? null),
       ]
     );
-    await writeAudit(c, { userId: user.id, action: 'DELIVERY_UPDATE_DRAFT', entity: 'delivery', entityId: id, ip });
-    return { id, number: d.rows[0].number };
+
+    if (d.rows[0].is_pending_delivery) {
+      await reserveStockBatch(c, input.items.map((it) => ({
+        referenceType: 'DELIVERY' as const,
+        referenceId: id,
+        productId: it.productId,
+        sourceLocationId: input.locationId,
+        quantity: Math.max(it.quantity, it.requestedQuantity ?? 0),
+        reservedBy: user.id,
+        expiresAt: null,
+      })));
+    }
+
+    await writeAudit(c, {
+      userId: user.id,
+      action: 'DELIVERY_UPDATE_DRAFT',
+      entity: 'delivery',
+      entityId: id,
+      details: { number: d.rows[0].number, itemCount: input.items.length, reserved: d.rows[0].is_pending_delivery },
+      ip,
+    });
+    return { id, number: d.rows[0].number, status: 'BORRADOR' };
   });
 }
 

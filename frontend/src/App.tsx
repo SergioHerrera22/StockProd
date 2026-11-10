@@ -73,6 +73,7 @@ export default function App() {
               <Route index element={<RequirePerm perm="dashboard.read"><Dashboard /></RequirePerm>} />
               <Route path="entregas" element={<RequirePerm perm="deliveries.read"><Deliveries /></RequirePerm>} />
               <Route path="entregas/nueva" element={<RequirePerm perm="deliveries.write"><DeliveryNew /></RequirePerm>} />
+              <Route path="entregas/:id/editar" element={<RequirePerm perm="deliveries.write"><DeliveryNew /></RequirePerm>} />
               <Route path="entregas/:id" element={<RequirePerm perm="deliveries.read"><DeliveryDetail /></RequirePerm>} />
               <Route path="stock" element={<RequirePerm perm="stock.read"><StockPage /></RequirePerm>} />
               <Route path="productos" element={<RequirePerm perm="products.read"><Products /></RequirePerm>} />
