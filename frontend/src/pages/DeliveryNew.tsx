@@ -13,6 +13,7 @@ import { ScanInput } from '../components/ScanInput';
 import { ProductPicker } from '../components/ProductPicker';
 import { useToast } from '../components/Toast';
 import { hasPermission } from '../lib/permissions';
+import { DeliveryImageImport, type DeliveryImageRow } from '../components/DeliveryImageImport';
 
 interface Line {
   productId: number;
@@ -139,13 +140,13 @@ export default function DeliveryNew() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locationId, lines]);
 
-  function addProduct(p: StockRow) {
+  function addProduct(p: StockRow, quantity = 1) {
     setLines((prev) => {
       const idx = prev.findIndex((l) => l.productId === p.id);
       if (idx >= 0) {
         const next = [...prev];
-        next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
-        toast.info(`+1 ${p.name} (total ${next[idx].quantity})`);
+        next[idx] = { ...next[idx], quantity: next[idx].quantity + quantity };
+        toast.info(`+${quantity} ${p.name} (total ${next[idx].quantity})`);
         return next;
       }
       const stock = availableOf(p);
@@ -159,11 +160,37 @@ export default function DeliveryNew() {
           unit: p.unit ?? 'UNIDAD',
           stock,
           minStock: Number(p.min_stock ?? 0),
-          quantity: 1,
+          quantity,
         },
       ];
     });
   }
+
+  /** Resuelve los códigos detectados por OCR contra el catálogo; nunca asigna por descripción aproximada. */
+  const handleImageImport = useCallback(async (rows: DeliveryImageRow[]) => {
+    if (!locationId) {
+      toast.warn('Primero elegí la ubicación de salida');
+      return;
+    }
+    const unresolved: string[] = [];
+    let imported = 0;
+    for (const row of rows) {
+      try {
+        const res = await api<{ products: StockRow[] }>(`/stock${qs({ q: row.code, locationId, limit: 10 })}`);
+        const matches = res.products.filter((p) => p.code.trim().toLowerCase() === row.code.trim().toLowerCase());
+        if (matches.length !== 1) {
+          unresolved.push(row.code);
+          continue;
+        }
+        addProduct(matches[0], row.quantity);
+        imported++;
+      } catch {
+        unresolved.push(row.code);
+      }
+    }
+    if (imported) toast.success(`${imported} línea(s) de captura incorporadas. Revisá las cantidades antes de guardar.`);
+    if (unresolved.length) toast.warn(`No se encontraron por código exacto: ${Array.from(new Set(unresolved)).join(', ')}. No se agregaron.`);
+  }, [locationId, toast]);
 
   function setQuantity(productId: number, quantity: number) {
     setLines((prev) => prev.map((l) => (l.productId === productId ? { ...l, quantity } : l)));
@@ -413,6 +440,8 @@ export default function DeliveryNew() {
           </div>
         )}
       </Card>
+
+      <DeliveryImageImport onImport={handleImageImport} disabled={saving} />
 
       <Card className="mb-4 p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
