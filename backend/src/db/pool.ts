@@ -1,4 +1,5 @@
 import { Pool, PoolClient, ClientBase, QueryResult, QueryResultRow } from 'pg';
+import { rootCertificates } from 'tls';
 import { config } from '../config/env';
 import { logger } from '../lib/logger';
 
@@ -17,14 +18,18 @@ function getDatabaseConnectionOptions() {
   }
 
   // pg-connection-string puede sobrescribir ssl.ca al interpretar sslmode.
-  // Quitamos esos parámetros y definimos TLS con validación estricta.
+  // Quitamos esos parámetros y conservamos las CA públicas de Node además
+  // del certificado raíz específico descargado desde Supabase.
   const connectionUrl = new URL(config.databaseUrl);
   connectionUrl.searchParams.delete('sslmode');
   connectionUrl.searchParams.delete('uselibpqcompat');
 
   return {
     connectionString: connectionUrl.toString(),
-    ssl: { ca: caCertificate, rejectUnauthorized: true },
+    ssl: {
+      ca: [...rootCertificates, caCertificate],
+      rejectUnauthorized: true,
+    },
   };
 }
 
