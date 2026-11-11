@@ -4,18 +4,37 @@ import { logger } from '../lib/logger';
 
 const isSupabase = config.databaseUrl.includes('supabase');
 
-// Zona horaria fija de la empresa en TODAS las sesiones del pool: sin esto,
-// "hoy" cierra a las 21:00 cuando el Postgres corre en UTC y confunde
-// conteos por día, entregas del día y reportes.
-// Se usa la OPCION onConnect (no el evento pool.on('connect')): pg-pool
-// ESPERA esta promesa antes de despachar la primer query del cliente, así
-// el SET TIME ZONE nunca pisa/compite con una consulta de usuario.
+function getDatabaseConnectionOptions() {
+  if (!isSupabase) return { connectionString: config.databaseUrl };
+
+  const caCertificate = process.env.SUPABASE_CA_CERT?.replace(/\\n/g, '\n').trim();
+  if (!caCertificate) {
+    throw new Error('Falta SUPABASE_CA_CERT: configura el certificado CA de Supabase en las variables de entorno.');
+  }
+  if (!caCertificate.includes('-----BEGIN CERTIFICATE-----') ||
+      !caCertificate.includes('-----END CERTIFICATE-----')) {
+    throw new Error('SUPABASE_CA_CERT no contiene un certificado PEM válido.');
+  }
+
+  // pg-connection-string puede sobrescribir ssl.ca al interpretar sslmode.
+  // Quitamos esos parámetros y definimos TLS con validación estricta.
+  const connectionUrl = new URL(config.databaseUrl);
+  connectionUrl.searchParams.delete('sslmode');
+  connectionUrl.searchParams.delete('uselibpqcompat');
+
+  return {
+    connectionString: connectionUrl.toString(),
+    ssl: { ca: caCertificate, rejectUnauthorized: true },
+  };
+}
+
+// Zona horaria fija de la empresa en TODAS las sesiones del pool.
+// onConnect hace que pg-pool espere el SET TIME ZONE antes de despachar queries.
 export const pool = new Pool({
-  connectionString: config.databaseUrl,
+  ...getDatabaseConnectionOptions(),
   max: 10,
   idleTimeoutMillis: 30000,
   onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'") as unknown as Promise<void>,
-  ...(isSupabase ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
 pool.on('error', (err) => logger.error('Error inesperado en el pool de PG', err.message));
