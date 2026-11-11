@@ -1,3 +1,4 @@
+
 name: Deploy to Hostinger
 
 on:
@@ -17,6 +18,7 @@ jobs:
   lint-and-typecheck:
     name: Lint & Type Check
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -57,6 +59,7 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -88,22 +91,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Start PostgreSQL and configure a password for the isolated CI runner.
           sudo systemctl start postgresql
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'postgres';"
 
-          # Create a disposable database and apply every migration in order.
           psql -h localhost -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE robles_stock_test;"
           npm run db:migrate
           npm run db:seed
 
-          # Build and start the API required by tests/smoke.mjs.
           npm run build
           nohup npm start > /tmp/robles-stock-api.log 2>&1 &
           API_PID=$!
           trap 'kill "$API_PID" 2>/dev/null || true' EXIT
 
-          # Wait for the API and its database health check before running HTTP tests.
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:4000/api/health | grep -q '"db":"ok"'; then
               echo "API disponible y PostgreSQL saludable."
@@ -121,6 +120,7 @@ jobs:
               cat /tmp/robles-stock-api.log
               exit 1
             fi
+
             sleep 2
           done
 
@@ -133,6 +133,7 @@ jobs:
     name: Build Application
     runs-on: ubuntu-latest
     needs: test
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -193,9 +194,15 @@ jobs:
     name: Deploy to Hostinger
     runs-on: ubuntu-latest
     needs: build
+
+    # Permite acceder a los secretos del Environment de Hostinger.
+    environment: HOSTINGER_FTP_HOST
+
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
     env:
       HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -272,26 +279,21 @@ jobs:
           port: ${{ secrets.HOSTINGER_SSH_PORT }}
           script: |
             cd ${{ secrets.HOSTINGER_SSH_DIR }}
-            # Ejecutar migraciones si existen nuevas
+
             if [ -f "backend/scripts/migrate.mjs" ]; then
               node backend/scripts/migrate.mjs
             fi
-            # Reiniciar la aplicación (ajusta según tu configuración en Hostinger)
-            # Opción A: PM2
+
             pm2 restart robles-stock || true
-            # Opción B: systemctl (si tienes acceso)
-            # sudo systemctl restart robles-stock || true
-            # Opción C: Solo reiniciar el proceso Node
-            # pkill -f "node backend/dist/index.js" && nohup node backend/dist/index.js > app.log 2>&1 &
 
       - name: Notify deployment success
         if: success()
         run: |
-          echo "✅ Despliegue completado exitosamente en Hostinger"
-          echo "🌐 Tu aplicación debería estar disponible en tu dominio configurado"
+          echo "Despliegue completado exitosamente en Hostinger"
+          echo "Verificar disponibilidad de la aplicación."
 
       - name: Notify deployment failure
         if: failure()
         run: |
-          echo "❌ El despliegue falló. Revisa los logs arriba para más detalles."
+          echo "El despliegue falló. Revisar los logs."
           exit 1
