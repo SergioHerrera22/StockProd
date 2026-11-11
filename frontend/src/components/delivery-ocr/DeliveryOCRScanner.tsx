@@ -69,14 +69,22 @@ export const DeliveryOCRScanner: React.FC<DeliveryOCRProps> = ({ onProductsDetec
     setImageSrc(objectUrl);
 
     try {
-      // Run OCR using Tesseract
-      const worker = await Tesseract.createWorker('eng', {
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.:/-\\ ',
-        preserve_interword_spaces: 'true',
-      });
+      // Tesseract.js 2.x API: createWorker accepts a single options object.
+      // Load and initialize the language explicitly before recognizing the image.
+      const worker = Tesseract.createWorker();
+      let data: any;
 
-      const { data } = await worker.recognize(file);
-      await worker.terminate();
+      try {
+        await worker.load();
+        await worker.loadLanguage('eng');
+        await worker.initialize('eng');
+        await worker.setParameters({
+          tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.:/-\\ ',
+        });
+        ({ data } = await worker.recognize(file));
+      } finally {
+        await worker.terminate();
+      }
 
       setOcrResult({
         text: data.text || '',
