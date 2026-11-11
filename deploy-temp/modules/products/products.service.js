@@ -1,0 +1,520 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.assertUnit = assertUnit;
+exports.createProduct = createProduct;
+exports.checkDuplicates = checkDuplicates;
+exports.generateBarcode = generateBarcode;
+exports.scanDuplicates = scanDuplicates;
+exports.bulkDeleteProducts = bulkDeleteProducts;
+exports.updateProductBarcode = updateProductBarcode;
+exports.updateProduct = updateProduct;
+exports.importProducts = importProducts;
+const pool_1 = require("../../db/pool");
+const errors_1 = require("../../lib/errors");
+const audit_service_1 = require("../../services/audit.service");
+const UNIT_ENUM = ['UNIDAD', 'LITRO', 'KG', 'METRO', 'OTRO'];
+function assertUnit(unit) {
+    if (!UNIT_ENUM.includes(unit))
+        throw errors_1.ApiError.badRequest(`Unidad de medida invalida: ${unit}`);
+}
+async function createProduct(user, ip, input) {
+    assertUnit(input.unit);
+    return (0, pool_1.withTx)(async (c) => {
+        const dup = await findDuplicates(c, input);
+        if (dup.exact.length > 0) {
+            throw errors_1.ApiError.conflict('Ya existe un producto con ese codigo o codigo de barras', dup.exact);
+        }
+        const r = await c.query(`INSERT INTO products (code, barcode, name, description, brand, category_id, unit, min_stock, cost, reference_price, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, [
+            input.code.trim(), input.barcode?.trim() || null, input.name.trim(),
+            input.description ?? null, input.brand?.trim() || null, input.categoryId ?? null,
+            input.unit, input.minStock ?? 0, input.cost ?? null, input.referencePrice ?? null, user.id,
+        ]);
+        if (input.supplierIds !== undefined)
+            await syncProductSuppliers(c, r.rows[0].id, input.supplierIds, input.primarySupplierId ?? null);
+        await (0, audit_service_1.writeAudit)(c, {
+            userId: user.id, action: 'PRODUCT_CREATE', entity: 'product',
+            entityId: r.rows[0].id, details: { code: input.code, name: input.name }, ip,
+        });
+        return r.rows[0].id;
+    });
+}
+async function syncProductSuppliers(c, productId, supplierIds, primarySupplierId) {
+    const ids = [...new Set(supplierIds)];
+    if (primarySupplierId !== null && !ids.includes(primarySupplierId)) {
+        throw errors_1.ApiError.badRequest('El proveedor principal debe estar incluido entre los proveedores del producto');
+    }
+    if (ids.length) {
+        const active = await c.query('SELECT id FROM suppliers WHERE id = ANY($1::int[]) AND is_active', [ids]);
+        if (active.rows.length !== ids.length)
+            throw errors_1.ApiError.badRequest('Uno o más proveedores no existen o están inactivos');
+    }
+    await c.query('UPDATE product_suppliers SET is_primary = false WHERE product_id = $1', [productId]);
+    if (!ids.length) {
+        await c.query('DELETE FROM product_suppliers WHERE product_id = $1', [productId]);
+        return;
+    }
+    await c.query('DELETE FROM product_suppliers WHERE product_id = $1 AND NOT (supplier_id = ANY($2::int[]))', [productId, ids]);
+    await c.query(`INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+     SELECT $1, supplier_id, COALESCE(supplier_id = $3, false)
+     FROM unnest($2::int[]) AS supplier_ids(supplier_id)
+     ON CONFLICT (product_id, supplier_id) DO UPDATE SET is_primary = EXCLUDED.is_primary`, [productId, ids, primarySupplierId]);
+}
+async function findDuplicates(c, input) {
+    // 1 solo round-trip para exactos + similares (antes eran 3 queries secuenciales)
+    const r = await c.query(`SELECT id, code, name, NULL::text AS brand, true AS exact
+     FROM products
+     WHERE is_active AND (
+       ($1::text IS NOT NULL AND lower(code) = lower($1::text)) OR
+       ($2::text IS NOT NULL AND barcode = $2::text)
+     )
+     UNION ALL
+     SELECT id, code, name, brand, false
+     FROM (
+       SELECT id, code, name, brand
+       FROM products
+       WHERE is_active
+         AND $3::text IS NOT NULL
+         AND length(trim($3::text)) >= 4
+         AND lower(name) LIKE '%' || lower($3::text) || '%'
+         AND (brand IS NULL OR $4::text IS NULL OR lower(brand) = lower($4::text))
+       LIMIT 5
+     ) s`, [input.code?.trim() || null, input.barcode?.trim() || null, input.name?.trim() || null, input.brand?.trim() || null]);
+    const exact = r.rows.filter((row) => row.exact).map(({ id, code, name }) => ({ id, code, name }));
+    const similar = r.rows
+        .filter((row) => !row.exact)
+        .map(({ id, code, name, brand }) => ({ id, code, name, brand }));
+    return { exact, similar };
+}
+async function checkDuplicates(input) {
+    return (0, pool_1.withTx)((c) => findDuplicates(c, input));
+}
+/**
+ * Genera un EAN-13 unico reutilizando generate_ean13_barcode() de la BD
+ * (prefijo 779800, Argentina + interno). La funcion solo verifica unicidad
+ * contra pending_deliveries, por lo que aqui se re-verifica contra products.
+ */
+/**
+ * Genera un EAN-13 unico reutilizando generate_ean13_barcode() de la BD
+ * (prefijo 779800, Argentina + interno). La funcion solo verifica unicidad
+ * contra pending_deliveries, por lo que aqui se re-verifica contra products.
+ */
+async function generateBarcode() {
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const r = await (0, pool_1.query)('SELECT generate_ean13_barcode() AS barcode');
+        const barcode = r.rows[0]?.barcode;
+        if (!barcode)
+            continue;
+        const dup = await (0, pool_1.query)(`SELECT 1 FROM products WHERE barcode = $1
+       UNION ALL
+       SELECT 1 FROM pending_deliveries WHERE barcode = $1
+       LIMIT 1`, [barcode]);
+        if (!dup.rows[0])
+            return barcode;
+    }
+    throw errors_1.ApiError.badRequest('No se pudo generar un código de barras único. Volvé a intentar.');
+}
+function normalizeName(s) {
+    return s
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+async function scanDuplicates() {
+    const r = await (0, pool_1.query)(`SELECT p.id, p.code, p.name, p.brand, p.unit, p.is_active
+     FROM products p
+     WHERE p.is_active = true
+     ORDER BY lower(p.name), p.id`);
+    const groups = new Map();
+    for (const row of r.rows) {
+        const normalizedName = normalizeName(row.name);
+        if (!normalizedName)
+            continue;
+        const key = [normalizedName, normalizeName(row.brand ?? ''), String(row.unit).toUpperCase()].join('|');
+        if (!groups.has(key)) {
+            groups.set(key, { key, count: 0, products: [] });
+        }
+        const g = groups.get(key);
+        g.products.push({ ...row, total_qty: 0 });
+    }
+    // Get stock totals for all products in duplicates
+    const productIds = [...groups.values()].flatMap((g) => g.products.map((p) => p.id));
+    if (productIds.length > 0) {
+        const stock = await (0, pool_1.query)(`SELECT product_id, COALESCE(SUM(quantity), 0) AS total_qty
+       FROM stock_balances
+       WHERE product_id = ANY($1::int[])
+       GROUP BY product_id`, [productIds]);
+        const map = new Map(stock.rows.map((s) => [s.product_id, Number(s.total_qty)]));
+        for (const g of groups.values()) {
+            for (const p of g.products) {
+                p.total_qty = map.get(p.id) ?? 0;
+            }
+            g.count = g.products.length;
+        }
+    }
+    return [...groups.values()].filter((g) => g.count > 1);
+}
+async function bulkDeleteProducts(user, ip, ids) {
+    const deleted = [];
+    const skipped = [];
+    const uniqueIds = [...new Set(ids)];
+    await (0, pool_1.withTx)(async (c) => {
+        // 3 queries para TODO el lote (antes eran 4 por producto)
+        const found = await c.query('SELECT id, code, name FROM products WHERE id = ANY($1::int[])', [uniqueIds]);
+        const foundMap = new Map(found.rows.map((r) => [r.id, r]));
+        const stocks = await c.query(`SELECT product_id, COALESCE(SUM(quantity), 0) AS total
+       FROM stock_balances WHERE product_id = ANY($1::int[]) GROUP BY product_id`, [uniqueIds]);
+        const withStock = new Map(stocks.rows.map((s) => [s.product_id, Number(s.total)]));
+        const deletable = [];
+        for (const id of uniqueIds) {
+            const p = foundMap.get(id);
+            if (!p) {
+                skipped.push({ id, reason: 'No encontrado' });
+                continue;
+            }
+            const total = withStock.get(id) ?? 0;
+            if (total > 0) {
+                skipped.push({ id, reason: 'Tiene stock > 0' });
+                continue;
+            }
+            deletable.push(p);
+        }
+        if (deletable.length > 0) {
+            await c.query('UPDATE products SET is_active = false WHERE id = ANY($1::int[])', [deletable.map((p) => p.id)]);
+            // Auditoria en bloque con unnest (1 query, no N)
+            await c.query(`INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip)
+         SELECT $1, $2, 'product', v.id, v.details, $5
+         FROM unnest($3::int[], $4::jsonb[]) AS v(id, details)`, [
+                user.id,
+                'PRODUCT_BULK_DELETE',
+                deletable.map((p) => p.id),
+                deletable.map((p) => JSON.stringify({ code: p.code, name: p.name })),
+                ip,
+            ]);
+            deleted.push(...deletable.map((p) => p.id));
+        }
+    });
+    return { deleted: deleted.length, skipped };
+}
+/** Actualización puntual de código de barras desde el listado.
+ *  Evita enviar/reescribir el resto de los datos del producto. */
+async function updateProductBarcode(user, ip, id, barcode) {
+    const cleanBarcode = barcode.trim() || null;
+    await (0, pool_1.withTx)(async (c) => {
+        const product = await c.query('SELECT id, barcode FROM products WHERE id = $1 FOR UPDATE', [id]);
+        if (!product.rows[0])
+            throw errors_1.ApiError.notFound('Producto no encontrado');
+        if (cleanBarcode) {
+            // Serializa asignaciones concurrentes del mismo código para evitar duplicados
+            // aunque dos usuarios intenten guardarlo prácticamente al mismo tiempo.
+            await c.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [cleanBarcode]);
+            const duplicate = await c.query('SELECT id FROM products WHERE barcode = $1 AND id <> $2 LIMIT 1', [cleanBarcode, id]);
+            if (duplicate.rows[0])
+                throw errors_1.ApiError.conflict('Ese código de barras ya está asignado a otro producto');
+        }
+        await c.query('UPDATE products SET barcode = $1, updated_at = now() WHERE id = $2', [cleanBarcode, id]);
+        await (0, audit_service_1.writeAudit)(c, {
+            userId: user.id,
+            action: 'PRODUCT_BARCODE_UPDATE',
+            entity: 'product',
+            entityId: id,
+            details: { previousBarcode: product.rows[0].barcode, barcode: cleanBarcode },
+            ip,
+        });
+    });
+}
+async function updateProduct(user, ip, id, input) {
+    if (input.unit)
+        assertUnit(input.unit);
+    return (0, pool_1.withTx)(async (c) => {
+        // UPDATE con RETURNING: ni SELECT previo para verificar existencia
+        // (con >= 1 fila que recibe RETURNING como resultado) ni doble round-trip
+        const result = await c.query(`UPDATE products SET
+         code = COALESCE($1, code),
+         barcode = COALESCE($2, barcode),
+         name = COALESCE($3, name),
+         description = COALESCE($4, description),
+         brand = COALESCE($5, brand),
+         category_id = COALESCE($6, category_id),
+         unit = COALESCE($7, unit),
+         min_stock = COALESCE($8, min_stock),
+         cost = $9,
+         reference_price = $10,
+         is_active = COALESCE($11, is_active)
+       WHERE id = $12
+       RETURNING id`, [
+            ...(input.code ? [input.code.trim()] : [null]),
+            input.barcode === undefined ? null : input.barcode?.trim() || null,
+            input.name ? input.name.trim() : null,
+            input.description ?? null,
+            input.brand ?? null,
+            input.categoryId ?? null,
+            input.unit ?? null,
+            input.minStock ?? null,
+            input.cost ?? null,
+            input.referencePrice ?? null,
+            input.isActive ?? null,
+            id,
+        ]);
+        if (result.rows.length === 0)
+            throw errors_1.ApiError.notFound('Producto no encontrado');
+        if (input.supplierIds !== undefined)
+            await syncProductSuppliers(c, id, input.supplierIds, input.primarySupplierId ?? null);
+        if (input.barcode) {
+            const dup = await c.query('SELECT id FROM products WHERE barcode = $1 AND id <> $2', [input.barcode.trim(), id]);
+            if (dup.rows[0])
+                throw errors_1.ApiError.conflict('Otro producto ya usa ese codigo de barras');
+        }
+        await (0, audit_service_1.writeAudit)(c, {
+            userId: user.id, action: 'PRODUCT_UPDATE', entity: 'product', entityId: id, details: input, ip,
+        });
+        return { ok: true };
+    });
+}
+/** Quita el relleno de puntos que agregan los exportes ("1L...." → "1L"). */
+function stripDotPadding(s) {
+    return s.replace(/\.{2,}$/, '').trim();
+}
+/** Normaliza texto: quita espacios invisibles de Excel, colapsa espacios múltiples y recorta. */
+function cleanText(v) {
+    return String(v ?? '')
+        .replace(/[\u00A0\u200B\uFEFF]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+/** Normaliza códigos: igual que el texto pero elimina TODOS los espacios internos
+ *  (los exportes suelen rellenar con espacios) y corrige el sufijo ".0" de Excel. */
+function cleanCodeValue(v) {
+    let s = stripDotPadding(cleanText(v).replace(/\s+/g, ''));
+    if (/^\d+\.0+$/.test(s))
+        s = s.replace(/\.0+$/, '');
+    return s;
+}
+/** Nombre: texto limpio + sin relleno de puntos final. */
+function cleanNameValue(v) {
+    return stripDotPadding(cleanText(v));
+}
+/** Convierte a numero tolerando coma decimal, simbolos y espacios. */
+function parseNumberFlexible(v) {
+    if (v === undefined || v === null || v === '')
+        return null;
+    if (typeof v === 'number')
+        return Number.isFinite(v) ? v : null;
+    const s = cleanText(v).replace(/\$/g, '').replace(/\./g, (m, off, full) => 
+    // si es separador de miles (3 digitos detras) se elimina, si es decimal se vuelve coma
+    /\.\d{1,2}$/.test(full.slice(off)) ? ',' : '').replace(/,/g, '.');
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+}
+/** Indica si la fila es un encabezado repetido dentro de los datos. */
+function isHeaderLikeRow(code) {
+    return /^(codigo|cod|code|articulo|barcode|barras|codigobarras|codigodebarras)$/i.test(code);
+}
+async function importProducts(user, ip, rows, updateExisting) {
+    let created = 0;
+    let updated = 0;
+    let skippedBlank = 0;
+    let duplicatesInFile = 0;
+    const errors = [];
+    await (0, pool_1.withTx)(async (c) => {
+        // Las referencias se consultan después de normalizar el archivo, solo
+        // para los códigos y categorías que realmente aparecen en esta importación.
+        const catMap = new Map();
+        const existingMap = new Map();
+        const seenCodes = new Set();
+        const prepared = [];
+        // Primera pasada: normalización y validaciones puras en memoria.
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const line = i + 2;
+            const code = cleanCodeValue(row.code);
+            const name = cleanNameValue(row.name);
+            if (!code && !name) {
+                skippedBlank++;
+                continue;
+            }
+            if (!name && isHeaderLikeRow(code)) {
+                skippedBlank++;
+                continue;
+            }
+            if (!code) {
+                errors.push({ row: line, message: 'Falta el codigo interno' });
+                continue;
+            }
+            const codeKey = code.toLowerCase();
+            if (seenCodes.has(codeKey)) {
+                duplicatesInFile++;
+                continue;
+            }
+            seenCodes.add(codeKey);
+            let unit = cleanText(row.unit).toUpperCase();
+            const unitAliases = {
+                'UN': 'UNIDAD', 'UNIDADES': 'UNIDAD', 'L': 'LITRO', 'LT': 'LITRO',
+                'LITROS': 'LITRO', 'KG': 'KG', 'KILOS': 'KG', 'M': 'METRO', 'MTS': 'METRO',
+            };
+            unit = unitAliases[unit] ?? unit;
+            if (!UNIT_ENUM.includes(unit))
+                unit = 'UNIDAD';
+            prepared.push({
+                line, code, barcode: cleanCodeValue(row.barcode) || null,
+                name: name || code, brand: cleanText(row.brand) || null,
+                categoryId: null, unit,
+                minStock: parseNumberFlexible(row.minStock) ?? 0,
+                cost: parseNumberFlexible(row.cost),
+                referencePrice: parseNumberFlexible(row.referencePrice),
+                existingId: null,
+            });
+        }
+        const categoryNames = [...new Set(prepared.map((item) => cleanText(rows[item.line - 2].category).toLowerCase()).filter(Boolean))];
+        const codeKeys = prepared.map((item) => item.code.toLowerCase());
+        const references = await c.query(`SELECT
+         COALESCE((
+           SELECT json_agg(json_build_object('id', id, 'name', name))
+           FROM categories WHERE lower(name) = ANY($1::text[])
+         ), '[]'::json) AS categories,
+         COALESCE((
+           SELECT json_agg(json_build_object('id', id, 'code', lower(code)))
+           FROM products WHERE lower(code) = ANY($2::text[])
+         ), '[]'::json) AS products`, [categoryNames, codeKeys]);
+        for (const category of references.rows[0].categories) {
+            catMap.set(category.name.toLowerCase(), category.id);
+        }
+        for (const product of references.rows[0].products) {
+            existingMap.set(product.code, product.id);
+        }
+        for (const item of prepared) {
+            item.existingId = existingMap.get(item.code.toLowerCase()) ?? null;
+        }
+        // Crea categorías faltantes en bloque (normalmente son pocas).
+        const missingCategories = new Map();
+        for (let i = 0; i < prepared.length; i++) {
+            const original = rows[prepared[i].line - 2];
+            const categoryName = cleanText(original.category);
+            if (!categoryName)
+                continue;
+            const key = categoryName.toLowerCase();
+            if (!catMap.has(key) && !missingCategories.has(key))
+                missingCategories.set(key, categoryName);
+        }
+        if (missingCategories.size > 0) {
+            const names = [...missingCategories.values()];
+            const inserted = await c.query(`INSERT INTO categories (name)
+         SELECT name FROM unnest($1::text[]) AS t(name)
+         ON CONFLICT (name) DO UPDATE SET is_active = true
+         RETURNING id, name`, [names]);
+            for (const category of inserted.rows)
+                catMap.set(category.name.toLowerCase(), category.id);
+            // Recupera también posibles categorías preexistentes por diferencia de mayúsculas.
+            const unresolved = names.filter((name) => !catMap.has(name.toLowerCase()));
+            if (unresolved.length > 0) {
+                const found = await c.query('SELECT id, name FROM categories WHERE lower(name) = ANY($1::text[])', [unresolved.map((name) => name.toLowerCase())]);
+                for (const category of found.rows)
+                    catMap.set(category.name.toLowerCase(), category.id);
+            }
+        }
+        for (const item of prepared) {
+            const categoryName = cleanText(rows[item.line - 2].category);
+            item.categoryId = categoryName ? (catMap.get(categoryName.toLowerCase()) ?? null) : null;
+        }
+        const updates = prepared.filter((item) => item.existingId !== null);
+        const inserts = prepared.filter((item) => item.existingId === null);
+        if (!updateExisting) {
+            for (const item of updates) {
+                errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (no se actualizo)' });
+            }
+        }
+        else {
+            // UPDATE set-based por bloques: 1 round-trip por hasta 500 productos.
+            for (let offset = 0; offset < updates.length; offset += 500) {
+                const batch = updates.slice(offset, offset + 500);
+                await c.query(`UPDATE products AS p SET
+             name = v.name, brand = v.brand, category_id = v.category_id,
+             unit = v.unit::unit_type, min_stock = v.min_stock,
+             cost = COALESCE(v.cost, p.cost),
+             reference_price = COALESCE(v.reference_price, p.reference_price)
+           FROM unnest(
+             $1::int[], $2::text[], $3::text[], $4::int[],
+             $5::text[], $6::numeric[], $7::numeric[], $8::numeric[]
+           ) AS v(id, name, brand, category_id, unit, min_stock, cost, reference_price)
+           WHERE p.id = v.id`, [
+                    batch.map((x) => x.existingId), batch.map((x) => x.name),
+                    batch.map((x) => x.brand), batch.map((x) => x.categoryId),
+                    batch.map((x) => x.unit), batch.map((x) => x.minStock),
+                    batch.map((x) => x.cost), batch.map((x) => x.referencePrice),
+                ]);
+                updated += batch.length;
+            }
+        }
+        // INSERT set-based. Si una fila tiene un barcode conflictivo, se reintenta
+        // individualmente ese bloque para conservar el reporte preciso por fila.
+        const insertOne = async (item) => {
+            const result = await c.query(`INSERT INTO products
+           (code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6::unit_type,$7,$8,$9,$10)
+         ON CONFLICT (code) DO NOTHING
+         RETURNING code`, [item.code, item.barcode, item.name, item.brand, item.categoryId,
+                item.unit, item.minStock, item.cost, item.referencePrice, user.id]);
+            if (result.rows.length)
+                created++;
+            else
+                errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (posible alta concurrente)' });
+        };
+        for (let offset = 0; offset < inserts.length; offset += 300) {
+            const batch = inserts.slice(offset, offset + 300);
+            await c.query('SAVEPOINT product_import_batch');
+            try {
+                const result = await c.query(`INSERT INTO products
+             (code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price, created_by)
+           SELECT v.code, v.barcode, v.name, v.brand, v.category_id,
+                  v.unit::unit_type, v.min_stock, v.cost, v.reference_price, $10
+           FROM unnest(
+             $1::text[], $2::text[], $3::text[], $4::text[], $5::int[],
+             $6::text[], $7::numeric[], $8::numeric[], $9::numeric[]
+           ) AS v(code, barcode, name, brand, category_id, unit, min_stock, cost, reference_price)
+           ON CONFLICT (code) DO NOTHING
+           RETURNING code`, [
+                    batch.map((x) => x.code), batch.map((x) => x.barcode),
+                    batch.map((x) => x.name), batch.map((x) => x.brand),
+                    batch.map((x) => x.categoryId), batch.map((x) => x.unit),
+                    batch.map((x) => x.minStock), batch.map((x) => x.cost),
+                    batch.map((x) => x.referencePrice), user.id,
+                ]);
+                const inserted = new Set(result.rows.map((r) => r.code.toLowerCase()));
+                created += inserted.size;
+                for (const item of batch) {
+                    if (!inserted.has(item.code.toLowerCase())) {
+                        errors.push({ row: item.line, code: item.code, message: 'El codigo ya existe (posible alta concurrente)' });
+                    }
+                }
+                await c.query('RELEASE SAVEPOINT product_import_batch');
+            }
+            catch {
+                // Revertir el lote antes del fallback: PostgreSQL deja la transacción
+                // abortada después de una violación de UNIQUE/NOT NULL/CHECK.
+                await c.query('ROLLBACK TO SAVEPOINT product_import_batch');
+                await c.query('RELEASE SAVEPOINT product_import_batch');
+                // Savepoint por fila para poder registrar el error y continuar.
+                for (const item of batch) {
+                    await c.query('SAVEPOINT product_import_row');
+                    try {
+                        await insertOne(item);
+                        await c.query('RELEASE SAVEPOINT product_import_row');
+                    }
+                    catch (err) {
+                        await c.query('ROLLBACK TO SAVEPOINT product_import_row');
+                        await c.query('RELEASE SAVEPOINT product_import_row');
+                        errors.push({ row: item.line, code: item.code, message: `Error: ${err.message}` });
+                    }
+                }
+            }
+        }
+        await (0, audit_service_1.writeAudit)(c, {
+            userId: user.id, action: 'PRODUCT_IMPORT', entity: 'product',
+            details: { created, updated, errores: errors.length, ignoradas: skippedBlank, duplicadosEnArchivo: duplicatesInFile, updateExisting }, ip,
+        });
+    });
+    return { created, updated, errors, skipped: skippedBlank, duplicatesInFile };
+}

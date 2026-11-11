@@ -17,6 +17,7 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
     "robles-stock-pro": "file:..",
+    "tesseract.js": "^2.1.2",
     "xlsx": "^0.18.5",
     "zustand": "^4.5.5"
   },
