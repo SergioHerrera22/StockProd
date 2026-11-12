@@ -10,12 +10,14 @@ const isSupabase = config.databaseUrl.includes('supabase');
 // Se usa la OPCION onConnect (no el evento pool.on('connect')): pg-pool
 // ESPERA esta promesa antes de despachar la primer query del cliente, así
 // el SET TIME ZONE nunca pisa/compite con una consulta de usuario.
+// Usar uselibpqcompat=true para evitar warnings de SSL en pg v9+ / pg-connection-string v3+
+const urlWithCompat = config.databaseUrl + (isSupabase ? '&uselibpqcompat=true' : '');
+
 export const pool = new Pool({
-  connectionString: config.databaseUrl,
+  connectionString: urlWithCompat,
   max: 10,
   idleTimeoutMillis: 30000,
   onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'" ) as unknown as Promise<void>,
-  ...(isSupabase ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
 pool.on('error', (err) => logger.error('Error inesperado en el pool de PG', err.message));
