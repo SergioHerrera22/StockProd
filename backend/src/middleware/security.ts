@@ -37,20 +37,24 @@ const permissionsPolicy: RequestHandler = (_req, res, next) => {
 /** Cabeceras estrictas para un SPA de Vite servido por este mismo Express. */
 export const securityHeaders: RequestHandler[] = [
   helmet({
-  // CSP apretada: el HTML compilado no trae scripts/styles inline y no hay
-  // recursos externos (fuentes/CDN), asi que todo queda en 'self'.
+  // CSP restrictiva: scripts propios y una excepción puntual para el motor OCR
+  // Tesseract.js. No se habilitan scripts inline ni eval general.
   contentSecurityPolicy: {
     useDefaults: false,
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      // Tesseract.js 5 carga su worker y los recursos WebAssembly desde jsDelivr.
+      // Se autoriza únicamente ese CDN; no se habilita unsafe-eval ni scripts inline.
+      scriptSrc: ["'self'", 'https://cdn.jsdelivr.net', "'wasm-unsafe-eval'"],
+      workerSrc: ["'self'", 'blob:', 'https://cdn.jsdelivr.net'],
       // React pinta estilos en atributos style: requiere 'unsafe-inline' de
       // estilos (no habilita ejecucion de scripts).
       styleSrc: ["'self'", "'unsafe-inline'"],
       // Tiles de OpenStreetMap para el mapa de reparto (/api/tracking).
       imgSrc: ["'self'", 'data:', 'blob:', 'https://tile.openstreetmap.org', 'https://*.tile.openstreetmap.org'],
       fontSrc: ["'self'", 'data:'],
-      connectSrc: ["'self'"],
+      // Descarga del worker, core WASM y modelos de idioma de Tesseract.
+      connectSrc: ["'self'", 'https://cdn.jsdelivr.net', 'https://tessdata.projectnaptha.com'],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       formAction: ["'self'"],
