@@ -339,11 +339,12 @@ export async function getEntry(id: number) {
   }
 }
 
-export async function listEntries(opts: { status?: string; locationId?: number; page: number; pageSize: number; offset: number }) {
+export async function listEntries(opts: { status?: string; locationId?: number; searchTerm?: string; page: number; pageSize: number; offset: number }) {
   const params: unknown[] = [];
   const where: string[] = [];
   if (opts.status) { params.push(opts.status); where.push(`e.status = $${params.length}`); }
   if (opts.locationId) { params.push(opts.locationId); where.push(`e.location_id = $${params.length}`); }
+  if (opts.searchTerm) { params.push(opts.searchTerm); where.push(`(e.number ILIKE $${params.length} OR e.supplier ILIKE $${params.length})`); }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
   const rows = await query<{ total?: string }>(

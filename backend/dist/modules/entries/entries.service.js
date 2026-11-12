@@ -301,6 +301,10 @@ async function listEntries(opts) {
         params.push(opts.locationId);
         where.push(`e.location_id = $${params.length}`);
     }
+    if (opts.searchTerm) {
+        params.push(opts.searchTerm);
+        where.push(`(e.number ILIKE $${params.length} OR e.supplier ILIKE $${params.length})`);
+    }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
     const rows = await (0, pool_1.query)(`SELECT e.id, e.number, e.status, e.type, e.supplier, e.location_id, l.name AS location_name,

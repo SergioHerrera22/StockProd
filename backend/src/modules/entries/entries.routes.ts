@@ -28,10 +28,12 @@ router.get(
   '/',
   asyncH(async (req, res) => {
     const { page, pageSize, offset } = pageParams(req, 20);
+    const searchTerm = strParam(req.query.q);
     const result = await listEntries({
       status: strParam(req.query.status),
       locationId: intParam(req.query.locationId),
       page, pageSize, offset,
+      ...(searchTerm && { searchTerm }),
     });
     res.json({ ...result, page, pageSize });
   })

@@ -24,10 +24,12 @@ const draftSchema = zod_1.z.object({
 });
 router.get('/', (0, errorHandler_1.asyncH)(async (req, res) => {
     const { page, pageSize, offset } = (0, pagination_1.pageParams)(req, 20);
+    const searchTerm = (0, pagination_1.strParam)(req.query.q);
     const result = await (0, entries_service_1.listEntries)({
         status: (0, pagination_1.strParam)(req.query.status),
         locationId: (0, pagination_1.intParam)(req.query.locationId),
         page, pageSize, offset,
+        ...(searchTerm && { searchTerm }),
     });
     res.json({ ...result, page, pageSize });
 }));
