@@ -4,6 +4,7 @@ import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../services/audit.service';
 import { AuthUser } from '../../middleware/auth';
 import { hasPermission } from '../../lib/permissions';
+import { logger } from '../../lib/logger';
 
 type RequestItem = { productId: number; quantity: number };
 async function assertWarehouseManager(user: AuthUser, c?: PoolClient) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
@@ -71,9 +72,24 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
   });
 }
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'VISTO'|'EN_PREPARACION'|'ATENDIDO'|'RECHAZADO',reason?:string,ip?:string){
- await assertWarehouseManager(user);
- return withTx(async c=>{const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]); if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado'); if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
- if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
- await c.query("UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1 IN ('ATENDIDO','RECHAZADO') THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
- await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip}); return {ok:true,status};});
+ let stage='validar encargado de depósito';
+ try {
+  await assertWarehouseManager(user);
+  return await withTx(async c=>{
+   stage='bloquear pedido';
+   const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]);
+   if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado');
+   if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
+   if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
+   stage='actualizar estado del pedido';
+   await c.query("UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1 IN ('ATENDIDO','RECHAZADO') THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
+   stage='registrar auditoría';
+   await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip});
+   return {ok:true,status};
+  });
+ } catch(err) {
+  const e=err as {message?:string;code?:string;constraint?:string;detail?:string};
+  logger.error(`No se pudo cambiar el estado del pedido ${id} a ${status}; usuario=${user.id}; etapa=${stage}; code=${e?.code||'N/A'}; constraint=${e?.constraint||'N/A'}; detail=${e?.detail||'N/A'}; error=${e?.message||String(err)}`, err instanceof Error ? err.stack : undefined);
+  throw err;
+ }
 }
