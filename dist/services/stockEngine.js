@@ -1,0 +1,81 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.applyStockChange = applyStockChange;
+const errors_1 = require("../lib/errors");
+/**
+ * NUCLEO DEL SISTEMA.
+ * Aplica una variacion de stock para (producto, ubicacion) dentro de la transaccion
+ * del cliente recibido. Bloquea la fila del saldo (SELECT ... FOR UPDATE), inserta
+ * el saldo si no existe, valida que no quede negativo y registra el movimiento
+ * con saldo anterior y posterior.
+ *
+ * DEBE llamarse siempre dentro de withTx(): si algo falla, toda la operacion
+ * se revierte y no quedan descuentos parciales.
+ */
+async function applyStockChange(client, p) {
+    if (!Number.isFinite(p.delta) || p.delta === 0) {
+        throw errors_1.ApiError.badRequest('La variacion de stock debe ser distinta de cero');
+    }
+    // Asegura que exista la fila de saldo. ON CONFLICT DO NOTHING no bloquea la
+    // fila preexistente: el UPDATE de más abajo (WHERE ... RETURNING) es quien
+    // toma el exclusive lock equivalente al viejo SELECT ... FOR UPDATE;
+    // cualquier transacción concurrente sobre el mismo (product, location)
+    // espera el lock y ve el saldo ya actualizado, igual que antes.
+    await client.query(`INSERT INTO stock_balances (product_id, location_id, quantity)
+     VALUES ($1, $2, 0)
+     ON CONFLICT (product_id, location_id) DO NOTHING`, [p.productId, p.locationId]);
+    const before = Math.round(Number((await client.query(`SELECT quantity FROM stock_balances
+         WHERE product_id = $1 AND location_id = $2 FOR UPDATE`, [p.productId, p.locationId])).rows[0].quantity) * 1000) / 1000;
+    const after = Math.round((before + p.delta) * 1000) / 1000;
+    const qty = Math.abs(p.delta);
+    // Invariantes del sistema: quantity >= 0 y quantity >= reserved_quantity.
+    // Sin esta segunda validacion, anular/ajustar podria dejar saldos respaldando
+    // reservas activas cuyo stock fisico ya no existe (CHECK de BD revienta
+    // despues con un 500 opaco, o el stock reservado queda "fantasma").
+    // El UPDATE ya incluye ambas validaciones en el WHERE y se fusiona con el
+    // INSERT del movimiento en un CTE: 1 round-trip en lugar de 2 (y ni siquiera
+    // impacta la BD cuando la operacion sería invalida, porque el WHERE no matchea).
+    const r = await client.query(`WITH upd AS (
+       UPDATE stock_balances
+       SET quantity = $3, updated_at = now()
+       WHERE product_id = $1
+         AND location_id = $2
+         AND $3 >= 0
+         AND $3 >= reserved_quantity
+       -- UPDATE ... RETURNING quantity devuelve el valor NUEVO, no el anterior.
+       -- El saldo anterior ya fue leído y bloqueado arriba en esta transacción.
+       RETURNING $12::numeric AS balance_before, quantity AS balance_after
+     ),
+     mov AS (
+       INSERT INTO stock_movements
+          (product_id, location_id, type, quantity, balance_before, balance_after,
+           reference_type, reference_id, reference_number, user_id, reason, notes)
+       SELECT $1, $2, $4, $5, upd.balance_before, upd.balance_after, $6, $7, $8, $9, $10, $11
+       FROM upd
+       RETURNING id
+     )
+     -- La unión fuerza a que la operación solo se considere exitosa si se
+     -- insertó también su movimiento de auditoría en la misma transacción.
+     SELECT upd.balance_before, upd.balance_after
+     FROM upd
+     INNER JOIN mov ON true`, [
+        p.productId, p.locationId, after, p.type, qty,
+        p.referenceType, p.referenceId, p.referenceNumber ?? null,
+        p.userId, p.reason ?? null, p.notes ?? null, before,
+    ]);
+    if (r.rows.length === 0) {
+        // El WHERE no matcheó: distinguir si el saldo no alcanza o quedaría por
+        // debajo de lo reservado (mismo detalle que el flujo anterior).
+        const cur = await client.query(`SELECT quantity, reserved_quantity FROM stock_balances
+       WHERE product_id = $1 AND location_id = $2`, [p.productId, p.locationId]);
+        const beforeNow = Number(cur.rows[0].quantity);
+        const reserved = Number(cur.rows[0].reserved_quantity ?? 0);
+        if (after < 0) {
+            const disponible = Math.round((beforeNow - reserved) * 1000) / 1000;
+            throw errors_1.ApiError.conflict(`Stock insuficiente: disponible ${disponible}, requerido ${Math.abs(p.delta)}`, { productId: p.productId, locationId: p.locationId, disponible, requerido: Math.abs(p.delta) });
+        }
+        throw errors_1.ApiError.conflict(`La operacion dejaria el saldo (${after}) por debajo de lo reservado (${reserved}). ` +
+            `Libera o consume las reservas activas antes de volver a intentar.`, { productId: p.productId, locationId: p.locationId, saldoFinal: after, reservado: reserved });
+    }
+    return { balanceBefore: Number(r.rows[0].balance_before), balanceAfter: Number(r.rows[0].balance_after) };
+}

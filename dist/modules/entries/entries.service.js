@@ -1,0 +1,318 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createEntry = createEntry;
+exports.confirmEntry = confirmEntry;
+exports.approveEntry = approveEntry;
+exports.voidEntry = voidEntry;
+exports.getEntry = getEntry;
+exports.listEntries = listEntries;
+const pool_1 = require("../../db/pool");
+const errors_1 = require("../../lib/errors");
+const stockEngine_1 = require("../../services/stockEngine");
+const numbering_1 = require("../../services/numbering");
+const audit_service_1 = require("../../services/audit.service");
+const locationGuard_1 = require("../../lib/locationGuard");
+const businessRules_service_1 = require("../../services/businessRules.service");
+const approval_service_1 = require("../../services/approval.service");
+const alerts_service_1 = require("../../services/alerts.service");
+const arrivalAlerts_service_1 = require("../../services/arrivalAlerts.service");
+const confirmationSettings_service_1 = require("../../services/confirmationSettings.service");
+const ENTRY_TYPES = ['COMPRA', 'DEVOLUCION', 'OTRO'];
+async function validateEntryItems(c, items) {
+    if (!items.length)
+        throw errors_1.ApiError.badRequest('La entrada debe tener al menos un producto');
+    const ids = items.map((i) => i.productId);
+    const r = await c.query('SELECT id, name, is_active FROM products WHERE id = ANY($1)', [ids]);
+    const map = new Map(r.rows.map((p) => [p.id, p]));
+    for (const it of items) {
+        if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
+            throw errors_1.ApiError.badRequest('Todas las cantidades deben ser mayores a cero');
+        }
+        const p = map.get(it.productId);
+        if (!p)
+            throw errors_1.ApiError.badRequest(`Producto inexistente (id ${it.productId})`);
+        if (!p.is_active)
+            throw errors_1.ApiError.badRequest(`El producto "${p.name}" esta inactivo`);
+    }
+}
+async function createEntry(user, ip, input, confirm) {
+    (0, locationGuard_1.assertLocationAccess)(user, input.locationId);
+    return (0, pool_1.withTx)(async (c) => {
+        if (!ENTRY_TYPES.includes(input.type))
+            throw errors_1.ApiError.badRequest('Tipo de entrada invalido');
+        await validateEntryItems(c, input.items);
+        const loc = await c.query('SELECT id FROM locations WHERE id = $1 AND is_active', [input.locationId]);
+        if (!loc.rows[0])
+            throw errors_1.ApiError.badRequest('Ubicacion de destino invalida');
+        let supplierName = input.supplier?.trim() || null;
+        if (input.type === 'COMPRA' && !input.supplierId) {
+            throw errors_1.ApiError.badRequest('Seleccioná un proveedor registrado para la compra');
+        }
+        if (input.supplierId) {
+            const supplierRow = await c.query('SELECT name FROM suppliers WHERE id = $1 AND is_active', [input.supplierId]);
+            if (!supplierRow.rows[0])
+                throw errors_1.ApiError.badRequest('El proveedor seleccionado no existe o está inactivo');
+            supplierName = supplierRow.rows[0].name;
+        }
+        const qtySum = input.items.reduce((s, it) => s + it.quantity, 0);
+        const context = { qty_sum: qtySum, location_id: input.locationId, user_role: user.role };
+        // Evaluar reglas ANTES de crear
+        const rules = await (0, businessRules_service_1.evaluateBusinessRules)('ENTRY', 'BEFORE_CREATE', context);
+        const requiresApproval = rules.some(r => r.action.require_approval);
+        let status = 'BORRADOR';
+        const number = await (0, numbering_1.nextDocNumber)(c, 'entry');
+        const r = await c.query(`INSERT INTO stock_entries (number, location_id, type, supplier, supplier_id, notes, created_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [number, input.locationId, input.type, supplierName, input.supplierId ?? null, input.notes?.trim() || null, user.id, status]);
+        const entryId = r.rows[0].id;
+        // Insercion de items en UNA sola query (unnest) en vez de N round-trips
+        await c.query(`INSERT INTO stock_entry_items (entry_id, product_id, quantity, unit_cost)
+       SELECT $1, p, q, u FROM unnest($2::int[], $3::numeric[], $4::numeric[]) AS t(p, q, u)`, [
+            entryId,
+            input.items.map((it) => it.productId),
+            input.items.map((it) => it.quantity),
+            input.items.map((it) => it.unitCost ?? null),
+        ]);
+        if (requiresApproval) {
+            const rule = rules.find(r => r.action.require_approval);
+            await (0, approval_service_1.createApprovalRequest)({
+                ruleId: rule.ruleId,
+                entityType: 'ENTRY',
+                entityId: entryId,
+                entityNumber: number,
+                requestedBy: user.id,
+                context: { ...context, items: input.items },
+            }, c);
+            await (0, audit_service_1.writeAudit)(c, { userId: user.id, action: 'ENTRY_CREATE_PENDING_APPROVAL', entity: 'entry', entityId: entryId, details: { number, requiresApproval: true }, ip });
+            return { id: entryId, number, status: 'BORRADOR', requiresApproval: true };
+        }
+        if (confirm) {
+            await confirmEntryTx(c, entryId, user, { skipSegregation: true });
+        }
+        else {
+            await (0, audit_service_1.writeAudit)(c, { userId: user.id, action: 'ENTRY_CREATE_DRAFT', entity: 'entry', entityId: entryId, details: { number }, ip });
+        }
+        return { id: entryId, number, status: confirm ? 'CONFIRMADO' : 'BORRADOR', requiresApproval: false };
+    }).then(async (r) => {
+        // Mejora 9: el ?confirm=true también mete stock real: misma alerta de llegada.
+        if (r.status === 'CONFIRMADO')
+            void (0, arrivalAlerts_service_1.notifyStockArrivalForEntryId)(r.id);
+        return r;
+    });
+}
+async function confirmEntryTx(c, id, user, opts) {
+    const e = await c.query('SELECT id, number, status, location_id, created_by, type, supplier_id FROM stock_entries WHERE id = $1 FOR UPDATE', [id]);
+    const entry = e.rows[0];
+    if (!entry)
+        throw errors_1.ApiError.notFound('Entrada no encontrada');
+    (0, locationGuard_1.assertLocationAccess)(user, entry.location_id);
+    if (entry.status === 'CONFIRMADO')
+        throw errors_1.ApiError.conflict(`La entrada ${entry.number} ya fue confirmada`);
+    if (entry.status === 'ANULADO')
+        throw errors_1.ApiError.conflict('La entrada esta anulada');
+    // Segregación: quien confirma NO debe ser quien creó. Se omite SOLO cuando
+    // la confirmacion sucede dentro del propio alta (?confirm=true): exigirla
+    // ahi bloqueaba el flujo para siempre (el creador no puede confirmar su
+    // propia creacion). Para POST /:id/confirm sigue aplicando.
+    if (!opts?.skipSegregation) {
+        const cfg = await (0, confirmationSettings_service_1.getConfirmationSetting)(c, 'ENTRY', 'CONFIRM');
+        if (cfg?.enabled && cfg.require_different_user && !cfg.allow_same_user) {
+            if (entry.created_by === user.id) {
+                throw errors_1.ApiError.forbidden('No puedes confirmar una entrada que tú mismo creaste (segregación de funciones)');
+            }
+        }
+    }
+    // Evaluar reglas al confirmar + leer items en UNA sola query
+    // (antes se leian los items dos veces: para qtySum y para aplicar el stock)
+    const items = await c.query('SELECT product_id, quantity, unit_cost FROM stock_entry_items WHERE entry_id = $1', [id]);
+    if (!items.rows.length)
+        throw errors_1.ApiError.badRequest('La entrada no tiene productos');
+    if (entry.type === 'COMPRA' && entry.supplier_id) {
+        await c.query(`INSERT INTO product_suppliers (product_id, supplier_id, is_primary)
+       SELECT products.product_id, $2, false
+       FROM unnest($1::int[]) AS products(product_id)
+       ON CONFLICT (product_id, supplier_id) DO NOTHING`, [items.rows.map((item) => item.product_id), entry.supplier_id]);
+    }
+    const qtySum = items.rows.reduce((s, it) => s + Number(it.quantity), 0);
+    const context = { qty_sum: qtySum, location_id: entry.location_id, user_role: user.role };
+    const rules = await (0, businessRules_service_1.evaluateBusinessRules)('ENTRY', 'BEFORE_CONFIRM', context);
+    const stillRequiresApproval = rules.some(r => r.action.require_approval);
+    if (stillRequiresApproval && user.role === 'EMPLEADO') {
+        throw errors_1.ApiError.forbidden('Esta entrada requiere aprobador con rol ENCARGADO o superior');
+    }
+    // Orden determinista de lockeo (evita deadlocks con operaciones concurrentes)
+    const sortedItems = [...items.rows].sort((a, b) => a.product_id - b.product_id);
+    for (const it of sortedItems) {
+        await (0, stockEngine_1.applyStockChange)(c, {
+            productId: it.product_id,
+            locationId: entry.location_id,
+            delta: Number(it.quantity),
+            type: 'ENTRADA',
+            referenceType: 'ENTRY',
+            referenceId: entry.id,
+            referenceNumber: entry.number,
+            userId: user.id,
+            reason: `Ingreso de mercaderia ${entry.number}`,
+            notes: it.unit_cost ? `Costo unitario: ${it.unit_cost}` : undefined,
+        });
+    }
+    // Historico de costo: 1 query para todos los items con costo (antes N)
+    const withCost = sortedItems.filter((it) => it.unit_cost);
+    if (withCost.length) {
+        await c.query(`UPDATE products p SET cost = v.cost
+       FROM unnest($1::int[], $2::numeric[]) AS v(id, cost)
+       WHERE p.id = v.id AND (p.cost IS NULL OR p.cost = 0)`, [withCost.map((it) => it.product_id), withCost.map((it) => it.unit_cost)]);
+    }
+    await c.query(`UPDATE stock_entries SET status = 'CONFIRMADO', confirmed_by = $1, confirmed_at = now(), received_by = $2, received_at = now() WHERE id = $3`, [user.id, user.id, id]);
+    // Resolver aprobación si existía
+    await c.query(`UPDATE approval_requests SET status = 'APROBADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'ENTRY' AND entity_id = $2 AND status = 'PENDIENTE'`, [user.id, id]);
+}
+async function confirmEntry(user, ip, id) {
+    const result = await (0, pool_1.withTx)(async (c) => {
+        await confirmEntryTx(c, id, user);
+        await (0, audit_service_1.writeAudit)(c, { userId: user.id, action: 'ENTRY_CONFIRM', entity: 'entry', entityId: id, ip });
+        return { ok: true };
+    });
+    // Mejora 9: llegada de mercadería que cubre deuda sin derivar -> alerta con
+    // clic directo. POST-COMMIT y no bloquea: si falla queda solo en el log.
+    void (0, arrivalAlerts_service_1.notifyStockArrivalForEntryId)(id);
+    return result;
+}
+/**
+ * Aprobar entrada en borrador (para flujo con aprobación)
+ */
+async function approveEntry(user, ip, id) {
+    const result = await (0, pool_1.withTx)(async (c) => {
+        const e = await c.query('SELECT id, number, status, location_id, created_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]);
+        if (!e.rows[0])
+            throw errors_1.ApiError.notFound('Entrada no encontrada');
+        if (e.rows[0].status !== 'BORRADOR')
+            throw errors_1.ApiError.conflict('Solo se pueden aprobar entradas en borrador');
+        (0, locationGuard_1.assertLocationAccess)(user, e.rows[0].location_id);
+        const cfg = await (0, confirmationSettings_service_1.getConfirmationSetting)(c, 'ENTRY', 'APPROVE');
+        if (cfg?.enabled && cfg.require_different_user && !cfg.allow_same_user) {
+            if (e.rows[0].created_by === user.id)
+                throw errors_1.ApiError.forbidden('No puedes aprobar tu propia entrada (segregación de funciones)');
+        }
+        await confirmEntryTx(c, id, user);
+        return { ok: true };
+    });
+    // Mejora 9: igual que confirmEntry, la entrada aprobada también llega a stock.
+    void (0, arrivalAlerts_service_1.notifyStockArrivalForEntryId)(id);
+    return result;
+}
+/**
+ * Anulacion con DOBLE AUTORIZACION para entradas confirmadas
+ */
+async function voidEntry(user, ip, id, reason, voidApprovedBy) {
+    return (0, pool_1.withTx)(async (c) => {
+        const e = await c.query('SELECT status, number, location_id, void_approved_by FROM stock_entries WHERE id = $1 FOR UPDATE', [id]);
+        const entry = e.rows[0];
+        if (!entry)
+            throw errors_1.ApiError.notFound('Entrada no encontrada');
+        (0, locationGuard_1.assertLocationAccess)(user, entry.location_id);
+        if (entry.status === 'ANULADO')
+            throw errors_1.ApiError.conflict('La entrada ya esta anulada');
+        const requiresDualAuth = entry.status === 'CONFIRMADO';
+        if (requiresDualAuth) {
+            if (!voidApprovedBy)
+                throw errors_1.ApiError.badRequest('Anulación de entrada confirmada requiere segundo autorizador (voidApprovedBy)');
+            if (voidApprovedBy === user.id)
+                throw errors_1.ApiError.forbidden('El segundo autorizador debe ser distinto del solicitante');
+            const approver = await c.query('SELECT role_code FROM users WHERE id = $1', [voidApprovedBy]);
+            if (!approver.rows[0] || !['ENCARGADO', 'ADMIN'].includes(approver.rows[0].role_code)) {
+                throw errors_1.ApiError.forbidden('El segundo autorizador debe tener rol ENCARGADO o ADMIN');
+            }
+        }
+        // Evaluar reglas
+        const rules = await (0, businessRules_service_1.evaluateBusinessRules)('VOID', 'VOID', { entity_id: id, user_role: user.role });
+        const requiresApproval = rules.some(r => r.action.require_approval);
+        if (requiresApproval && !voidApprovedBy) {
+            throw errors_1.ApiError.badRequest('Esta anulación requiere aprobación según reglas de negocio');
+        }
+        if (entry.status === 'CONFIRMADO') {
+            const items = await c.query('SELECT product_id, quantity FROM stock_entry_items WHERE entry_id = $1', [id]);
+            // Orden determinista de lockeo
+            const sorted = [...items.rows].sort((a, b) => a.product_id - b.product_id);
+            for (const it of sorted) {
+                await (0, stockEngine_1.applyStockChange)(c, {
+                    productId: it.product_id, locationId: entry.location_id, delta: -Number(it.quantity),
+                    type: 'SALIDA', referenceType: 'ENTRY', referenceId: id, referenceNumber: entry.number,
+                    userId: user.id, reason: `Anulacion de entrada ${entry.number}: ${reason}`,
+                });
+            }
+        }
+        await c.query(`UPDATE stock_entries SET status = 'ANULADO', voided_by = $1, voided_at = now(), void_reason = $2, void_approved_by = $3 WHERE id = $4`, [user.id, reason, voidApprovedBy ?? null, id]);
+        // Si el borrador tenia una solicitud de aprobacion pendiente (se genero al
+        // crear bajo reglas), dejarla PENDIENTE para siempre ensuciaba el modulo
+        // de aprobaciones: se marca rechazada al anular el documento.
+        await c.query(`UPDATE approval_requests SET status = 'RECHAZADO', resolved_by = $1, resolved_at = now() WHERE entity_type = 'ENTRY' AND entity_id = $2 AND status = 'PENDIENTE'`, [user.id, id]);
+        await (0, audit_service_1.writeAudit)(c, {
+            userId: user.id, action: 'ENTRY_VOID', entity: 'entry', entityId: id,
+            details: { reason, voidApprovedBy, requiresDualAuth, wasConfirmed: requiresDualAuth }, ip,
+        });
+        if (requiresDualAuth) {
+            await (0, alerts_service_1.createAlert)({
+                code: 'ENTRY_VOID_DUAL_AUTH',
+                severity: 'WARNING',
+                entityType: 'ENTRY',
+                entityId: id,
+                title: `Entrada anulada con doble autorización: ${entry.number}`,
+                message: `Anulada por ${user.fullName}, autorizada por usuario ${voidApprovedBy}. Motivo: ${reason}`,
+                data: { entryId: id, voidedBy: user.id, voidApprovedBy, reason },
+                targetRoles: ['ADMIN'],
+            });
+        }
+        return { ok: true };
+    });
+}
+async function getEntry(id) {
+    // Lectura pura: no necesita transaccion ni BEGIN/COMMIT extra (antes withTx)
+    const c = await pool_1.pool.connect();
+    try {
+        const head = await c.query(`SELECT e.*, l.name AS location_name, cu.full_name AS created_by_name,
+              confu.full_name AS confirmed_by_name, recu.full_name AS received_by_name,
+              vau.full_name AS void_approved_by_name
+       FROM stock_entries e
+       JOIN locations l ON l.id = e.location_id
+       JOIN users cu ON cu.id = e.created_by
+       LEFT JOIN users confu ON confu.id = e.confirmed_by
+       LEFT JOIN users recu ON recu.id = e.received_by
+       LEFT JOIN users vau ON vau.id = e.void_approved_by
+       WHERE e.id = $1`, [id]);
+        if (!head.rows[0])
+            return null;
+        const items = await c.query(`SELECT ei.id, ei.product_id, ei.quantity, ei.unit_cost, p.code, p.name, p.unit
+       FROM stock_entry_items ei JOIN products p ON p.id = ei.product_id
+       WHERE ei.entry_id = $1 ORDER BY ei.id`, [id]);
+        return { ...head.rows[0], items: items.rows };
+    }
+    finally {
+        c.release();
+    }
+}
+async function listEntries(opts) {
+    const params = [];
+    const where = [];
+    if (opts.status) {
+        params.push(opts.status);
+        where.push(`e.status = $${params.length}`);
+    }
+    if (opts.locationId) {
+        params.push(opts.locationId);
+        where.push(`e.location_id = $${params.length}`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    // Un solo round-trip: el total viene en cada fila con COUNT(*) OVER()
+    const rows = await (0, pool_1.query)(`SELECT e.id, e.number, e.status, e.type, e.supplier, e.location_id, l.name AS location_name,
+            e.created_at, e.confirmed_at, e.received_at, cu.full_name AS created_by_name,
+            (SELECT COUNT(*) FROM stock_entry_items WHERE entry_id = e.id) AS line_count,
+            COUNT(*) OVER() AS total
+     FROM stock_entries e
+     JOIN locations l ON l.id = e.location_id
+     JOIN users cu ON cu.id = e.created_by
+     ${whereSql} ORDER BY e.created_at DESC
+     LIMIT ${opts.pageSize} OFFSET ${opts.offset}`, params);
+    const total = rows.rows.length > 0 && rows.rows[0].total != null ? Number(rows.rows[0].total) : 0;
+    const entries = rows.rows.map(({ total: _t, ...rest }) => rest);
+    return { entries, total };
+}
