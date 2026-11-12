@@ -6,26 +6,56 @@ import { logger } from '../lib/logger';
 const isSupabase = config.databaseUrl.includes('supabase');
 
 function getDatabaseConnectionOptions() {
-  if (!isSupabase) return { connectionString: config.databaseUrl };
+  if (!isSupabase) {
+    return { connectionString: config.databaseUrl };
+  }
+
+  // Parse and sanitize the URL without allowing sslmode=require to replace
+  // the explicit certificate-validation settings supplied below.
+  let connectionString = config.databaseUrl;
+  try {
+    const parsedUrl = new URL(config.databaseUrl);
+    parsedUrl.searchParams.delete('sslmode');
+    parsedUrl.searchParams.delete('uselibpqcompat');
+    connectionString = parsedUrl.toString();
+  } catch (err) {
+    // Do not prevent Express from listening because DB configuration is bad.
+    // The first connection attempt will report the actionable PostgreSQL error.
+    logger.error('DATABASE_URL de Supabase no tiene un formato URL válido:', (err as Error).message);
+    return {
+      connectionString: config.databaseUrl,
+      ssl: { rejectUnauthorized: true },
+    };
+  }
 
   const caCertificate = process.env.SUPABASE_CA_CERT?.replace(/\\n/g, '\n').trim();
+
   if (!caCertificate) {
-    throw new Error('Falta SUPABASE_CA_CERT: configura el certificado CA de Supabase en las variables de entorno.');
-  }
-  if (!caCertificate.includes('-----BEGIN CERTIFICATE-----') ||
-      !caCertificate.includes('-----END CERTIFICATE-----')) {
-    throw new Error('SUPABASE_CA_CERT no contiene un certificado PEM válido.');
+    // Keep TLS verification enabled. Node's trusted roots are used as a
+    // fallback; if Supabase requires its project CA, the connection will fail
+    // safely and the startup retry loop will keep the HTTP server available.
+    logger.warn('SUPABASE_CA_CERT no está configurado; se usarán las CA confiables de Node.js con validación TLS estricta.');
+    return {
+      connectionString,
+      ssl: { rejectUnauthorized: true },
+    };
   }
 
-  // pg-connection-string puede sobrescribir ssl.ca al interpretar sslmode.
-  // Quitamos esos parámetros y conservamos las CA públicas de Node además
-  // del certificado raíz específico descargado desde Supabase.
-  const connectionUrl = new URL(config.databaseUrl);
-  connectionUrl.searchParams.delete('sslmode');
-  connectionUrl.searchParams.delete('uselibpqcompat');
+  if (
+    !caCertificate.includes('-----BEGIN CERTIFICATE-----') ||
+    !caCertificate.includes('-----END CERTIFICATE-----')
+  ) {
+    logger.error('SUPABASE_CA_CERT no contiene un certificado PEM válido; se mantiene la validación TLS estricta con las CA de Node.js.');
+    return {
+      connectionString,
+      ssl: { rejectUnauthorized: true },
+    };
+  }
 
+  // pg-connection-string can override ssl.ca when parsing sslmode.
+  // Keep Node's public roots and add the Supabase project CA explicitly.
   return {
-    connectionString: connectionUrl.toString(),
+    connectionString,
     ssl: {
       ca: [...rootCertificates, caCertificate],
       rejectUnauthorized: true,
@@ -39,7 +69,8 @@ export const pool = new Pool({
   ...getDatabaseConnectionOptions(),
   max: 10,
   idleTimeoutMillis: 30000,
-  onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'") as unknown as Promise<void>,
+  onConnect: (client: ClientBase) =>
+    client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'") as unknown as Promise<void>,
 });
 
 pool.on('error', (err) => logger.error('Error inesperado en el pool de PG', err.message));
