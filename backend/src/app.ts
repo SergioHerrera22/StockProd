@@ -54,7 +54,12 @@ export function createApp() {
   // ===== Barrera 2: freno general por IP contra abuso/DoS =====
   app.use('/api', apiLimiter);
 
-  // Health check
+  // Liveness: confirma que Express está levantado, sin depender de PostgreSQL.
+  app.get('/api/health/live', (_req, res) => {
+    res.json({ status: 'ok', time: new Date().toISOString() });
+  });
+
+  // Readiness: confirma que la API puede operar contra la base de datos.
   app.get('/api/health', async (_req, res) => {
     try {
       await pool.query('SELECT 1');
@@ -64,7 +69,11 @@ export function createApp() {
         time: new Date().toISOString(),
       });
     } catch {
-      res.status(500).json({ status: 'ok', db: 'error' });
+      res.status(503).json({
+        status: 'degraded',
+        db: 'error',
+        time: new Date().toISOString(),
+      });
     }
   });
 
@@ -106,8 +115,7 @@ export function createApp() {
   ];
   const distDir = candidates.find((d) => fs.existsSync(d));
   if (config.isProd && distDir) {
-    // Assets de Vite con hash inmutable y el index.html siempre fresco
-    // (Cache-Control equivocado tendria a todos con la version vieja).
+    // Assets de Vite con hash inmutable y el index.html siempre fresco.
     app.use(express.static(distDir, {
       setHeaders: (res, filePath) => {
         if (filePath.includes(`${path.sep}assets${path.sep}`)) {
