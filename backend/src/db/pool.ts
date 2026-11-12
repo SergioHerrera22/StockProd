@@ -14,7 +14,7 @@ export const pool = new Pool({
   connectionString: config.databaseUrl,
   max: 10,
   idleTimeoutMillis: 30000,
-  onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'") as unknown as Promise<void>,
+  onConnect: (client: ClientBase) => client.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'" ) as unknown as Promise<void>,
   ...(isSupabase ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
