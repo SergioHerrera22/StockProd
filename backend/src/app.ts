@@ -34,6 +34,7 @@ import confirmationRoutes from './modules/settings/confirmation.routes';
 import trackingRoutes from './modules/tracking/tracking.routes';
 import driversRoutes from './modules/drivers/drivers.routes';
 import { pool } from './db/pool';
+import { logger } from './lib/logger';
 
 export function createApp() {
   const app = express();
