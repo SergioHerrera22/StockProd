@@ -53,7 +53,7 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
   ENCARGADO,
   EMPLEADO,
   // Espejo exacto del backend: chofer de transporte solo consulta/opera GPS.
-  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps'],
+  TRANSPORTE: ['locations.read', 'tracking.read', 'tracking.gps', 'deliveries.read', 'stock.read'],
 };
 
 /** Lista canónica que consume el editor de permisos. */
@@ -83,56 +83,6 @@ export interface PermissionGroup {
     description: string;
   }>;
 }
-
-const PERMISSION_LABELS: Record<Permission, { label: string; description: string }> = {
-  'products.read': { label: 'Ver productos', description: 'Consultar el catálogo de productos.' },
-  'products.write': { label: 'Crear y editar productos', description: 'Dar de alta y modificar productos.' },
-  'categories.write': { label: 'Gestionar categorías', description: 'Crear y modificar categorías.' },
-  'products.import': { label: 'Importar productos', description: 'Importar productos desde archivos.' },
-  'suppliers.manage': { label: 'Gestionar proveedores', description: 'Crear, editar y administrar proveedores.' },
-  'stock.read': { label: 'Ver stock', description: 'Consultar existencias por ubicación.' },
-  'stock.adjust': { label: 'Ajustar stock', description: 'Solicitar o registrar ajustes de inventario.' },
-  'deliveries.read': { label: 'Ver entregas', description: 'Consultar entregas.' },
-  'deliveries.write': { label: 'Crear y modificar entregas', description: 'Preparar entregas.' },
-  'deliveries.confirm': { label: 'Confirmar entregas', description: 'Confirmar operaciones de entrega.' },
-  'deliveries.void': { label: 'Anular entregas', description: 'Anular entregas según las reglas del sistema.' },
-  'deliveries.approve': { label: 'Aprobar entregas', description: 'Aprobar solicitudes de entrega.' },
-  'entries.read': { label: 'Ver entradas', description: 'Consultar entradas de stock.' },
-  'entries.write': { label: 'Crear y modificar entradas', description: 'Preparar entradas de stock.' },
-  'entries.confirm': { label: 'Confirmar entradas', description: 'Confirmar el ingreso de mercadería.' },
-  'entries.void': { label: 'Anular entradas', description: 'Anular entradas según las reglas del sistema.' },
-  'entries.approve': { label: 'Aprobar entradas', description: 'Aprobar solicitudes de entrada.' },
-  'transfers.read': { label: 'Ver transferencias', description: 'Consultar transferencias entre ubicaciones.' },
-  'transfers.write': { label: 'Crear transferencias', description: 'Preparar transferencias.' },
-  'transfers.receive': { label: 'Recibir transferencias', description: 'Registrar la recepción física.' },
-  'transfers.dispatch': { label: 'Despachar transferencias', description: 'Registrar el despacho físico.' },
-  'transfers.verify': { label: 'Verificar recepción', description: 'Verificar la recepción como segunda persona.' },
-  'transfers.void': { label: 'Anular transferencias', description: 'Anular transferencias según las reglas del sistema.' },
-  'transfers.approve': { label: 'Aprobar transferencias', description: 'Aprobar solicitudes de transferencia.' },
-  'counts.read': { label: 'Ver inventarios', description: 'Consultar conteos de inventario.' },
-  'counts.write': { label: 'Crear inventarios', description: 'Crear y completar conteos.' },
-  'counts.apply': { label: 'Aplicar inventarios', description: 'Aplicar diferencias aprobadas.' },
-  'counts.void': { label: 'Anular inventarios', description: 'Anular conteos según las reglas del sistema.' },
-  'counts.approve': { label: 'Aprobar inventarios', description: 'Aprobar ajustes derivados del conteo.' },
-  'movements.read': { label: 'Ver movimientos', description: 'Consultar el historial de movimientos.' },
-  'dashboard.read': { label: 'Ver dashboard', description: 'Consultar indicadores generales.' },
-  'reports.read': { label: 'Ver reportes', description: 'Consultar y exportar reportes.' },
-  'locations.read': { label: 'Ver ubicaciones', description: 'Consultar sucursales y depósitos.' },
-  'locations.manage': { label: 'Gestionar ubicaciones', description: 'Administrar sucursales y depósitos.' },
-  'tracking.read': { label: 'Ver seguimiento', description: 'Consultar el seguimiento de repartos.' },
-  'tracking.write': { label: 'Gestionar seguimiento', description: 'Crear y administrar viajes.' },
-  'tracking.gps': { label: 'Compartir GPS', description: 'Enviar ubicación y eventos GPS.' },
-  'users.read': { label: 'Ver usuarios', description: 'Consultar usuarios del sistema.' },
-  'users.manage': { label: 'Gestionar usuarios', description: 'Crear usuarios y administrar sus permisos.' },
-  'audit.read': { label: 'Ver auditoría', description: 'Consultar el registro de auditoría.' },
-  'approvals.read': { label: 'Ver aprobaciones', description: 'Consultar solicitudes de aprobación.' },
-  'approvals.approve': { label: 'Resolver aprobaciones', description: 'Aprobar o rechazar solicitudes.' },
-  'merchandise_requests.use': { label: 'Pedir mercadería', description: 'Crear pedidos de productos desde la sucursal.' },
-  'merchandise_requests.manage': { label: 'Gestionar pedidos de mercadería', description: 'Ver y actualizar los pedidos de las sucursales desde Depósito Central.' },
-  'alerts.read': { label: 'Ver alertas', description: 'Consultar alertas operativas.' },
-  'alerts.manage': { label: 'Gestionar alertas', description: 'Administrar alertas y sus reglas.' },
-  'settings.write': { label: 'Configurar el sistema', description: 'Modificar la configuración global.' },
-};
 
 function permissionGroup(key: string, label: string, description: string, icon: string, permissions: Permission[]): PermissionGroup {
   return {
@@ -170,6 +120,18 @@ export function hasPermission(role: Role | undefined | null, permission: Permiss
   // El administrador conserva acceso a Pedidos de mercadería aunque su lista personalizada sea anterior al módulo.
   if (role === 'ADMIN' && (permission === 'merchandise_requests.use' || permission === 'merchandise_requests.manage')) return true;
   if (custom !== undefined && custom !== null) return custom.includes(permission);
+  if (!role) return false;
+  return PERMISSIONS[role]?.includes(permission) ?? false;
+}
+
+export function hasPermissionWithFallback(role: Role | null, permission: Permission, userPermissions: Permission[] | null): boolean {
+  // Si hay permisos de usuario personalizados (desde la BD), usarlos primero
+  if (userPermissions && userPermissions.length > 0) {
+    if (userPermissions.includes(permission)) return true;
+    // Si el usuario tiene permisos custom pero no este específico, verificar rol
+  }
+  // Fallback a la matriz de roles
+  if (role === 'ADMIN' && (permission === 'merchandise_requests.use' || permission === 'merchandise_requests.manage')) return true;
   if (!role) return false;
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }

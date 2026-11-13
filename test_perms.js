@@ -1,0 +1,14 @@
+const mod = require('./backend/dist/lib/permissions.js');
+const { PERMISSIONS, hasPermission } = mod;
+console.log('PERMISSIONS ADMIN count:', PERMISSIONS.ADMIN.length);
+console.log('PERMISSIONS ENCARGADO count:', PERMISSIONS.ENCARGADO.length);
+console.log('PERMISSIONS EMPLEADO count:', PERMISSIONS.EMPLEADO.length);
+console.log('ADMIN has merchandise_requests.use:', PERMISSIONS.ADMIN.includes('merchandise_requests.use'));
+console.log('ADMIN has merchandise_requests.manage:', PERMISSIONS.ADMIN.includes('merchandise_requests.manage'));
+console.log('EMPLEADO has merchandise_requests.use:', PERMISSIONS.EMPLEADO.includes('merchandise_requests.use'));
+console.log('\nhasPermission tests:');
+console.log('ADMIN + merchandise_requests.use:', hasPermission('ADMIN', 'merchandise_requests.use', null));
+console.log('ADMIN + merchandise_requests.manage:', hasPermission('ADMIN', 'merchandise_requests.manage', null));
+console.log('EMPLEADO + merchandise_requests.use:', hasPermission('EMPLEADO', 'merchandise_requests.use', null));
+console.log('EMPLEADO + merchandise_requests.manage:', hasPermission('EMPLEADO', 'merchandise_requests.manage', null));
+console.log('EMPLEADO + merchandise_requests.use + custom:', hasPermission('EMPLEADO', 'merchandise_requests.use', ['merchandise_requests.use']));
