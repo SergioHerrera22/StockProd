@@ -140,11 +140,11 @@ export function Layout() {
     <div className="flex h-full">
       {/* Sidebar */}
       <aside
-        className={`no-print fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-brand-900 text-white transition-transform lg:static lg:translate-x-0 ${
+        className={`no-print fixed inset-y-0 left-0 z-40 flex h-[100dvh] w-[min(18rem,calc(100vw-2.5rem))] flex-col bg-brand-900 text-white transition-transform lg:static lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center gap-3 px-4 py-5">
+        <div className="flex shrink-0 items-center gap-3 px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] sm:py-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-700 text-lg font-black text-amber-400">
             R
           </div>
@@ -154,14 +154,14 @@ export function Layout() {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-4">
+        <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 pb-4">
           {items.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                `flex items-center gap-3 min-h-11 rounded-lg px-3 py-3 text-sm transition-colors ${
                   isActive ? 'bg-brand-600 font-semibold text-white' : 'text-brand-100 hover:bg-brand-800'
                 }`
               }
@@ -177,7 +177,7 @@ export function Layout() {
           ))}
         </nav>
 
-        <div className="border-t border-brand-800 px-4 py-3 text-xs text-brand-300">
+        <div className="shrink-0 border-t border-brand-800 px-4 py-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] text-xs text-brand-300">
           <div className="font-semibold text-brand-100">{user?.fullName}</div>
           <div>{user ? ROLE_LABEL[user.role] : ''}</div>
           {gpsVisible && (
@@ -209,11 +209,11 @@ export function Layout() {
 
       {/* Contenido */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="no-print flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
-          <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" onClick={() => setOpen(true)}>☰</button>
-          <span className="font-bold text-brand-800">Robles Stock</span>
+        <header className="no-print flex min-h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3 py-2 pt-[calc(.5rem+env(safe-area-inset-top))] lg:hidden">
+          <button className="flex min-h-11 min-w-11 items-center justify-center rounded-lg p-2 text-xl text-slate-600 hover:bg-slate-100" onClick={() => setOpen(true)}>☰</button>
+          <span className="truncate font-bold text-brand-800">Robles Stock</span>
         </header>
-        <main className="min-h-0 flex-1 overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:p-6">
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-4 lg:p-6">
           <Outlet />
         </main>
       </div>
