@@ -41,20 +41,36 @@ function parseQuantity(value: string): number | null {
   return Number.isFinite(number) && number > 0 && number < 100000 ? number : null;
 }
 
-async function getImageWidth(file: File): Promise<number> {
-  if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(file);
-    const width = bitmap.width;
+async function prepareOcrImage(file: File): Promise<{ image: Blob; width: number }> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.max(2, Math.min(4, Math.ceil(2200 / bitmap.width)));
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width * scale;
+  canvas.height = bitmap.height * scale;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
     bitmap.close();
-    return width;
+    throw new Error('No se pudo preparar la imagen para el reconocimiento.');
   }
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => { URL.revokeObjectURL(url); resolve(image.naturalWidth); };
-    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer el tamaño de la captura.')); };
-    image.src = url;
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = false;
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  // Aumenta contraste y elimina el tinte de la grilla sin borrar los caracteres.
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  const data = pixels.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    const enhanced = gray < 175 ? 0 : gray > 238 ? 255 : Math.round((gray - 175) * (255 / 63));
+    data[i] = data[i + 1] = data[i + 2] = enhanced;
+  }
+  context.putImageData(pixels, 0, 0);
+  const image = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo generar la imagen procesada.')), 'image/png');
   });
+  return { image, width: canvas.width };
 }
 
 function extractRows(words: any[], imageWidth: number): DeliveryImageRow[] {
@@ -130,20 +146,22 @@ export function DeliveryImageImport({ onImport, disabled = false }: Props) {
     setSourceName(file.name || 'Captura pegada');
     try {
       const Tesseract = await loadTesseract();
-      const [result, imageWidth] = await Promise.all([
-        Tesseract.recognize(file, 'spa+eng', {
-          logger: (message: any) => {
-            if (message.status === 'recognizing text') setSourceName(`Reconociendo… ${Math.round((message.progress || 0) * 100)}%`);
-          },
-        }),
-        getImageWidth(file),
-      ]);
+      const prepared = await prepareOcrImage(file);
+      const result = await Tesseract.recognize(prepared.image, 'spa+eng', {
+        logger: (message: any) => {
+          if (message.status === 'recognizing text') setSourceName(`Reconociendo… ${Math.round((message.progress || 0) * 100)}%`);
+        },
+        tessedit_pageseg_mode: Tesseract.PSM?.SINGLE_BLOCK ?? 6,
+        preserve_interword_spaces: '1',
+      });
+      const imageWidth = prepared.width;
       const found = extractRows(result.data?.words || [], imageWidth);
       if (!found.length) {
         const rawText = String(result.data?.text || '').trim();
+        const wordCount = Array.isArray(result.data?.words) ? result.data.words.length : 0;
         setError(rawText
-          ? `El OCR leyó el texto, pero no pudo separar las columnas de productos y cantidades. Texto detectado: ${rawText.slice(0, 280)}`
-          : 'El motor OCR no pudo leer texto de la captura. Probá con una imagen más nítida y con la tabla completa.');
+          ? `El OCR leyó texto, pero no pudo formar filas válidas. Palabras detectadas: ${wordCount}. Texto reconocido: ${rawText.slice(0, 900)}`
+          : `El motor OCR no pudo leer texto de la captura (palabras detectadas: ${wordCount}). Probá con la tabla completa.`);
       } else {
         setRows(found);
       }
