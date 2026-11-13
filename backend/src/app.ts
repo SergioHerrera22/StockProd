@@ -101,7 +101,7 @@ export function createApp() {
   // Desarrollo: ../../frontend/dist | Hostinger (root): ./public
   const candidates = [
     path.resolve(__dirname, '../../frontend/dist'),  // dev local
-    path.resolve(__dirname, '../../../public'),      // Hostinger (dist/index.js -> root/public)
+    path.resolve(__dirname, '../../public'),       // Hostinger (backend/dist/index.js -> root/public)
     path.resolve(process.cwd(), 'public'),           // Hostinger (cwd = root)
   ];
   const distDir = candidates.find((d) => fs.existsSync(d));
