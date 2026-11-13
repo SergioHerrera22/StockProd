@@ -7,7 +7,8 @@ import { pathId, strParam } from '../../lib/pagination';
 import { query } from '../../db/pool';
 import { createMerchandiseRequest, getMerchandiseRequest, listMerchandiseRequests, setMerchandiseRequestStatus } from './merchandise-requests.service';
 const router=Router(); router.use(authRequired);
-const itemsSchema=z.array(z.object({productId:z.number().int().positive(),quantity:z.number().min(3)})).min(1).max(300);
+const quantitySchema=z.number().finite().positive().max(99999999999.999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<1e-7,'La cantidad admite hasta 3 decimales.');
+const itemsSchema=z.array(z.object({productId:z.number().int().positive(),quantity:quantitySchema})).min(1).max(300);
 router.get('/products',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>{
  const term=strParam(req.query.q)?.trim(); if(!term || term.length<2) return res.json({products:[]});
  const pattern='%' + term.replace(/[\\%_]/g, '\\\\$&') + '%';
