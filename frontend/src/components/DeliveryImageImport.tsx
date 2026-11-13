@@ -59,51 +59,57 @@ async function getImageWidth(file: File): Promise<number> {
 
 function extractRows(words: any[], imageWidth: number): DeliveryImageRow[] {
   if (!imageWidth || !Number.isFinite(imageWidth)) return [];
-  const grouped = new Map<string, any[]>();
-  for (const word of words || []) {
-    if (!word.text?.trim() || !word.bbox || Number(word.confidence ?? 0) < 15) continue;
-    const key = [word.block_num, word.par_num, word.line_num].join('-');
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(word);
+  const valid = (words || []).filter((w) => String(w.text || '').trim() && w.bbox);
+  if (!valid.length) return [];
+  const unitsHeader = valid.find((w) => /^(unidades|unidad|cant\.?|cantidad)$/i.test(String(w.text).trim()));
+  const unitsX = unitsHeader ? (Number(unitsHeader.bbox.x0) + Number(unitsHeader.bbox.x1)) / 2 : imageWidth * 0.405;
+  const modelHeader = valid.find((w) => /^(modelo|c[oó]digo)$/i.test(String(w.text).trim()));
+  const modelX = modelHeader ? (Number(modelHeader.bbox.x0) + Number(modelHeader.bbox.x1)) / 2 : imageWidth * 0.12;
+
+  // Agrupa cajas por cercanía vertical, independientemente de los IDs de línea de Tesseract.
+  const lines: any[][] = [];
+  for (const word of [...valid].sort((a,b) => a.bbox.y0-b.bbox.y0)) {
+    const cy = (Number(word.bbox.y0)+Number(word.bbox.y1))/2;
+    const h = Math.max(1,Number(word.bbox.y1)-Number(word.bbox.y0));
+    let line = lines.find(items => {
+      const ys=items.map(w => (Number(w.bbox.y0)+Number(w.bbox.y1))/2);
+      const avg=ys.reduce((a,b)=>a+b,0)/ys.length;
+      const ah=items.reduce((s,w)=>s+Math.max(1,Number(w.bbox.y1)-Number(w.bbox.y0)),0)/items.length;
+      return Math.abs(cy-avg)<=Math.max(7,Math.min(h,ah)*0.65);
+    });
+    if (!line) { line=[]; lines.push(line); }
+    line.push(word);
   }
 
-  const rows: DeliveryImageRow[] = [];
-  for (const line of grouped.values()) {
-    const sorted = line.sort((a, b) => a.bbox.x0 - b.bbox.x0);
-    const codeWord = sorted.find((word) => {
-      const x = word.bbox.x0 / imageWidth;
-      const token = String(word.text).replace(/[^a-z0-9._/-]/gi, '');
-      return x < 0.34 && /^[A-Z0-9][A-Z0-9._/-]{2,24}$/i.test(token);
+  const rows: DeliveryImageRow[]=[];
+  for (const line of lines) {
+    const sorted=line.sort((a,b)=>a.bbox.x0-b.bbox.x0);
+    const codes=sorted.filter(w => {
+      const x=(Number(w.bbox.x0)+Number(w.bbox.x1))/2;
+      const t=String(w.text).replace(/[^a-z0-9._/-]/gi,'');
+      return x<unitsX-12 && /^[A-Z0-9][A-Z0-9._/-]{2,24}$/i.test(t) && !/^(MODELO|CODIGO|DETALLE|UNIDADES|UNIDAD|CANTIDAD|PRECIO)$/i.test(t);
     });
-    if (!codeWord) continue;
-
-    const code = String(codeWord.text).replace(/[^a-z0-9._/-]/gi, '').toUpperCase();
-    // En la captura de Tiempo Gestión, Unidades está inmediatamente después
-    // de Detalle: aproximadamente entre el 35% y el 53% del ancho.
-    const qtyWord = sorted.find((word) => {
-      const x = word.bbox.x0 / imageWidth;
-      return word !== codeWord && x >= 0.34 && x <= 0.53 && parseQuantity(String(word.text)) !== null;
-    });
-    if (!qtyWord) continue;
-
-    const quantity = parseQuantity(String(qtyWord.text));
-    if (quantity === null) continue;
-    const description = sorted
-      .filter((word) => word.bbox.x0 > codeWord.bbox.x1 && word.bbox.x1 < qtyWord.bbox.x0)
-      .filter((word) => word !== codeWord && word !== qtyWord)
-      .map((word) => String(word.text))
-      .join(' ')
-      .replace(/\\s+/g, ' ')
-      .trim();
-    if (!description || /^(MODELO|DETALLE|UNIDADES|PRECIO)$/i.test(description)) continue;
-    rows.push({
-      code,
-      description,
-      quantity,
-      confidence: Math.round(Math.min(Number(codeWord.confidence || 0), Number(qtyWord.confidence || 0))),
-    });
+    if (!codes.length) continue;
+    const codeWord=codes.sort((a,b)=>{
+      const ax=(Number(a.bbox.x0)+Number(a.bbox.x1))/2, bx=(Number(b.bbox.x0)+Number(b.bbox.x1))/2;
+      return Math.abs(ax-modelX)-Math.abs(bx-modelX);
+    })[0];
+    const quantities=sorted.filter(w=>w!==codeWord && Number(w.bbox.x0)>Number(codeWord.bbox.x0) && parseQuantity(String(w.text))!==null);
+    if (!quantities.length) continue;
+    const qtyWord=quantities.sort((a,b)=>{
+      const ax=(Number(a.bbox.x0)+Number(a.bbox.x1))/2, bx=(Number(b.bbox.x0)+Number(b.bbox.x1))/2;
+      return Math.abs(ax-unitsX)-Math.abs(bx-unitsX);
+    })[0];
+    const quantity=parseQuantity(String(qtyWord.text));
+    const code=String(codeWord.text).replace(/[^a-z0-9._/-]/gi,'').toUpperCase();
+    const description=sorted.filter(w=>Number(w.bbox.x0)>Number(codeWord.bbox.x1)+1 && Number(w.bbox.x1)<Number(qtyWord.bbox.x0)-1)
+      .map(w=>String(w.text).trim()).filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+    if (!code || !description || quantity===null) continue;
+    rows.push({code,description,quantity,confidence:Math.round(Math.min(Number(codeWord.confidence??0),Number(qtyWord.confidence??0)))});
   }
-  return rows;
+  const unique=new Map<string,DeliveryImageRow>();
+  for (const row of rows) unique.set(`${row.code}|${row.quantity}`,row);
+  return [...unique.values()];
 }
 export function DeliveryImageImport({ onImport, disabled = false }: Props) {
   const [processing, setProcessing] = useState(false);
