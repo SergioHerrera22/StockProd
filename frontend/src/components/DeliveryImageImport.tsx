@@ -41,41 +41,60 @@ function parseQuantity(value: string): number | null {
   return Number.isFinite(number) && number > 0 && number < 100000 ? number : null;
 }
 
+async function getImageWidth(file: File): Promise<number> {
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await createImageBitmap(file);
+    const width = bitmap.width;
+    bitmap.close();
+    return width;
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); resolve(image.naturalWidth); };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer el tamaño de la captura.')); };
+    image.src = url;
+  });
+}
+
 function extractRows(words: any[], imageWidth: number): DeliveryImageRow[] {
+  if (!imageWidth || !Number.isFinite(imageWidth)) return [];
   const grouped = new Map<string, any[]>();
   for (const word of words || []) {
-    if (!word.text?.trim() || Number(word.confidence ?? 0) < 25) continue;
+    if (!word.text?.trim() || !word.bbox || Number(word.confidence ?? 0) < 15) continue;
     const key = [word.block_num, word.par_num, word.line_num].join('-');
-    grouped.set(key, [...(grouped.get(key) || []), word]);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(word);
   }
 
   const rows: DeliveryImageRow[] = [];
   for (const line of grouped.values()) {
     const sorted = line.sort((a, b) => a.bbox.x0 - b.bbox.x0);
-    // La grilla de Tiempo Gestión ubica Modelo a la izquierda y Unidades
-    // aproximadamente en el 35-50% del ancho de la captura.
-    const codeWord = sorted.find((w) =>
-      w.bbox.x0 / imageWidth < 0.34 &&
-      /^[A-Z0-9][A-Z0-9._/-]{3,19}$/i.test(w.text.replace(/[^a-z0-9._/-]/gi, ''))
-    );
+    const codeWord = sorted.find((word) => {
+      const x = word.bbox.x0 / imageWidth;
+      const token = String(word.text).replace(/[^a-z0-9._/-]/gi, '');
+      return x < 0.34 && /^[A-Z0-9][A-Z0-9._/-]{2,24}$/i.test(token);
+    });
     if (!codeWord) continue;
 
-    const code = codeWord.text.replace(/[^a-z0-9._/-]/gi, '').toUpperCase();
-    const qtyWord = sorted.find((w) => {
-      const x = w.bbox.x0 / imageWidth;
-      return w !== codeWord && x >= 0.34 && x <= 0.53 && parseQuantity(w.text) !== null;
+    const code = String(codeWord.text).replace(/[^a-z0-9._/-]/gi, '').toUpperCase();
+    // En la captura de Tiempo Gestión, Unidades está inmediatamente después
+    // de Detalle: aproximadamente entre el 35% y el 53% del ancho.
+    const qtyWord = sorted.find((word) => {
+      const x = word.bbox.x0 / imageWidth;
+      return word !== codeWord && x >= 0.34 && x <= 0.53 && parseQuantity(String(word.text)) !== null;
     });
     if (!qtyWord) continue;
 
-    const quantity = parseQuantity(qtyWord.text);
+    const quantity = parseQuantity(String(qtyWord.text));
     if (quantity === null) continue;
     const description = sorted
-      .filter((w) => w.bbox.x0 > codeWord.bbox.x1 && w.bbox.x1 < qtyWord.bbox.x0)
-      .map((w) => w.text)
+      .filter((word) => word.bbox.x0 > codeWord.bbox.x1 && word.bbox.x1 < qtyWord.bbox.x0)
+      .filter((word) => word !== codeWord && word !== qtyWord)
+      .map((word) => String(word.text))
       .join(' ')
+      .replace(/\\s+/g, ' ')
       .trim();
-
-    // Excluir encabezados y líneas sin descripción; conservar códigos repetidos.
     if (!description || /^(MODELO|DETALLE|UNIDADES|PRECIO)$/i.test(description)) continue;
     rows.push({
       code,
@@ -86,7 +105,6 @@ function extractRows(words: any[], imageWidth: number): DeliveryImageRow[] {
   }
   return rows;
 }
-
 export function DeliveryImageImport({ onImport, disabled = false }: Props) {
   const [processing, setProcessing] = useState(false);
   const [rows, setRows] = useState<DeliveryImageRow[]>([]);
@@ -106,15 +124,20 @@ export function DeliveryImageImport({ onImport, disabled = false }: Props) {
     setSourceName(file.name || 'Captura pegada');
     try {
       const Tesseract = await loadTesseract();
-      const result = await Tesseract.recognize(file, 'spa+eng', {
-        logger: (message: any) => {
-          if (message.status === 'recognizing text') setSourceName(`Reconociendo… ${Math.round((message.progress || 0) * 100)}%`);
-        },
-      });
-      const width = result.data?.imageSize?.width || result.data?.width || 0;
-      const found = extractRows(result.data?.words || [], width);
+      const [result, imageWidth] = await Promise.all([
+        Tesseract.recognize(file, 'spa+eng', {
+          logger: (message: any) => {
+            if (message.status === 'recognizing text') setSourceName(`Reconociendo… ${Math.round((message.progress || 0) * 100)}%`);
+          },
+        }),
+        getImageWidth(file),
+      ]);
+      const found = extractRows(result.data?.words || [], imageWidth);
       if (!found.length) {
-        setError('No se detectaron filas con código y cantidad. Probá con una captura donde la tabla se vea completa y nítida.');
+        const rawText = String(result.data?.text || '').trim();
+        setError(rawText
+          ? `El OCR leyó el texto, pero no pudo separar las columnas de productos y cantidades. Texto detectado: ${rawText.slice(0, 280)}`
+          : 'El motor OCR no pudo leer texto de la captura. Probá con una imagen más nítida y con la tabla completa.');
       } else {
         setRows(found);
       }
