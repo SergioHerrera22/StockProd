@@ -4,6 +4,8 @@ name: Deploy to Hostinger
 on:
   push:
     branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
 env:
@@ -237,14 +239,28 @@ jobs:
           ${{ secrets.HOSTINGER_FRONTEND_ENV }}
           EOF
 
+      - name: Prepare Hostinger release structure
+        run: |
+          set -euo pipefail
+          rm -rf deploy
+          mkdir -p deploy/backend/dist deploy/public
+          cp -a backend/dist/. deploy/backend/dist/
+          cp -a frontend/dist/. deploy/public/
+          cp backend/package.json backend/package-lock.json deploy/backend/
+          cp backend/.env deploy/backend/.env
+          test -s deploy/public/index.html
+          test -d deploy/public/assets
+          echo "Frontend preparado en /public"
+          echo "Backend compilado preparado en /backend/dist"
+
       - name: Deploy to Hostinger via FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
         with:
           server: ${{ secrets.HOSTINGER_FTP_HOST }}
           username: ${{ secrets.HOSTINGER_FTP_USER }}
           password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
-          server-dir: ${{ secrets.HOSTINGER_FTP_DIR }}/
-          local-dir: ./
+          server-dir: ./
+          local-dir: ./deploy/
           exclude: |
             **/.git*
             **/.github*
