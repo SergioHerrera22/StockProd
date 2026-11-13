@@ -4,29 +4,26 @@ import { logger } from './lib/logger';
 import { pool } from './db/pool';
 import { startScheduler } from './jobs/scheduler';
 
-async function main() {
-  // Verifica la conexion a la base antes de arrancar
+const app = createApp();
+
+// Hostinger exige que el proceso llame listen() inmediatamente.
+// No esperar PostgreSQL antes de abrir el puerto: la inicialización de
+// servicios se ejecuta después de que el servidor ya está escuchando.
+const server = app.listen(config.port, () => {
+  logger.info(`API Robles Stock escuchando en http://localhost:${config.port} [${config.env}]`);
+  void initializeServices();
+});
+
+async function initializeServices() {
   try {
     await pool.query('SELECT 1');
     logger.info('Conexion a PostgreSQL OK');
     logger.info('DATABASE_URL usada: ' + config.databaseUrl.replace(/:[^:@]*@/, ':***@'));
+    startScheduler();
   } catch (err) {
-    logger.error('No se pudo conectar a PostgreSQL:', (err as Error).message);
+    logger.error('No se pudo inicializar la conexion a PostgreSQL:', (err as Error).message);
     logger.error('Revisa DATABASE_URL en backend/.env');
-    process.exit(1);
+    // No dejar un proceso aparentemente sano pero sin base de datos.
+    server.close(() => process.exit(1));
   }
-
-  const app = createApp();
-  app.listen(config.port, () => {
-    logger.info(`API Robles Stock escuchando en http://localhost:${config.port} [${config.env}]`);
-  });
-
-  // Jobs programados: limpieza de reservas vencidas, auto-cancelacion de
-  // retiros vencidos y alertas (ver src/jobs/scheduler.ts)
-  startScheduler();
 }
-
-main().catch((err) => {
-  logger.error('Error fatal al iniciar:', err);
-  process.exit(1);
-});
