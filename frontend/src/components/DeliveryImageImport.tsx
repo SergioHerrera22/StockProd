@@ -127,6 +127,21 @@ function extractRows(words: any[], imageWidth: number): DeliveryImageRow[] {
   for (const row of rows) unique.set(`${row.code}|${row.quantity}`,row);
   return [...unique.values()];
 }
+function extractRowsFromText(text: string): DeliveryImageRow[] {
+  const rows: DeliveryImageRow[] = [];
+  const lines = text.split(/\\r?\\n/).map(line => line.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+  for (const line of lines) {
+    // La grilla de Tiempo Gestión suele dejar código al inicio y cantidad al final.
+    const match = line.match(/^([A-Z0-9][A-Z0-9._/-]{2,24})\\s+(.+?)\\s+(\\d+(?:[.,]\\d+)?)$/i);
+    if (!match) continue;
+    const quantity = parseQuantity(match[3]);
+    const description = match[2].trim();
+    if (!quantity || !description || description.length < 3) continue;
+    rows.push({ code: match[1].toUpperCase(), description, quantity, confidence: 0 });
+  }
+  return rows;
+}
+
 export function DeliveryImageImport({ onImport, disabled = false }: Props) {
   const [processing, setProcessing] = useState(false);
   const [rows, setRows] = useState<DeliveryImageRow[]>([]);
@@ -147,21 +162,33 @@ export function DeliveryImageImport({ onImport, disabled = false }: Props) {
     try {
       const Tesseract = await loadTesseract();
       const prepared = await prepareOcrImage(file);
-      const result = await Tesseract.recognize(prepared.image, 'spa+eng', {
+      const recognizeOptions = {
         logger: (message: any) => {
           if (message.status === 'recognizing text') setSourceName(`Reconociendo… ${Math.round((message.progress || 0) * 100)}%`);
         },
-        tessedit_pageseg_mode: Tesseract.PSM?.SINGLE_BLOCK ?? 6,
         preserve_interword_spaces: '1',
+      };
+      // Primero conserva la segmentación de tabla; si no arma filas, reintenta
+      // como texto disperso, que suele funcionar mejor en capturas angostas.
+      let result = await Tesseract.recognize(prepared.image, 'spa+eng', {
+        ...recognizeOptions,
+        tessedit_pageseg_mode: Tesseract.PSM?.SINGLE_BLOCK ?? 6,
       });
-      const imageWidth = prepared.width;
-      const found = extractRows(result.data?.words || [], imageWidth);
+      let found = extractRows(result.data?.words || [], prepared.width);
       if (!found.length) {
-        const rawText = String(result.data?.text || '').trim();
+        result = await Tesseract.recognize(prepared.image, 'spa+eng', {
+          ...recognizeOptions,
+          tessedit_pageseg_mode: Tesseract.PSM?.SPARSE_TEXT ?? 11,
+        });
+        found = extractRows(result.data?.words || [], prepared.width);
+      }
+      const rawText = String(result.data?.text || '').trim();
+      if (!found.length && rawText) found = extractRowsFromText(rawText);
+      if (!found.length) {
         const wordCount = Array.isArray(result.data?.words) ? result.data.words.length : 0;
         setError(rawText
-          ? `El OCR leyó texto, pero no pudo formar filas válidas. Palabras detectadas: ${wordCount}. Texto reconocido: ${rawText.slice(0, 900)}`
-          : `El motor OCR no pudo leer texto de la captura (palabras detectadas: ${wordCount}). Probá con la tabla completa.`);
+          ? `El OCR leyó texto, pero no pudo separar con seguridad las filas. Palabras detectadas: ${wordCount}. Texto reconocido: ${rawText.slice(0, 900)}`
+          : `El motor OCR no pudo leer texto de la captura (palabras detectadas: ${wordCount}). Probá con una captura más amplia y nítida.`);
       } else {
         setRows(found);
       }
