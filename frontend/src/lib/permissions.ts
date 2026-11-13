@@ -176,16 +176,9 @@ export function hasPermission(role: Role | undefined | null, permission: Permiss
 }
 
 export function hasPermissionWithFallback(role: Role | undefined | null, permission: Permission, userPermissions: Permission[] | null | undefined): boolean {
-  // Si hay permisos de usuario personalizados (desde la BD), usarlos primero
-  const perms = userPermissions ?? [];
-  if (perms.length > 0) {
-    if (perms.includes(permission)) return true;
-    // Si el usuario tiene permisos custom pero no este específico, verificar rol
-  }
-  // Fallback a la matriz de roles
-  if (role === 'ADMIN' && (permission === 'merchandise_requests.use' || permission === 'merchandise_requests.manage')) return true;
-  if (!role) return false;
-  return PERMISSIONS[role]?.includes(permission) ?? false;
+  // Una lista personalizada es autoritativa, incluso si está vacía.
+  // Solo null/undefined significa que el usuario hereda los permisos del rol.
+  return hasPermission(role, permission, userPermissions);
 }
 
 export const ROLE_LABEL: Record<Role, string> = {
