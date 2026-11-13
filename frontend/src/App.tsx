@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
 import { ToastProvider } from './components/Toast';
 import { ConfirmProvider } from './components/ui';
 import { Layout } from './components/Layout';
@@ -36,6 +36,10 @@ import MerchandiseRequests from './pages/MerchandiseRequests';
 
 function Protected({ children }: { children: ReactNode }) {
   const user = useAuth((s) => s.user);
+  const authReady = useAuth((s) => s.authReady);
+  const refreshUser = useAuth((s) => s.refreshUser);
+  React.useEffect(() => { void refreshUser(); }, [refreshUser]);
+  if (!authReady) return <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">Verificando permisos…</div>;
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
