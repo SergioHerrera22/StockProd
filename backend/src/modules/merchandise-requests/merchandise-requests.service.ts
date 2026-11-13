@@ -47,7 +47,7 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
     return { ...row, items:items.rows };
   });
 }
-export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?: string) {
+export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?:string) {
   if(!user.locationId) throw ApiError.forbidden('Tu usuario no tiene una sucursal asignada.');
   if(user.role==='TRANSPORTE') throw ApiError.forbidden();
   const merged=new Map<number,number>();
@@ -82,7 +82,9 @@ export async function setMerchandiseRequestStatus(user: AuthUser,id:number,statu
    if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
    if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
    stage='actualizar estado del pedido';
-   await c.query("UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1 IN ('ATENDIDO','RECHAZADO') THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
+   // El parámetro $1 es un ENUM en la asignación; tiparlo explícitamente
+   // evita que PostgreSQL lo infiera como text en la condición CASE.
+   await c.query("UPDATE merchandise_requests SET status=$1::merchandise_request_status,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1::merchandise_request_status IN ('ATENDIDO'::merchandise_request_status,'RECHAZADO'::merchandise_request_status) THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
    stage='registrar auditoría';
    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip});
    return {ok:true,status};
