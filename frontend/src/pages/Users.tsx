@@ -288,6 +288,7 @@ export default function Users() {
         open={open}
         onClose={() => setOpen(false)}
         title={form.id ? `Editar usuario ${form.username}` : 'Nuevo usuario'}
+        width="xl"
         footer={
           <>
             <Button variant="secondary" onClick={() => setOpen(false)}>Cancelar</Button>
@@ -302,7 +303,7 @@ export default function Users() {
           <Field label="Nombre completo" required>
             <Input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
           </Field>
-          <Field label="Rol" required hint="Define los permisos del usuario">
+          <Field label="Rol" required hint="Define los permisos iniciales del usuario">
             <Select value={form.role} onChange={(e) => { const role = e.target.value as Role; setForm({ ...form, role, permissions: [...PERMISSIONS[role]] }); }}>
               <option value="EMPLEADO">Empleado — entregas y consultas</option>
               <option value="ENCARGADO">Encargado — stock, movimientos e inventarios</option>
@@ -316,30 +317,27 @@ export default function Users() {
               {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </Select>
           </Field>
-          <Field
-            label="Restringir a su ubicación"
-            className="sm:col-span-2"
-            hint="Si está activo, el usuario solo puede registrar entregas, entradas, transferencias e inventarios en su ubicación habitual. La consulta de stock sigue siendo de todas."
-          >
+          <Field label="Restringir a su ubicación" className="sm:col-span-2" hint="Limita las operaciones a la ubicación habitual del usuario.">
             <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.restrictToLocation}
-                onChange={(e) => setForm({ ...form, restrictToLocation: e.target.checked })}
-                className="h-4 w-4"
-              />
-              {form.restrictToLocation
-                ? `Restringido: solo puede operar en ${locations.find((l) => String(l.id) === form.defaultLocationId)?.name ?? '—'}`
-                : 'Sin restricción de ubicación'}
+              <input type="checkbox" checked={form.restrictToLocation} onChange={(e) => setForm({ ...form, restrictToLocation: e.target.checked })} className="h-4 w-4" />
+              {form.restrictToLocation ? `Restringido: solo puede operar en ${locations.find((l) => String(l.id) === form.defaultLocationId)?.name ?? '—'}` : 'Sin restricción de ubicación'}
             </label>
           </Field>
-          <div className="sm:col-span-2"><PermissionsEditor role={form.role} value={form.permissions} onChange={(permissions) => setForm({ ...form, permissions })} lockedPermissions={form.role === 'ADMIN' ? ['users.manage'] : []} /></div>
-          {!form.id && (
-            <Field label="Contraseña inicial" required className="sm:col-span-2">
-              <Input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Mínimo 6 caracteres" />
-            </Field>
-          )}
         </FormRow>
+
+        <section className="mt-5 rounded-xl border-2 border-brand-200 bg-white p-3 sm:p-4">
+          <div className="mb-3">
+            <h4 className="text-base font-bold text-slate-800">Permisos y acceso a secciones</h4>
+            <p className="mt-1 text-sm text-slate-500">Marcá únicamente las funciones que este usuario puede utilizar. Los cambios se guardan al presionar Guardar.</p>
+          </div>
+          <PermissionsEditor role={form.role} value={form.permissions} onChange={(permissions) => setForm({ ...form, permissions })} lockedPermissions={form.role === "ADMIN" ? ["users.manage"] : []} />
+        </section>
+
+        {!form.id && (
+          <Field label="Contraseña inicial" required className="mt-4">
+            <Input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Mínimo 6 caracteres" />
+          </Field>
+        )}
       </Modal>
     </div>
   );
