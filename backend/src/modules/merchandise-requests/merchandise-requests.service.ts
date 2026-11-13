@@ -51,7 +51,15 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
   if(!user.locationId) throw ApiError.forbidden('Tu usuario no tiene una sucursal asignada.');
   if(user.role==='TRANSPORTE') throw ApiError.forbidden();
   const merged=new Map<number,number>();
-  for(const it of items){ if(!Number.isInteger(it.productId)||it.productId<=0||!Number.isInteger(it.quantity)||it.quantity<3) throw ApiError.badRequest('Cada producto debe tener una cantidad mínima de 3 unidades.'); merged.set(it.productId,(merged.get(it.productId)||0)+it.quantity); }
+  for(const it of items){
+    const scaled=it.quantity*1000;
+    if(!Number.isInteger(it.productId)||it.productId<=0||!Number.isFinite(it.quantity)||it.quantity<=0||it.quantity>99999999999.999||Math.abs(scaled-Math.round(scaled))>1e-7)
+      throw ApiError.badRequest('Cada producto debe tener una cantidad mayor a cero y con un máximo de 3 decimales.');
+    const total=(merged.get(it.productId)||0)+it.quantity;
+    if(!Number.isFinite(total)||Math.abs(total*1000-Math.round(total*1000))>1e-7)
+      throw ApiError.badRequest('La cantidad acumulada supera la precisión permitida.');
+    merged.set(it.productId,total);
+  }
   if(!merged.size) throw ApiError.badRequest('Agregá al menos un producto.');
   return withTx(async c=>{
     const origin=await centralWarehouseId(c);
