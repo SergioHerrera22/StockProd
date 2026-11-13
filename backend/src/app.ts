@@ -101,7 +101,7 @@ export function createApp() {
   // En Hostinger el frontend se publica en /public. Priorizar SIEMPRE
   // esa carpeta para evitar servir un build viejo que haya quedado en frontend/dist.
   // En desarrollo se usa frontend/dist.
-  const productionDist = path.resolve(process.cwd(), 'public');
+  const productionDist = path.resolve(__dirname, '../../public');
   const developmentDist = path.resolve(__dirname, '../../frontend/dist');
   const distDir = config.isProd
     ? (fs.existsSync(path.join(productionDist, 'index.html')) ? productionDist : null)
