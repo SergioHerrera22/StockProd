@@ -172,6 +172,17 @@ export function hasPermission(role: Role | undefined | null, permission: Permiss
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }
 
+/** Compatibilidad con los guards y el store de autenticación.
+ * Los permisos personalizados son autoritativos; solo null/undefined hereda el rol.
+ */
+export function hasPermissionWithFallback(
+  role: Role | undefined | null,
+  permission: Permission,
+  userPermissions: Permission[] | null | undefined,
+): boolean {
+  return hasPermission(role, permission, userPermissions);
+}
+
 export const ROLE_LABEL: Record<Role, string> = {
   ADMIN: 'Administrador',
   ENCARGADO: 'Encargado',
