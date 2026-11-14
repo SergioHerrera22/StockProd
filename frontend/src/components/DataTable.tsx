@@ -93,7 +93,7 @@ export function DataTable<T>({
 
   return (
     <div>
-      <div className="max-w-full overflow-x-auto rounded-lg" role="region" aria-label="Tabla de datos; desliza horizontalmente para ver todas las columnas" tabIndex={0}>
+      <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
@@ -158,13 +158,13 @@ export function DataTable<T>({
       {pageRows.length === 0 && !loading && <EmptyState title={emptyTitle} hint={emptyHint} action={emptyAction} />}
 
       {totalPages > 1 && (
-        <div className="flex flex-col items-start justify-between gap-3 border-t border-slate-100 px-3 py-3 text-sm text-slate-500 sm:flex-row sm:items-center">
+        <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-3 py-2 text-sm text-slate-500">
           <span>
             Página {currentPage} de {totalPages} · {totalCount} registros
           </span>
-          <div className="flex w-full gap-2 sm:w-auto">
+          <div className="flex gap-1">
             <button
-              className="min-h-10 flex-1 rounded border border-slate-200 px-3 py-2 text-xs hover:bg-slate-50 disabled:opacity-40 sm:flex-none"
+              className="rounded border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-40"
               disabled={currentPage <= 1}
               onClick={() => (serverPaged ? onPageChange!(currentPage - 1) : setClientPage(currentPage - 1))}
             >
