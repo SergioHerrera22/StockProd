@@ -166,45 +166,30 @@ export default function DeliveryNew() {
     });
   }
 
-  /** Valida cada fila OCR contra productos existentes. Nunca crea productos ni
-   *  acepta una coincidencia aproximada ambigua. */
+  /** Resuelve los códigos detectados por OCR contra el catálogo; nunca asigna por descripción aproximada. */
   const handleImageImport = useCallback(async (rows: DeliveryImageRow[]) => {
     if (!locationId) {
       toast.warn('Primero elegí la ubicación de salida');
       return;
     }
-    const normalize = (value: string) => value
-      .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
-      .toLowerCase().replace(/[^a-z0-9]/g, '');
     const unresolved: string[] = [];
     let imported = 0;
     for (const row of rows) {
       try {
-        const codeQuery = await api<{ products: StockRow[] }>(`/stock${qs({ q: row.code, locationId, limit: 20 })}`);
-        const codeKey = normalize(row.code);
-        let matches = codeQuery.products.filter(p => normalize(p.code) === codeKey);
+        const res = await api<{ products: StockRow[] }>(`/stock${qs({ q: row.code, locationId, limit: 10 })}`);
+        const matches = res.products.filter((p) => p.code.trim().toLowerCase() === row.code.trim().toLowerCase());
         if (matches.length !== 1) {
-          const descriptionQuery = await api<{ products: StockRow[] }>(`/stock${qs({ q: row.description, locationId, limit: 20 })}`);
-          const descriptionKey = normalize(row.description);
-          const described = descriptionQuery.products.filter(p => {
-            const name = normalize(p.name);
-            return name === descriptionKey || (descriptionKey.length >= 10 && name.includes(descriptionKey)) ||
-              (name.length >= 10 && descriptionKey.includes(name));
-          });
-          matches = described;
-        }
-        if (matches.length !== 1) {
-          unresolved.push(`${row.code} — ${row.description}`);
+          unresolved.push(row.code);
           continue;
         }
         addProduct(matches[0], row.quantity);
         imported++;
       } catch {
-        unresolved.push(`${row.code} — ${row.description}`);
+        unresolved.push(row.code);
       }
     }
     if (imported) toast.success(`${imported} línea(s) de captura incorporadas. Revisá las cantidades antes de guardar.`);
-    if (unresolved.length) toast.warn(`Sin coincidencia única en el catálogo; no se agregaron: ${Array.from(new Set(unresolved)).join('; ')}`);
+    if (unresolved.length) toast.warn(`No se encontraron por código exacto: ${Array.from(new Set(unresolved)).join(', ')}. No se agregaron.`);
   }, [locationId, toast]);
 
   function setQuantity(productId: number, quantity: number) {
