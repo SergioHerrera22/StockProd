@@ -5,18 +5,6 @@ export function fmtQty(n: number | string | null | undefined): string {
   return new Intl.NumberFormat('es-AR', { maximumFractionDigits: 3 }).format(num);
 }
 
-/** Cantidades de pedidos: conserva fracciones y evita que el punto se interprete como separador de miles. */
-export function fmtMerchandiseQty(n: number | string | null | undefined): string {
-  if (n === null || n === undefined || n === '') return '—';
-  const num = typeof n === 'number' ? n : Number(String(n).trim());
-  if (!Number.isFinite(num)) return '—';
-  return new Intl.NumberFormat('es-AR', {
-    useGrouping: false,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
-  }).format(num);
-}
-
 export function fmtMoney(n: number | string | null | undefined): string {
   if (n === null || n === undefined || n === '') return '—';
   const num = Number(n);
