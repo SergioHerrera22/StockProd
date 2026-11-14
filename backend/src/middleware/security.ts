@@ -53,9 +53,8 @@ export const securityHeaders: RequestHandler[] = [
       // Tiles de OpenStreetMap para el mapa de reparto (/api/tracking).
       imgSrc: ["'self'", 'data:', 'blob:', 'https://tile.openstreetmap.org', 'https://*.tile.openstreetmap.org'],
       fontSrc: ["'self'", 'data:'],
-      // Tesseract.js puede cargar el core WebAssembly desde una URL data:
-      // (base64) y descargar worker/modelos desde los orígenes autorizados.
-      connectSrc: ["'self'", 'data:', 'https://cdn.jsdelivr.net', 'https://tessdata.projectnaptha.com'],
+      // Descarga del worker, core WASM y modelos de idioma de Tesseract.
+      connectSrc: ["'self'", 'https://cdn.jsdelivr.net', 'https://tessdata.projectnaptha.com'],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       formAction: ["'self'"],
