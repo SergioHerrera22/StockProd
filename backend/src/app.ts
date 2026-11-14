@@ -34,7 +34,6 @@ import confirmationRoutes from './modules/settings/confirmation.routes';
 import trackingRoutes from './modules/tracking/tracking.routes';
 import driversRoutes from './modules/drivers/drivers.routes';
 import { pool } from './db/pool';
-import { logger } from './lib/logger';
 
 export function createApp() {
   const app = express();
@@ -98,39 +97,28 @@ export function createApp() {
   app.use('/api/tracking', trackingRoutes);
   app.use('/api/drivers', driversRoutes);
 
-  // En Hostinger el frontend se publica en /public. Priorizar SIEMPRE
-  // esa carpeta para evitar servir un build viejo que haya quedado en frontend/dist.
-  // En desarrollo se usa frontend/dist.
-  const productionDist = path.resolve(__dirname, '../../public');
-  const developmentDist = path.resolve(__dirname, '../../frontend/dist');
-  const distDir = config.isProd
-    ? (fs.existsSync(path.join(productionDist, 'index.html')) ? productionDist : null)
-    : (fs.existsSync(path.join(developmentDist, 'index.html')) ? developmentDist : null);
-
+  // En produccion sirve el frontend compilado
+  // Desarrollo: ../../frontend/dist | Hostinger (root): ./public
+  const candidates = [
+    path.resolve(__dirname, '../../frontend/dist'),  // dev local
+    path.resolve(__dirname, '../../../public'),      // Hostinger (dist/index.js -> root/public)
+    path.resolve(process.cwd(), 'public'),           // Hostinger (cwd = root)
+  ];
+  const distDir = candidates.find((d) => fs.existsSync(d));
   if (config.isProd && distDir) {
-    // Assets con hash: cache inmutable. HTML: siempre revalidar.
+    // Assets de Vite con hash inmutable y el index.html siempre fresco
+    // (Cache-Control equivocado tendria a todos con la version vieja).
     app.use(express.static(distDir, {
-      index: false,
-      fallthrough: true,
       setHeaders: (res, filePath) => {
         if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         }
       },
     }));
-
-    // Nunca devolver index.html para un asset inexistente: responder 404
-    // evita que el navegador reciba HTML como JavaScript o CSS.
-    app.use('/assets', (_req, res) => {
-      res.status(404).type('text/plain').send('Asset no encontrado');
-    });
-
     app.get('*', (_req, res) => {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distDir, 'index.html'));
     });
-  } else if (config.isProd) {
-    logger.error('Frontend no encontrado: falta public/index.html');
   }
 
   app.use((_req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));

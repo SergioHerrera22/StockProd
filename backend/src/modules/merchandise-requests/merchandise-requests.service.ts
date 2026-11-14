@@ -47,19 +47,11 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
     return { ...row, items:items.rows };
   });
 }
-export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?:string) {
+export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?: string) {
   if(!user.locationId) throw ApiError.forbidden('Tu usuario no tiene una sucursal asignada.');
   if(user.role==='TRANSPORTE') throw ApiError.forbidden();
   const merged=new Map<number,number>();
-  for(const it of items){
-    const scaled=it.quantity*1000;
-    if(!Number.isInteger(it.productId)||it.productId<=0||!Number.isFinite(it.quantity)||it.quantity<=0||it.quantity>99999999999.999||Math.abs(scaled-Math.round(scaled))>1e-7)
-      throw ApiError.badRequest('Cada producto debe tener una cantidad mayor a cero y con un máximo de 3 decimales.');
-    const total=(merged.get(it.productId)||0)+it.quantity;
-    if(!Number.isFinite(total)||Math.abs(total*1000-Math.round(total*1000))>1e-7)
-      throw ApiError.badRequest('La cantidad acumulada supera la precisión permitida.');
-    merged.set(it.productId,total);
-  }
+  for(const it of items){ if(!Number.isInteger(it.productId)||it.productId<=0||!Number.isInteger(it.quantity)||it.quantity<3) throw ApiError.badRequest('Cada producto debe tener una cantidad mínima de 3 unidades.'); merged.set(it.productId,(merged.get(it.productId)||0)+it.quantity); }
   if(!merged.size) throw ApiError.badRequest('Agregá al menos un producto.');
   return withTx(async c=>{
     const origin=await centralWarehouseId(c);
@@ -90,9 +82,7 @@ export async function setMerchandiseRequestStatus(user: AuthUser,id:number,statu
    if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
    if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
    stage='actualizar estado del pedido';
-   // El parámetro $1 es un ENUM en la asignación; tiparlo explícitamente
-   // evita que PostgreSQL lo infiera como text en la condición CASE.
-   await c.query("UPDATE merchandise_requests SET status=$1::merchandise_request_status,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1::merchandise_request_status IN ('ATENDIDO'::merchandise_request_status,'RECHAZADO'::merchandise_request_status) THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
+   await c.query("UPDATE merchandise_requests SET status=$1,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1 IN ('ATENDIDO','RECHAZADO') THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
    stage='registrar auditoría';
    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip});
    return {ok:true,status};
