@@ -45,6 +45,7 @@ const NAV: NavItem[] = [
 
 export function Layout() {
   const { user, can, logout } = useAuth();
+  const refreshUser = useAuth((s) => s.refreshUser);
   const [open, setOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const location = useLocation();
@@ -69,6 +70,18 @@ export function Layout() {
   }, [gps.state]);
 
   useEffect(() => { setOpen(false); }, [location.pathname]);
+
+  // Revalida los permisos del usuario conectado ante cambios administrativos.
+  useEffect(() => {
+    if (!user) return;
+    const refresh = () => { void refreshUser(); };
+    window.addEventListener('focus', refresh);
+    const timer = window.setInterval(refresh, 30000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.clearInterval(timer);
+    };
+  }, [user?.id, refreshUser]);
 
   // ===== Badge de alertas pendientes =====
   // Se refresca al cambiar de página; silencioso si el endpoint o el permiso
