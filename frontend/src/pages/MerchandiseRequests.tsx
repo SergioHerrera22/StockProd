@@ -10,6 +10,15 @@ type Req={id:number;number:string;status:string;notes:string|null;created_at:str
 type ProductOption={id:number;code:string;barcode:string|null;name:string;brand:string|null;unit:string};
 type Item={productId:number;code:string;name:string;quantity:number;unit:string};
 type Detail=Req & {origin_name:string;items:Array<{id:number;product_id:number;quantity_requested:string;code:string;name:string;unit:string}>};
+// En pedidos antiguos algunas cantidades quedaron guardadas multiplicadas por 1000.
+// Se normalizan solo al mostrarlas; no modifica ni envía cambios a la base de datos.
+function fmtRequestQty(value: number | string | null | undefined): string {
+ if (value === null || value === undefined || value === '') return '—';
+ const num = Number(value);
+ if (!Number.isFinite(num)) return '—';
+ const normalized = Number.isInteger(num) && num >= 1000 && num % 1000 === 0 ? num / 1000 : num;
+ return fmtQty(normalized);
+}
 const stateLabel:Record<string,string>={PENDIENTE:'Pendiente',VISTO:'Visto',EN_PREPARACION:'Preparado',ATENDIDO:'Atendido',RECHAZADO:'Rechazado'};
 export default function MerchandiseRequests(){
  const {user,can}=useAuth(); const toast=useToast();
@@ -42,7 +51,7 @@ export default function MerchandiseRequests(){
  {rows.length===0?<p className="p-6 text-center text-sm text-slate-500">No hay pedidos registrados.</p>:<div className="divide-y">{rows.map(r=><button key={r.id} onClick={()=>void openDetail(r)} className="flex w-full flex-wrap items-center justify-between gap-2 py-3 text-left hover:bg-slate-50"><span><b>{r.number}</b><small className="block text-slate-500">{manager?r.destination_name+' · ':''}{r.created_by_name} · {fmtDateTime(r.created_at)}</small></span><span className="text-right"><Badge color={r.status==='ATENDIDO'?'green':r.status==='RECHAZADO'?'red':r.status==='PENDIENTE'?'amber':'blue'}>{stateLabel[r.status]||r.status}</Badge><small className="block text-slate-500">{r.item_count} productos</small></span></button>)}</div>}
  </Card>
  {detail&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3"><Card className="max-h-[90vh] w-full max-w-2xl space-y-3 overflow-y-auto p-4"><div className="flex justify-between"><h3 className="text-lg font-bold">{detail.number}</h3><Button variant="ghost" onClick={()=>setDetail(null)}>Cerrar</Button></div><div className="grid grid-cols-2 gap-2 text-sm"><div><small className="block text-slate-500">Origen</small>{detail.origin_name}</div><div><small className="block text-slate-500">Destino</small>{detail.destination_name}</div><div><small className="block text-slate-500">Solicitó</small>{detail.created_by_name}</div><div><small className="block text-slate-500">Estado</small>{stateLabel[detail.status]}</div></div>
- <div className="divide-y rounded-lg border">{detail.items.map(i=><div key={i.id} className="flex items-center justify-between gap-2 p-3"><span><b>{i.name}</b><small className="block text-slate-500">{i.code} · Solicitado: {fmtQty(Number(i.quantity_requested))}</small></span><b>{Number.isFinite(Number(i.quantity_requested)) ? String(Number(i.quantity_requested)) : '—'}</b></div>)}</div>
+ <div className="divide-y rounded-lg border">{detail.items.map(i=><div key={i.id} className="flex items-center justify-between gap-2 p-3"><span><b>{i.name}</b><small className="block text-slate-500">{i.code} · Solicitado: {fmtRequestQty(i.quantity_requested)}</small></span><b>{Number.isFinite(Number(i.quantity_requested)) ? String(Number(i.quantity_requested)) : '—'}</b></div>)}</div>
  {detail.notes&&<p className="text-sm text-slate-600">Observaciones: {detail.notes}</p>}
 
  {manager&&['PENDIENTE','VISTO','EN_PREPARACION'].includes(detail.status)&&<div className="flex flex-wrap justify-end gap-2">{detail.status==='PENDIENTE'&&<Button variant="secondary" disabled={busy} onClick={()=>void action('/merchandise-requests/'+detail.id+'/seen')}>Marcar visto</Button>}<Button variant="secondary" disabled={busy} onClick={()=>void action('/merchandise-requests/'+detail.id+'/preparing')}>Marcar preparado</Button><Button variant="danger" disabled={busy} onClick={reject}>Rechazar</Button><Button loading={busy} disabled={busy} onClick={()=>void action('/merchandise-requests/'+detail.id+'/attended')}>Marcar atendido</Button></div>}
