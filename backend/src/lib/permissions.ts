@@ -91,8 +91,6 @@ export const PERMISSIONS: Record<Role, Permission[]> = {
 };
 
 export function hasPermission(role: Role, permission: Permission, custom?: Permission[] | null): boolean {
-  // El administrador conserva acceso a Pedidos de mercadería aunque su lista personalizada sea anterior al módulo.
-  if (role === 'ADMIN' && (permission === 'merchandise_requests.use' || permission === 'merchandise_requests.manage')) return true;
   if (custom !== undefined && custom !== null) return custom.includes(permission);
   return PERMISSIONS[role]?.includes(permission) ?? false;
 }
