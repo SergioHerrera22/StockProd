@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
-import { fmtDateTime, fmtQty, fmtMerchandiseQty } from '../lib/format';
+import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Entry, EntryItem, Location, StockRow, Supplier } from '../types';
 import {
@@ -331,7 +331,7 @@ export default function Entries() {
                       <div className="font-medium text-slate-700">{it.name}</div>
                       <div className="font-mono text-xs text-slate-400">{it.code}</div>
                     </td>
-                    <td className="py-1.5 text-right font-semibold">{fmtMerchandiseQty(it.quantity)}</td>
+                    <td className="py-1.5 text-right font-semibold">{fmtQty(it.quantity)}</td>
                   </tr>
                 ))}
               </tbody>
