@@ -219,6 +219,14 @@ jobs:
           name: frontend-dist
           path: frontend/dist/
 
+      # El backend sirve el frontend desde ./public. Actualizarlo con el
+      # artefacto recien compilado evita publicar bundles antiguos o vacios.
+      - name: Publish frontend build to public directory
+        run: |
+          rm -rf public
+          mkdir -p public
+          cp -a frontend/dist/. public/
+
       - name: Download package files
         uses: actions/download-artifact@v4
         with:
