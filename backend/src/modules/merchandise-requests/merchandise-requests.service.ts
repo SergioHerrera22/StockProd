@@ -5,6 +5,7 @@ import { writeAudit } from '../../services/audit.service';
 import { AuthUser } from '../../middleware/auth';
 import { hasPermission } from '../../lib/permissions';
 import { logger } from '../../lib/logger';
+import { createAlert } from '../../services/alerts.service';
 
 type RequestItem = { productId: number; quantity: number };
 async function assertWarehouseManager(user: AuthUser, c?: PoolClient) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
@@ -75,31 +76,59 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
     await c.query('UPDATE merchandise_requests SET number=$1 WHERE id=$2',[number,id]);
     await c.query(`INSERT INTO merchandise_request_items(request_id,product_id,quantity_requested)
       SELECT $1,p,q FROM unnest($2::int[],$3::numeric[]) AS x(p,q)`,[id,ids,[...merged.values()]]);
+    await createAlert({
+      code: 'NEW_MERCHANDISE_REQUEST',
+      severity: 'INFO',
+      entityType: 'MERCHANDISE_REQUEST',
+      entityId: id,
+      title: 'Nuevo pedido de mercadería',
+      message: `Nuevo pedido ${number} creado desde ${user.locationId}. ${ids.length} productos.`,
+      data: { requestId: id, number, itemsCount: ids.length, origin: user.locationId },
+      targetRoles: ['ENCARGADO'],
+      targetLocationId: origin,
+    });
     await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_CREATE',entity:'merchandise_request',entityId:id,details:{number,items:ids.length,destination:user.locationId},ip});
     return {id,number,status:'PENDIENTE'};
   });
 }
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'VISTO'|'EN_PREPARACION'|'ATENDIDO'|'RECHAZADO',reason?:string,ip?:string){
  let stage='validar encargado de depósito';
- try {
-  await assertWarehouseManager(user);
-  return await withTx(async c=>{
-   stage='bloquear pedido';
-   const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]);
-   if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado');
-   if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
-   if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
-   stage='actualizar estado del pedido';
-   // El parámetro $1 es un ENUM en la asignación; tiparlo explícitamente
-   // evita que PostgreSQL lo infiera como text en la condición CASE.
-   await c.query("UPDATE merchandise_requests SET status=$1::merchandise_request_status,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1::merchandise_request_status IN ('ATENDIDO'::merchandise_request_status,'RECHAZADO'::merchandise_request_status) THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
-   stage='registrar auditoría';
-   await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip});
-   return {ok:true,status};
-  });
- } catch(err) {
-  const e=err as {message?:string;code?:string;constraint?:string;detail?:string};
-  logger.error(`No se pudo cambiar el estado del pedido ${id} a ${status}; usuario=${user.id}; etapa=${stage}; code=${e?.code||'N/A'}; constraint=${e?.constraint||'N/A'}; detail=${e?.detail||'N/A'}; error=${e?.message||String(err)}`, err instanceof Error ? err.stack : undefined);
-  throw err;
- }
+  try {
+   await assertWarehouseManager(user);
+   return await withTx(async c=>{
+    stage='bloquear pedido';
+    const r=await c.query('SELECT id,status FROM merchandise_requests WHERE id=$1 FOR UPDATE',[id]);
+    if(!r.rows[0])throw ApiError.notFound('Pedido no encontrado');
+    if(!['PENDIENTE','VISTO','EN_PREPARACION'].includes(r.rows[0].status))throw ApiError.conflict('El pedido ya fue tomado o resuelto.');
+    if(status==='RECHAZADO'&&(!reason||reason.trim().length<5))throw ApiError.badRequest('Indicá el motivo del rechazo.');
+    stage='actualizar estado del pedido';
+    // El parámetro $1 es un ENUM en la asignación; tiparlo explícitamente
+    // evita que PostgreSQL lo infiera como text en la condición CASE.
+    await c.query("UPDATE merchandise_requests SET status=$1::merchandise_request_status,rejection_reason=$2,handled_by=$3,handled_at=CASE WHEN $1::merchandise_request_status IN ('ATENDIDO'::merchandise_request_status,'RECHAZADO'::merchandise_request_status) THEN now() ELSE handled_at END,updated_at=now() WHERE id=$4",[status,status==='RECHAZADO'?reason!.trim():null,user.id,id]);
+    stage='notificar al solicitante';
+    // Obtener información del solicitante para notificar el cambio de estado
+    const reqRow = await c.query('SELECT created_by FROM merchandise_requests WHERE id=$1',[id]);
+    const createdBy = reqRow.rows[0]?.created_by;
+    if (createdBy && createdBy !== user.id) {
+      await createAlert({
+        code: 'MERCHANDISE_REQUEST_STATUS_CHANGED',
+        severity: 'INFO',
+        entityType: 'MERCHANDISE_REQUEST',
+        entityId: id,
+        title: `Pedido actualizado a ${status}`,
+        message: `El estado de tu pedido ha cambiado a ${status}.`,
+        data: { requestId: id, status, newStatus: status, changedBy: user.id },
+        targetRoles: [user.role],
+        targetLocationId: user.locationId,
+      });
+    }
+    stage='registrar auditoría';
+    await writeAudit(c,{userId:user.id,action:'MERCHANDISE_REQUEST_STATUS',entity:'merchandise_request',entityId:id,details:{status,reason},ip});
+    return {ok:true,status};
+   });
+  } catch(err) {
+   const e=err as {message?:string;code?:string;constraint?:string;detail?:string};
+   logger.error(`No se pudo cambiar el estado del pedido ${id} a ${status}; usuario=${user.id}; etapa=${stage}; code=${e?.code||'N/A'}; constraint=${e?.constraint||'N/A'}; detail=${e?.detail||'N/A'}; error=${e?.message||String(err)}`, err instanceof Error ? err.stack : undefined);
+   throw err;
+  }
 }

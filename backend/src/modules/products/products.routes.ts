@@ -43,7 +43,7 @@ router.get(
       const rows = await c.query<{ total?: string }>(
         `SELECT p.id, p.code, p.barcode, p.name, p.description, p.brand, p.category_id,
                 c.name AS category_name, p.unit, p.min_stock, p.cost, p.reference_price,
-                p.is_active, p.created_at, p.updated_at,
+                p.is_active, p.created_at, p.updated_at, p.observation,
                 COUNT(*) OVER() AS total
          FROM products p LEFT JOIN categories c ON c.id = p.category_id
          ${where}
@@ -73,9 +73,9 @@ router.get(
        ${where} ORDER BY p.code`,
       params
     );
-    const header = 'codigo;barras;nombre;marca;categoria;unidad;stock_minimo;costo;precio_referencia;activo';
+    const header = 'codigo;barras;nombre;marca;categoria;unidad;stock_minimo;costo;precio_referencia;activo;observacion';
     const lines = rows.rows.map((r: Record<string, unknown>) =>
-      [r.code, r.barcode ?? '', r.name, r.brand ?? '', r.category ?? '', r.unit, r.min_stock, r.cost ?? '', r.reference_price ?? '', r.is_active ? 'SI' : 'NO']
+      [r.code, r.barcode ?? '', r.name, r.brand ?? '', r.category ?? '', r.unit, r.min_stock, r.cost ?? '', r.reference_price ?? '', r.is_active ? 'SI' : 'NO', r.observation ?? '']
         .map((v) => String(v).replace(/;/g, ',').replace(/\n/g, ' '))
         .join(';')
     );
@@ -345,6 +345,7 @@ const productSchema = z.object({
   isActive: z.boolean().optional(),
   supplierIds: z.array(z.number().int().positive()).optional(),
   primarySupplierId: z.number().int().positive().nullable().optional(),
+  observation: z.string().nullable().optional(),
 });
 
 router.post(
@@ -368,6 +369,17 @@ router.patch(
     const input = z.object({ barcode: z.string().trim().max(60) }).parse(req.body);
     await updateProductBarcode(req.user!, req.ip, id, input.barcode);
     res.json({ ok: true, barcode: input.barcode || null });
+  })
+);
+
+router.patch(
+  '/:id/observation',
+  requirePerm('products.write'),
+  asyncH(async (req, res) => {
+    const id = pathId(req.params.id);
+    const input = z.object({ observation: z.string().nullable() }).parse(req.body);
+    await query('UPDATE products SET observation = $1 WHERE id = $2', [input.observation, id]);
+    res.json({ ok: true, observation: input.observation ?? null });
   })
 );
 
