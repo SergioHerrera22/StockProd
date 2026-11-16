@@ -182,10 +182,6 @@ export default function Products() {
   const [form, setForm] = useState<typeof emptyForm>(emptyForm);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [obsModalOpen, setObsModalOpen] = useState(false);
-  const [obsText, setObsText] = useState('');
-  const [savingObs, setSavingObs] = useState(false);
-  const [obsProductId, setObsProductId] = useState<number | null>(null);
   const [duplicates, setDuplicates] = useState<{ id: number; code: string; name: string }[]>([]);
   const [detail, setDetail] = useState<{ product: Product; stock: ProductStockRow[] } | null>(null);
 
@@ -383,16 +379,9 @@ export default function Products() {
       supplierIds: linkedSuppliers.map((s) => s.id),
       primarySupplierId: String(linkedSuppliers.find((s) => s.is_primary)?.id ?? ''),
     });
-    setDuplicates([]);
+    setDuplicates[];
     setScanOpen(false);
     setModalOpen(true);
-  }
-
-  function openObservationModal(p: Product) {
-    setObsText(p.observation ?? '');
-    setObsProductId(p.id);
-    setSavingObs(false);
-    setObsModalOpen(true);
   }
 
   /**
@@ -582,23 +571,6 @@ export default function Products() {
       toast.error((e as Error).message);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function saveObservation() {
-    if (savingObs) return;
-    setSavingObs(true);
-    try {
-      await api(`/products/${obsProductId}/observation`, { method: 'PATCH', body: { observation: obsText.trim() || null } });
-      // Update the local row in the list
-      setRows((current) => current.map((row) => row.id === obsProductId ? { ...row, observation: obsText.trim() || null } : row));
-      toast.success('Observación guardada');
-      setObsModalOpen(false);
-      setObsText('');
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setSavingObs(false);
     }
   }
 
@@ -854,38 +826,6 @@ export default function Products() {
     { key: 'is_active', label: 'Estado', render: (p) =>
       p.is_active ? <Badge color="green">Activo</Badge> : <Badge color="gray">Inactivo</Badge>
     },
-    { key: 'observation', label: '', sortable: false, align: 'center', render: (p) => {
-      const hasObservation = p.observation && p.observation.trim().length > 0;
-      return (
-        <div className="flex justify-center items-center">
-          {can('products.write') && (
-            <button
-              type="button"
-              onClick={() => openObservationModal(p)}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-400 transition-colors"
-              title={hasObservation ? 'Ver observación' : 'Agregar observación'}
-              aria-label={hasObservation ? 'Ver observación de ' + p.name : 'Agregar observación a ' + p.name}
-            >
-              {hasObservation ? (
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                  <path d="M12 6v6l4 2" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M12 2v2M12 20v2M4.93 4.93l2.83 2.83" />
-                </svg>
-              )}
-            </button>
-          )}
-          {!can('products.write') && hasObservation && (
-            <span className="text-xs text-slate-500 truncate max-w-[]">
-              {p.observation.substring(0, 50)}{p.observation.length > 50 ? '...' : ''}
-            </span>
-          )}
-        </div>
-      );
-    } },
     { key: 'actions', label: '', align: 'right', render: (p) => (
       <div className="flex justify-end gap-1">
         <Button
@@ -1167,33 +1107,6 @@ export default function Products() {
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </Modal>
-
-      {/* Modal observación del producto */}
-      <Modal
-        open={obsModalOpen}
-        onClose={() => {
-          setObsModalOpen(false);
-          setObsText('');
-        }}
-        title={`Observación - ${form.code ?? 'Producto'}`}
-        width="sm"
-      >
-        {obsModalOpen && (
-          <div className="p-4">
-            <Textarea
-              rows={3}
-              value={obsText}
-              onChange={(e) => setObsText(e.target.value)}
-              placeholder="Escribir observación del producto..."
-              className="w-full rounded-border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
-            />
-          </div>
-          <div className="flex justify-end gap-2 pt-3">
-            <Button variant="secondary" onClick={() => { setObsModalOpen(false); setObsText(''); }}>Cancelar</Button>
-            <Button loading={savingObs} onClick={saveObservation}>Guardar observación</Button>
           </div>
         )}
       </Modal>
