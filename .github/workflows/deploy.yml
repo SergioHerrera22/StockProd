@@ -12,9 +12,6 @@ env:
   FRONTEND_DIR: './frontend'
 
 jobs:
-  # ============================================
-  # LINT & TYPE CHECK
-  # ============================================
   lint-and-typecheck:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -52,9 +49,6 @@ jobs:
         working-directory: ${{ env.FRONTEND_DIR }}
         run: npx tsc --noEmit
 
-  # ============================================
-  # TESTS
-  # ============================================
   test:
     name: Run Tests
     runs-on: ubuntu-latest
@@ -93,12 +87,11 @@ jobs:
 
           sudo systemctl start postgresql
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'postgres';"
-
           psql -h localhost -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE robles_stock_test;"
           npm run db:migrate
           npm run db:seed
-
           npm run build
+
           nohup npm start > /tmp/robles-stock-api.log 2>&1 &
           API_PID=$!
           trap 'kill "$API_PID" 2>/dev/null || true' EXIT
@@ -110,13 +103,11 @@ jobs:
             fi
 
             if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo "La API terminó antes de estar disponible."
               cat /tmp/robles-stock-api.log
               exit 1
             fi
 
             if [ "$attempt" -eq 30 ]; then
-              echo "La API no respondió al health check dentro de 60 segundos."
               cat /tmp/robles-stock-api.log
               exit 1
             fi
@@ -126,9 +117,6 @@ jobs:
 
           npm run test:smoke
 
-  # ============================================
-  # BUILD
-  # ============================================
   build:
     name: Build Application
     runs-on: ubuntu-latest
@@ -164,38 +152,37 @@ jobs:
           VITE_API_URL: /api
         run: npm run build
 
-      - name: Upload backend build artifact
+      - name: Prepare deployment package
+        run: |
+          set -euo pipefail
+
+          mkdir -p deploy/backend/dist deploy/public
+
+          cp -a backend/dist/. deploy/backend/dist/
+          cp backend/package.json deploy/backend/
+          cp backend/package-lock.json deploy/backend/
+          cp -a frontend/dist/. deploy/public/
+
+          test -f deploy/backend/dist/index.js
+          test -f deploy/public/index.html
+          test -f deploy/backend/package.json
+          test -f deploy/backend/package-lock.json
+
+          echo "Estructura de despliegue preparada:"
+          find deploy -maxdepth 3 -type f | sort | head -100
+
+      - name: Upload deployment artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-dist
-          path: backend/dist/
+          name: hostinger-deployment
+          path: deploy/
           retention-days: 1
 
-      - name: Upload frontend build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist/
-          retention-days: 1
-
-      - name: Upload package.json files
-        uses: actions/upload-artifact@v4
-        with:
-          name: package-files
-          path: |
-            backend/package.json
-            backend/package-lock.json
-          retention-days: 1
-
-  # ============================================
-  # DEPLOY TO HOSTINGER
-  # ============================================
   deploy:
     name: Deploy to Hostinger
     runs-on: ubuntu-latest
     needs: build
 
-    # Permite acceder a los secretos del Environment de Hostinger.
     environment: HOSTINGER_FTP_HOST
 
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
@@ -204,38 +191,20 @@ jobs:
       HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download backend build artifact
+      - name: Download deployment artifact
         uses: actions/download-artifact@v4
         with:
-          name: backend-dist
-          path: backend/dist/
+          name: hostinger-deployment
+          path: deploy/
 
-      - name: Download frontend build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist/
-
-      - name: Download package files
-        uses: actions/download-artifact@v4
-        with:
-          name: package-files
-          path: backend/
-
-      - name: Create backend .env file
+      - name: Verify deployment package
         run: |
-          cat > backend/.env << 'EOF'
-          ${{ secrets.HOSTINGER_BACKEND_ENV }}
-          EOF
-
-      - name: Create frontend .env file
-        run: |
-          cat > frontend/.env << 'EOF'
-          ${{ secrets.HOSTINGER_FRONTEND_ENV }}
-          EOF
+          set -euo pipefail
+          test -f deploy/backend/dist/index.js
+          test -f deploy/public/index.html
+          test -f deploy/backend/package.json
+          test -f deploy/backend/package-lock.json
+          echo "Paquete verificado."
 
       - name: Deploy to Hostinger via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
@@ -244,30 +213,12 @@ jobs:
           username: ${{ secrets.HOSTINGER_FTP_USER }}
           password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
           server-dir: ${{ secrets.HOSTINGER_FTP_DIR }}/
-          local-dir: ./
+          local-dir: ./deploy/
+          dangerous-clean-slate: false
           exclude: |
             **/.git*
-            **/.github*
+            **/.env
             **/node_modules/**
-            **/*.log
-            backend/.env.example
-            frontend/.env.example
-            backend/src/**
-            backend/migrations/**
-            backend/scripts/**
-            backend/tests/**
-            backend/tsconfig.json
-            frontend/src/**
-            frontend/public/**
-            frontend/vite.config.ts
-            frontend/tsconfig.json
-            frontend/tailwind.config.js
-            frontend/postcss.config.js
-            frontend/index.html
-            docs/**
-            README.md
-            .gitignore
-            *.md
 
       - name: Run database migrations on Hostinger (via SSH)
         if: ${{ env.HOSTINGER_SSH_HOST != '' }}
@@ -288,9 +239,7 @@ jobs:
 
       - name: Notify deployment success
         if: success()
-        run: |
-          echo "Despliegue completado exitosamente en Hostinger"
-          echo "Verificar disponibilidad de la aplicación."
+        run: echo "Despliegue completado. Verificar disponibilidad."
 
       - name: Notify deployment failure
         if: failure()
