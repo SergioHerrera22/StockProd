@@ -35,12 +35,12 @@ export async function createProduct(user: AuthUser, ip: string | undefined, inpu
       throw ApiError.conflict('Ya existe un producto con ese codigo o codigo de barras', dup.exact);
     }
     const r = await c.query<{ id: number }>(
-      `INSERT INTO products (code, barcode, name, description, brand, category_id, unit, min_stock, cost, reference_price, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      `INSERT INTO products (code, barcode, name, description, brand, category_id, unit, min_stock, cost, reference_price, observation, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
       [
         input.code.trim(), input.barcode?.trim() || null, input.name.trim(),
         input.description ?? null, input.brand?.trim() || null, input.categoryId ?? null,
-        input.unit, input.minStock ?? 0, input.cost ?? null, input.referencePrice ?? null, user.id,
+        input.unit, input.minStock ?? 0, input.cost ?? null, input.referencePrice ?? null, input.observation ?? null, user.id,
       ]
     );
     if (input.supplierIds !== undefined) await syncProductSuppliers(c, r.rows[0].id, input.supplierIds, input.primarySupplierId ?? null);
@@ -322,8 +322,9 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
          min_stock = COALESCE($8, min_stock),
          cost = $9,
          reference_price = $10,
-         is_active = COALESCE($11, is_active)
-       WHERE id = $12
+         is_active = COALESCE($11, is_active),
+         observation = COALESCE($12, observation)
+       WHERE id = $13
        RETURNING id`,
       [
         ...(input.code ? [input.code.trim()] : [null]),
@@ -337,6 +338,7 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
         input.cost ?? null,
         input.referencePrice ?? null,
         input.isActive ?? null,
+        input.observation ?? null,
         id,
       ]
     );
