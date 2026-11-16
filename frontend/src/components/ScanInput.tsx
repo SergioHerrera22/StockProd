@@ -63,7 +63,12 @@ export function ScanInput({ onScan, onValueChange, placeholder, autoFocus = fals
       {camera && (
         <CameraScanner
           hint="Escanear código"
-          onScan={(code) => { void Promise.resolve(onScan(code)); }}
+          onScan={(code) => {
+            // Cerrar la cámara en cuanto se obtiene una lectura, sin depender
+            // de que el producto exista o de que la búsqueda termine bien.
+            setCamera(false);
+            void Promise.resolve(onScan(code));
+          }}
           onClose={() => setCamera(false)}
         />
       )}
