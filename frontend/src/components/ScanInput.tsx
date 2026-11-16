@@ -2,13 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { CameraScanner } from './CameraScanner';
 import { Button, Input } from './ui';
 
-/**
- * Campo de captura optimizado para lectores de códigos USB:
- * el lector "escribe" el código y dispara Enter. También soporta
- * cámara (teléfono/tablet) con foco continuo, zoom y linterna.
- */
-export function ScanInput({ onScan, placeholder, autoFocus = false, compact = false }: {
+/** Campo de captura para lectores USB y búsqueda manual desde móviles. */
+export function ScanInput({ onScan, onValueChange, placeholder, autoFocus = false, compact = false }: {
   onScan: (code: string) => void | Promise<void>;
+  onValueChange?: (value: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
   compact?: boolean;
@@ -18,20 +15,21 @@ export function ScanInput({ onScan, placeholder, autoFocus = false, compact = fa
   const inputRef = useRef<HTMLInputElement>(null);
   const lastScan = useRef<{ code: string; time: number }>({ code: '', time: 0 });
 
-  // Lector USB: Enter al final de la cadena
+  function handleChange(next: string) {
+    setValue(next);
+    onValueChange?.(next);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const code = value.trim();
-      if (!code) return;
-      const now = Date.now();
-      if (code === lastScan.current.code && now - lastScan.current.time < 800) {
-        setValue('');
-        return; // ignora doble disparo del mismo lector
-      }
-      lastScan.current = { code, time: now };
-      void Promise.resolve(onScan(code)).finally(() => setValue(''));
-    }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const code = value.trim();
+    if (!code) return;
+    const now = Date.now();
+    if (code === lastScan.current.code && now - lastScan.current.time < 800) return;
+    lastScan.current = { code, time: now };
+    void Promise.resolve(onScan(code));
   }
 
   useEffect(() => {
@@ -44,10 +42,13 @@ export function ScanInput({ onScan, placeholder, autoFocus = false, compact = fa
         <Input
           ref={inputRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder ?? 'Escanear o escribir código…'}
           autoFocus={autoFocus}
+          autoComplete="off"
+          inputMode="search"
+          enterKeyHint="search"
           className={compact ? '' : 'py-2.5 text-base'}
         />
         <Button
@@ -62,7 +63,12 @@ export function ScanInput({ onScan, placeholder, autoFocus = false, compact = fa
       {camera && (
         <CameraScanner
           hint="Escanear código"
-          onScan={(code) => { void Promise.resolve(onScan(code)); }}
+          onScan={(code) => {
+            // Cerrar la cámara en cuanto se obtiene una lectura, sin depender
+            // de que el producto exista o de que la búsqueda termine bien.
+            setCamera(false);
+            void Promise.resolve(onScan(code));
+          }}
           onClose={() => setCamera(false)}
         />
       )}

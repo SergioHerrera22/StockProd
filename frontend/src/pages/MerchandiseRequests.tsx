@@ -20,6 +20,12 @@ export default function MerchandiseRequests(){
  const load=useCallback(async()=>{try{const r=await api<{requests:Req[]}>('/merchandise-requests');setRows(r.requests);}catch(e){toast.error((e as Error).message);}},[]);
  useEffect(()=>{void load();},[load]);
  const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return [];try{const r=await api<{products:ProductOption[]}>(`/merchandise-requests/products${qs({q:v})}`);setResults(r.products);return r.products;}catch(e){toast.error((e as Error).message);return []; }},[]);
+ useEffect(()=>{
+  const term=q.trim();
+  if(!term){setResults([]);return;}
+  const timer=window.setTimeout(()=>{void search(term);},300);
+  return ()=>window.clearTimeout(timer);
+ },[q,search]);
  async function addByCode(code:string){const term=code.trim();setQ(term);const products=await search(term);const exact=products.filter(p=>p.code.toLocaleLowerCase()===term.toLocaleLowerCase()||(p.barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase());if(exact.length===1){add(exact[0]);return;}if(products.length===1 && (products[0].code.toLocaleLowerCase()===term.toLocaleLowerCase()||(products[0].barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase())){add(products[0]);}}
  function add(p:ProductOption){setCart(old=>old.some(x=>x.productId===p.id)?old:[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
  async function submit(){if(!cart.length)return;for(const x of cart)if(!Number.isFinite(x.quantity)||x.quantity<=0||Math.abs(x.quantity*1000-Math.round(x.quantity*1000))>1e-7){toast.error('Ingresá una cantidad mayor a cero, con hasta 3 decimales.');return;}setBusy(true);try{const r=await api<{number:string}>('/merchandise-requests',{method:'POST',body:{items:cart.map(x=>({productId:x.productId,quantity:x.quantity})),notes}});toast.success(`Pedido ${r.number} enviado`);setCart([]);setNotes('');void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
@@ -30,7 +36,7 @@ export default function MerchandiseRequests(){
  <PageHeader title="Pedir Mercadería" subtitle={manager?'Bandeja general de pedidos de las sucursales':'Buscá, escaneá y enviá tu pedido al Depósito Central'}/>
  {!manager&&<Card className="space-y-3 p-4">
   <div className="grid gap-2 sm:grid-cols-2"><div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Origen</div><strong>Depósito Central</strong></div><div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Destino</div><strong>{user?.locationId?'Sucursal asignada a tu usuario':'Sin sucursal asignada'}</strong></div></div>
-  <Field label="Buscar o escanear producto"><ScanInput autoFocus onScan={addByCode} placeholder="Escaneá el código de barras o escribí el código/nombre…"/></Field>
+  <Field label="Buscar o escanear producto"><ScanInput autoFocus onScan={addByCode} onValueChange={setQ} placeholder="Escaneá el código de barras o escribí el código/nombre…"/></Field>
   {q&&<Button size="sm" variant="secondary" onClick={()=>void search(q)}>Buscar</Button>}
   {results.length>0&&<div className="max-h-64 divide-y overflow-y-auto rounded-lg border">{results.map(p=><button key={p.id} onClick={()=>add(p)} className="flex w-full items-center justify-between p-3 text-left hover:bg-slate-50"><span><b>{p.name}</b><small className="block text-slate-500">{p.code}{p.brand?' · '+p.brand:''}</small></span><span className="text-sm text-brand-700">Seleccionar</span></button>)}</div>}
   <h3 className="font-semibold">Productos del pedido ({cart.length})</h3>
