@@ -322,9 +322,8 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
          min_stock = COALESCE($8, min_stock),
          cost = $9,
          reference_price = $10,
-         is_active = COALESCE($11, is_active),
-         observation = COALESCE($12, observation)
-       WHERE id = $13
+         is_active = COALESCE($11, is_active)
+       WHERE id = $12
        RETURNING id`,
       [
         ...(input.code ? [input.code.trim()] : [null]),
@@ -338,7 +337,6 @@ export async function updateProduct(user: AuthUser, ip: string | undefined, id: 
         input.cost ?? null,
         input.referencePrice ?? null,
         input.isActive ?? null,
-        input.observation ?? null,
         id,
       ]
     );
