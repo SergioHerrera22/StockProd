@@ -2,7 +2,10 @@ export function fmtQty(n: number | string | null | undefined): string {
   if (n === null || n === undefined) return '—';
   const num = Number(n);
   if (!Number.isFinite(num)) return '—';
-  return new Intl.NumberFormat('es-AR', { maximumFractionDigits: 3 }).format(num);
+  // Formatear con máximo 3 decimales, pero quitar los ceros innecesarios para cantidades enteras
+  const formatted = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 3 }).format(num);
+  // Si el formato termina en ,000 o .000 (para números enteros), quitar los ceros decimales
+  return formatted.replace(/,000$|\.000$/, '');
 }
 
 export function fmtMoney(n: number | string | null | undefined): string {
