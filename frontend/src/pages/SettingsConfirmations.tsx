@@ -4,10 +4,10 @@ import { useToast } from '../components/Toast';
 import { Button } from '../components/ui';
 
 const MODULE_LABEL: Record<string, string> = {
-  ENTRY: 'Entradas',
-  DELIVERY: 'Entregas',
-  TRANSFER: 'Transferencias',
-  COUNT: 'Inventarios',
+  ENTRY: 'Ingresar mercadería',
+  DELIVERY: 'Entregar al cliente',
+  TRANSFER: 'Transferencia entre depósitos',
+  COUNT: 'Hacer inventario / Contar',
   VOID: 'Anulaciones',
 };
 

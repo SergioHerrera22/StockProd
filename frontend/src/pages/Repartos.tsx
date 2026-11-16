@@ -41,7 +41,7 @@ export default function Repartos() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Repartos / Transporte"
+        title="Envíos / Reparto"
         subtitle="Viajes de la camioneta con paradas y seguimiento GPS en vivo"
         actions={
           <>

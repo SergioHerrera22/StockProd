@@ -52,8 +52,8 @@ interface Summary {
 }
 
 const TYPE_BADGE: Record<string, { label: string; color: 'green' | 'red' | 'amber' | 'blue' | 'violet' | 'gray' }> = {
-  ENTRADA: { label: 'Entrada', color: 'green' },
-  SALIDA: { label: 'Salida', color: 'red' },
+  ENTRADA: { label: 'Ingreso', color: 'green' },
+  SALIDA: { label: 'Egreso', color: 'red' },
   AJUSTE_POS: { label: 'Ajuste +', color: 'amber' },
   AJUSTE_NEG: { label: 'Ajuste −', color: 'amber' },
   TRANS_SALIDA: { label: 'Envío', color: 'blue' },
@@ -113,7 +113,7 @@ export default function Dashboard() {
             <StatCard label="Productos activos" value={data.activeProducts} icon="🧴" />
             <StatCard label="Stock bajo" value={data.lowStock} icon="⚠️" tone={data.lowStock > 0 ? 'warn' : 'default'} />
             <StatCard label="Sin existencias" value={data.outOfStock} icon="🚫" tone={data.outOfStock > 0 ? 'danger' : 'default'} />
-            <StatCard label="Entradas hoy" value={fmtQty(data.entriesToday)} icon="📥" tone="good" />
+            <StatCard label="Ingresos hoy" value={fmtQty(data.entriesToday)} icon="📥" tone="good" />
             <StatCard label="Salidas hoy" value={fmtQty(data.exitsToday)} icon="📤" tone="info" />
             <StatCard label="Rotura de stock" value={`${data.stockInsights.stockoutRate.toFixed(1)}%`} icon="📉" tone={data.stockInsights.stockoutRate > 0 ? 'warn' : 'good'} />
           </div>
@@ -136,7 +136,7 @@ export default function Dashboard() {
               />
             </Card>
             <Card className="p-4">
-              <h3 className="mb-3 text-sm font-semibold text-slate-700">Stock por ubicación</h3>
+              <h3 className="mb-3 text-sm font-semibold text-slate-700">Stock por local</h3>
               <HBars
                 data={data.byLocation.map((l) => ({
                   label: l.name,
@@ -151,7 +151,7 @@ export default function Dashboard() {
           {/* Inteligencia de inventario */}
           <div className="grid gap-4 xl:grid-cols-3">
             <Card>
-              <CardHeader title={`Artículos bajo mínimo (${data.lowStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
+              <CardHeader title={`Artículos con stock bajo (${data.lowStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
               {data.stockInsights.lowStockItems.length === 0 ? (
                 <p className="px-4 py-5 text-center text-sm text-slate-400">No hay artículos por debajo del mínimo.</p>
               ) : (
@@ -166,7 +166,7 @@ export default function Dashboard() {
               )}
             </Card>
             <Card>
-              <CardHeader title={`Productos agotados (${data.outOfStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
+              <CardHeader title={`Productos sin stock (${data.outOfStock})`} actions={<Link to="/stock" className="text-xs font-semibold text-brand-600 hover:underline">Ver stock →</Link>} />
               {data.stockInsights.outOfStockItems.length === 0 ? (
                 <p className="px-4 py-5 text-center text-sm text-slate-400">No hay productos agotados.</p>
               ) : (

@@ -18,8 +18,8 @@ const TRIGGER_EVENTS = [
   { value: 'BEFORE_ADJUST', label: 'Al ajustar' },
 ] as const;
 const ENTITY_LABEL: Record<string, string> = {
-  TRANSFER: 'Transferencia', DELIVERY: 'Entrega', ENTRY: 'Entrada',
-  COUNT: 'Inventario', VOID: 'Anulación', STOCK_ADJUST: 'Ajuste de stock', PRODUCT: 'Producto',
+  TRANSFER: 'Transferencia entre depósitos', DELIVERY: 'Entregar al cliente', ENTRY: 'Ingresar mercadería',
+  COUNT: 'Hacer inventario / Contar', VOID: 'Anulación', STOCK_ADJUST: 'Ajuste de stock', PRODUCT: 'Producto',
 };
 const SEVERITY_META: Record<string, { label: string; color: 'blue' | 'amber' | 'red' }> = {
   INFO: { label: 'Info', color: 'blue' },

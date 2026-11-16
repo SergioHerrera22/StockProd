@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { fmtDateTime } from '../lib/format';
 import type { AuditRow } from '../types';
-import { Badge, Card, Input, PageHeader, Select } from '../components/ui';
+import { Badge, Card, SearchInput, PageHeader, Select } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 
@@ -71,7 +71,7 @@ export default function Audit() {
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Input
+          <SearchInput
             placeholder="Buscar acción (ej: DELIVERY)…"
             value={action}
             onChange={(e) => { setAction(e.target.value); setPage(1); }}

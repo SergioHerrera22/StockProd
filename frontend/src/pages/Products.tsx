@@ -5,7 +5,7 @@ import { exportCSV, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Category, Product, ProductStockRow } from '../types';
 import {
-  Badge, Button, Card, Field, FormRow, Input, Modal, PageHeader, Select,
+  Badge, Button, Card, Field, FormRow, SearchInput, Modal, PageHeader, Select,
   Spinner, Textarea, useConfirm,
 } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
@@ -864,7 +864,7 @@ export default function Products() {
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Input
+          <SearchInput
             placeholder="Buscar por nombre, código, marca o barras…"
             value={q}
             onChange={(e) => { setQ(e.target.value); setPage(1); }}
@@ -1030,7 +1030,7 @@ export default function Products() {
             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">1. Identificar producto</label>
             <form onSubmit={(e) => { e.preventDefault(); void findBatchProduct(); }}>
               <div className="flex gap-2">
-                <Input ref={batchLookupRef} value={batchLookup} onChange={(e) => setBatchLookup(e.target.value)}
+                <SearchInput ref={batchLookupRef} value={batchLookup} onChange={(e) => setBatchLookup(e.target.value)}
                   placeholder="Escaneá el código interno o escribí código/nombre…" autoComplete="off"
                   disabled={batchSearching || batchSaving || !!batchProduct} />
                 <Button type="submit" loading={batchSearching} disabled={!batchLookup.trim() || !!batchProduct}>Buscar</Button>

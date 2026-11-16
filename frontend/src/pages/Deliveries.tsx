@@ -4,7 +4,7 @@ import { api, qs, scanDelivery, confirmDelivery, type DeliveryConfirmResponse } 
 import { fmtDateTime, fmtQty } from '../lib/format';
 import type { Delivery, Location, ScanDeliveryResult } from '../types';
 import { useAuth } from '../store/auth';
-import { Badge, Button, Card, Input, Modal, PageHeader, Select } from '../components/ui';
+import { Badge, Button, Card, SearchInput, Modal, PageHeader, Select } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 import { ScanInput } from '../components/ScanInput';
@@ -202,7 +202,7 @@ export default function Deliveries() {
   return (
     <div>
       <PageHeader
-        title="Entregas de mercadería"
+        title="Entregar al cliente"
         subtitle="Salidas verificadas al entregar productos al cliente"
         actions={
           <>
@@ -214,7 +214,7 @@ export default function Deliveries() {
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Input
+          <SearchInput
             placeholder="Buscar por número o factura…"
             value={q}
             onChange={(e) => { setQ(e.target.value); setPage(1); }}

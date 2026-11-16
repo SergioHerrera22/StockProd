@@ -42,11 +42,11 @@ const STATUS_META: Record<AlertRow['status'], { label: string; color: 'red' | 'a
 function entityLink(a: AlertRow): { to: string; label: string } | null {
   switch (a.entityType) {
     case 'DELIVERY': return a.entityId ? { to: `/entregas/${a.entityId}`, label: `Entrega #${a.entityId} →` } : null;
-    case 'TRANSFER': return { to: '/transferencias', label: 'Transferencias →' };
-    case 'PENDING_DELIVERY': return { to: '/reservas', label: 'Reservas de retiro →' };
-    case 'ENTRY': return a.entityId ? { to: '/entradas', label: `Entrada #${a.entityId} →` } : null;
+    case 'TRANSFER': return { to: '/transferencias', label: 'Transferencia entre depósitos →' };
+    case 'PENDING_DELIVERY': return { to: '/reservas', label: 'Retiro/Entregas pendientes →' };
+    case 'ENTRY': return a.entityId ? { to: '/entradas', label: `Ingresar mercadería #${a.entityId} →` } : null;
     case 'PRODUCT': return { to: '/productos', label: 'Productos →' };
-    case 'LOCATION': return { to: '/ubicaciones', label: 'Ubicaciones →' };
+    case 'LOCATION': return { to: '/ubicaciones', label: 'Locales →' };
     case 'USER': return { to: '/usuarios', label: 'Usuarios →' };
     default: return null;
   }

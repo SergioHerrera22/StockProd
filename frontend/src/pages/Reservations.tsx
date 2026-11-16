@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, listPendingDeliveries, scanPendingDelivery, confirmPendingDeliveryPickup, cancelPendingDeliveryOrder } from '../lib/api';
 import type { PendingDelivery, PendingDeliveryStatus, PendingDeliveryItem, ScanPendingDeliveryResult } from '../types';
 import { DataTable } from '../components/DataTable';
-import { Card } from '../components/ui';
+import { Card, SearchInput } from '../components/ui';
 import Barcode from '../components/Barcode';
 import { useToast } from '../components/Toast';
 import { ScanInput } from '../components/ScanInput';
@@ -348,11 +348,11 @@ export default function ReservationsPage() {
           <option value="ENTREGADO">Entregado</option>
           <option value="CANCELADO">Cancelado</option>
         </select>
-        <input
-          className="input w-64"
+        <SearchInput
           placeholder="Buscar por orden, código o cliente…"
           value={q}
           onChange={(e) => { setQ(e.target.value); setPage(1); }}
+          className="input w-64"
         />
       </div>
 

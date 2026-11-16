@@ -4,7 +4,7 @@ import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Location, StockCount } from '../types';
 import {
-  Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Spinner, Textarea, useConfirm,
+  Badge, Button, Card, Field, SearchInput, Modal, PageHeader, Select, Spinner, Textarea, useConfirm,
 } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
@@ -121,7 +121,7 @@ export default function Counts() {
         method: 'POST',
         body: { reason: applyReason },
       });
-      toast.success(`Inventario aplicado: ${res.adjustments} ajuste(s) generados`);
+      toast.success(`Ajustes de inventario: ${res.adjustments} generados`);
       setApplyOpen(false);
       setApplyReason('');
       setDetail(null);
@@ -138,7 +138,7 @@ export default function Counts() {
     setSaving(true);
     try {
       await api(`/counts/${detail.id}/void`, { method: 'POST', body: { reason: voidReason.trim() } });
-      toast.success('Inventario anulado');
+      toast.success('Anular inventario');
       setVoidOpen(false);
       setVoidReason('');
       setDetail(null);
@@ -174,7 +174,7 @@ export default function Counts() {
   return (
     <div>
       <PageHeader
-        title="Inventarios físicos"
+        title="Hacer inventario / Contar"
         subtitle="Recuentos y ajustes auditados de stock"
         actions={can('counts.write') && <Button onClick={() => setNewOpen(true)}>+ Nuevo recuento</Button>}
       />
@@ -226,7 +226,7 @@ export default function Counts() {
       <Modal
         open={!!detail}
         onClose={() => setDetail(null)}
-        title={detail ? `Inventario ${detail.number} · ${detail.location_name}` : ''}
+        title={detail ? `Inventario ${detail.number} — ${detail.location_name}` : ''}
         width="xl"
         footer={
           detail?.status === 'ABIERTO' ? (
@@ -243,7 +243,7 @@ export default function Counts() {
         ) : (
           <div>
             <div className="sticky top-0 z-10 mb-3 space-y-2 bg-white pb-2">
-              <Input
+              <SearchInput
                 value={countSearch}
                 onChange={(e) => setCountSearch(e.target.value)}
                 placeholder="Buscar producto por código o descripción…"

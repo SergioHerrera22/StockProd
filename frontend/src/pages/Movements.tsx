@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, downloadCsv, qs } from '../lib/api';
 import { exportCSV, fmtDateTime, fmtQty, todayISO } from '../lib/format';
 import type { Location, Movement } from '../types';
-import { Badge, Button, Card, Input, PageHeader, Select } from '../components/ui';
+import { Badge, Button, Card, SearchInput, PageHeader, Select } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 
 const TYPES: { value: string; label: string }[] = [
   { value: '', label: 'Todos los tipos' },
-  { value: 'ENTRADA', label: 'Entrada' },
+  { value: 'ENTRADA', label: 'Ingreso', },
   { value: 'SALIDA', label: 'Salida (entrega)' },
   { value: 'TRANS_SALIDA', label: 'Envío a transferencia' },
   { value: 'TRANS_ENTRADA', label: 'Recepción de transferencia' },
@@ -17,7 +17,7 @@ const TYPES: { value: string; label: string }[] = [
 ];
 
 const TYPE_META: Record<string, { label: string; color: 'green' | 'red' | 'amber' | 'blue' | 'violet' }> = {
-  ENTRADA: { label: 'Entrada', color: 'green' },
+  ENTRADA: { label: 'Ingreso', color: 'green' },
   SALIDA: { label: 'Salida', color: 'red' },
   AJUSTE_POS: { label: 'Ajuste +', color: 'amber' },
   AJUSTE_NEG: { label: 'Ajuste −', color: 'amber' },
@@ -29,7 +29,7 @@ const REF_LABEL: Record<string, string> = {
   DELIVERY: 'Entrega',
   ENTRY: 'Entrada',
   TRANSFER: 'Transfer.',
-  COUNT: 'Inventario',
+  COUNT: 'Hacer inventario / Contar',
   MANUAL: 'Manual',
 };
 
@@ -158,7 +158,7 @@ export default function Movements() {
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Input placeholder="Producto, documento o motivo…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} className="min-w-[180px] flex-1" />
+          <SearchInput placeholder="Producto, documento o motivo…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} className="min-w-[180px] flex-1" />
           <Select value={locationId} onChange={(e) => { setLocationId(e.target.value); setPage(1); }} className="w-44">
             <option value="">Todas las ubicaciones</option>
             {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { exportCSV, fmtQty } from '../lib/format';
 import { availableOf, type Location, type StockRow } from '../types';
-import { Badge, Button, Card, Input, PageHeader, Select, Tabs, Modal } from '../components/ui';
+import { Badge, Button, Card, SearchInput, PageHeader, Select, Tabs, Modal } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 import { useAuth } from '../store/auth';
@@ -202,7 +202,7 @@ export default function StockPage() {
   return (
     <div>
       <PageHeader
-        title="Stock"
+        title="Stock Pinturería"
         subtitle="Existencias por ubicación y consolidadas"
         actions={
           <>
@@ -255,7 +255,7 @@ export default function StockPage() {
             { key: 'out', label: 'Sin stock', badge: outCount },
           ]}
         />
-        <Input
+        <SearchInput
           placeholder="Buscar producto…"
           value={q}
           onChange={(e) => setQ(e.target.value)}

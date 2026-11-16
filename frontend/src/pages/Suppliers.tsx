@@ -1,6 +1,6 @@
 import { useCallback,useEffect,useMemo,useState } from 'react';
 import { api } from '../lib/api';
-import { Badge,Button,Card,Field,Input,Modal,PageHeader,Textarea } from '../components/ui';
+import { Badge,Button,Card,Field,SearchInput,Modal,PageHeader,Textarea } from '../components/ui';
 import { useToast } from '../components/Toast';
 import type { Supplier } from '../types';
 
@@ -69,13 +69,13 @@ export default function Suppliers(){
  }
 
  return <div>
-  <PageHeader title="Proveedores" subtitle="Administración de proveedores y asignación de marcas" actions={<Button onClick={create}>+ Nuevo proveedor</Button>}/>
+  <PageHeader title="Mis proveedores" subtitle="Administración de proveedores y asignación de marcas" actions={<Button onClick={create}>+ Nuevo proveedor</Button>}/>
   <Card className="mb-4 flex flex-wrap items-center justify-between gap-3 p-3">
    <p className="text-sm text-slate-500">Asigná una marca completa a un proveedor. La selección se aplica a todos los productos activos de esa marca.</p>
    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={includeInactive} onChange={e=>setIncludeInactive(e.target.checked)}/> Incluir inactivos</label>
   </Card>
   <Card className="mb-5">
-   <div className="border-b border-slate-100 p-4"><h2 className="font-semibold">Proveedores registrados</h2></div>
+   <div className="border-b border-slate-100 p-4"><h2 className="font-semibold">Mis proveedores registrados</h2></div>
    {loading?<p className="p-6 text-sm text-slate-500">Cargando…</p>:rows.length===0?<p className="p-6 text-center text-sm text-slate-500">No hay proveedores cargados.</p>:
     <div className="divide-y divide-slate-100">{rows.map(s=><div key={s.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
      <div><div className="flex flex-wrap items-center gap-2"><strong>{s.name}</strong><Badge color={s.is_active?'green':'gray'}>{s.is_active?'Activo':'Inactivo'}</Badge></div>
@@ -86,7 +86,7 @@ export default function Suppliers(){
 
   <Card>
    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-semibold">Asignación de proveedores por marca</h2><p className="mt-1 text-xs text-slate-500">Cada marca aparece una sola vez; al asignarla, todos sus productos activos quedan asociados al proveedor elegido.</p></div>
-    <Input value={brandQuery} onChange={e=>setBrandQuery(e.target.value)} placeholder="Buscar marca…" className="max-w-xs"/>
+    <SearchInput value={brandQuery} onChange={e=>setBrandQuery(e.target.value)} placeholder="Buscar marca…" className="max-w-xs"/>
    </div>
    {loading?<p className="p-6 text-sm text-slate-500">Cargando marcas…</p>:visibleBrands.length===0?<p className="p-6 text-sm text-slate-500">No se encontraron marcas en el catálogo.</p>:
     <div className="divide-y divide-slate-100">{visibleBrands.map(b=><div key={b.brand} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,320px)_auto] md:items-center">

@@ -5,6 +5,8 @@ import JsBarcode from 'jsbarcode';
 import { api, qs } from '../lib/api';
 import { useAuth } from '../store/auth';
 
+import { SearchInput } from '../components/ui';
+
 type Issue = 'no_barcode' | 'no_supplier' | 'no_description' | 'multiple';
 type QualityProduct = {
   id:number; code:string; name:string; barcode:string|null; description:string|null;
@@ -232,7 +234,13 @@ export default function LoadCenter() {
     {tab==='quality' && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap gap-3">{[['no_barcode','Sin barras',summary.no_barcode],['no_supplier','Sin proveedor',summary.no_supplier],['no_description','Sin descripción',summary.no_description]] .map(([key,label,count])=><div key={String(key)} className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">{label}</div><b className="text-xl">{count}</b></div>)}</div>
       <div className="flex flex-wrap gap-2"><select value={issue} onChange={(e)=>{setIssue(e.target.value as Issue);setQualityPage(1)}} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">{Object.entries(issueLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
-        <input value={qualityQ} onChange={(e)=>{setQualityQ(e.target.value);setQualityPage(1)}} placeholder="Buscar por código o descripción" className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
+        <SearchInput
+              value={qualityQ}
+              onChange={(e)=>{setQualityQ(e.target.value);setQualityPage(1)}}
+              placeholder="Buscar por código o descripción"
+              className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+</div>
       {qualityLoading?<p className="py-8 text-center text-sm text-slate-500">Consultando catálogo…</p>:<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-slate-500"><th className="p-2">Código</th><th className="p-2">Producto</th><th className="p-2">Barras</th><th className="p-2">Proveedor</th><th className="p-2">Descripción</th><th/></tr></thead><tbody>{quality.map(p=><tr key={p.id} className="border-b border-slate-100"><td className="p-2 font-mono">{p.code}</td><td className="p-2">{p.name}</td><td className="p-2">{p.barcode?'Sí':'—'}</td><td className="p-2">{p.has_supplier?'Sí':'No'}</td><td className="p-2">{p.description?.trim()?'Sí':'No'}</td><td className="p-2"><button onClick={()=>navigate('/productos?q='+encodeURIComponent(p.code))} className="text-brand-700 underline">Abrir</button></td></tr>)}</tbody></table></div>}
       <div className="flex items-center justify-between text-sm"><span>{qualityTotal} resultados</span><div className="flex gap-2"><button disabled={qualityPage<=1} onClick={()=>setQualityPage(p=>p-1)} className="rounded border px-3 py-1 disabled:opacity-40">Anterior</button><span className="py-1">Página {qualityPage}</span><button disabled={qualityPage*25>=qualityTotal} onClick={()=>setQualityPage(p=>p+1)} className="rounded border px-3 py-1 disabled:opacity-40">Siguiente</button></div></div>
     </section>}
@@ -251,7 +259,7 @@ export default function LoadCenter() {
 
     {tab==='labels' && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
       <div><h2 className="font-semibold">Impresión de etiquetas por lote</h2><p className="mt-1 text-sm text-slate-500">Buscá por código o descripción, seleccioná productos y generá etiquetas de 38 × 21 mm. No incluye productos sin código de barras.</p></div>
-      <form className="flex gap-2" onSubmit={e=>{e.preventDefault();void searchLabels()}}><input value={labelQ} onChange={e=>setLabelQ(e.target.value)} placeholder="Código o descripción" className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"/><button disabled={labelBusy} className="rounded-lg border px-4 py-2 text-sm">{labelBusy?'Buscando…':'Buscar'}</button></form>
+      <form className="flex gap-2" onSubmit={e=>{e.preventDefault();void searchLabels()}}><SearchInput value={labelQ} onChange={e=>setLabelQ(e.target.value)} placeholder="Código o descripción" className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"/><button disabled={labelBusy} className="rounded-lg border px-4 py-2 text-sm">{labelBusy?'Buscando…':'Buscar'}</button></form>
       {labelResults.length>0&&<div className="max-h-64 overflow-auto rounded border">{labelResults.map(p=><label key={p.id} className="flex items-center gap-3 border-b p-2 text-sm"><input type="checkbox" checked={selectedLabels.some(x=>x.id===p.id)} onChange={()=>toggleLabel(p)}/><span className="min-w-0 flex-1"><b className="block truncate">{p.name}</b><small className="font-mono text-slate-500">{p.code} · {p.barcode??'Sin barras'}</small></span>{!p.barcode&&<small className="text-amber-700">Sin barras</small>}</label>)}</div>}
       <div className="flex flex-wrap items-end justify-between gap-3 border-t pt-3"><div className="flex items-end gap-3"><label className="text-xs text-slate-500">Copias por producto<input type="number" min="1" max="20" value={labelCopies} onChange={e=>setLabelCopies(Math.max(1,Math.min(20,Number(e.target.value)||1)))} className="mt-1 block w-20 rounded border px-2 py-2 text-sm"/></label><p className="text-xs text-slate-500">{selectedCount} seleccionados · {readyLabels} listos para imprimir</p></div><button disabled={!readyLabels} onClick={printBatchLabels} className="rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Imprimir lote</button></div>
     </section>}

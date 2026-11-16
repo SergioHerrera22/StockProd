@@ -90,7 +90,7 @@ export default function Locations() {
   return (
     <div>
       <PageHeader
-        title="Ubicaciones"
+        title="Locales"
         subtitle="Sucursales y depósito general"
         actions={<Button onClick={() => { setForm(emptyForm); setOpen(true); }}>+ Nueva ubicación</Button>}
       />
@@ -109,7 +109,7 @@ export default function Locations() {
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title={form.id ? `Editar ${form.name}` : 'Nueva ubicación'}
+        title={form.id ? `Editar ${form.name}` : 'Nuevo local'}
         footer={
           <>
             <Button variant="secondary" onClick={() => setOpen(false)}>Cancelar</Button>
