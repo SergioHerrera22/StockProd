@@ -19,13 +19,13 @@ export default function MerchandiseRequests(){
  const manager=can('merchandise_requests.manage');
  const load=useCallback(async()=>{try{const r=await api<{requests:Req[]}>('/merchandise-requests');setRows(r.requests);}catch(e){toast.error((e as Error).message);}},[]);
  useEffect(()=>{void load();},[load]);
+ const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return [];try{const r=await api<{products:ProductOption[]}>(`/merchandise-requests/products${qs({q:v})}`);setResults(r.products);return r.products;}catch(e){toast.error((e as Error).message);return []; }},[]);
  useEffect(()=>{
   const term=q.trim();
   if(!term){setResults([]);return;}
   const timer=window.setTimeout(()=>{void search(term);},300);
   return ()=>window.clearTimeout(timer);
  },[q,search]);
- const search=useCallback(async(term:string)=>{const v=term.trim();if(!v)return [];try{const r=await api<{products:ProductOption[]}>(`/merchandise-requests/products${qs({q:v})}`);setResults(r.products);return r.products;}catch(e){toast.error((e as Error).message);return []; }},[]);
  async function addByCode(code:string){const term=code.trim();setQ(term);const products=await search(term);const exact=products.filter(p=>p.code.toLocaleLowerCase()===term.toLocaleLowerCase()||(p.barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase());if(exact.length===1){add(exact[0]);return;}if(products.length===1 && (products[0].code.toLocaleLowerCase()===term.toLocaleLowerCase()||(products[0].barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase())){add(products[0]);}}
  function add(p:ProductOption){setCart(old=>old.some(x=>x.productId===p.id)?old:[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
  async function submit(){if(!cart.length)return;for(const x of cart)if(!Number.isFinite(x.quantity)||x.quantity<=0||Math.abs(x.quantity*1000-Math.round(x.quantity*1000))>1e-7){toast.error('Ingresá una cantidad mayor a cero, con hasta 3 decimales.');return;}setBusy(true);try{const r=await api<{number:string}>('/merchandise-requests',{method:'POST',body:{items:cart.map(x=>({productId:x.productId,quantity:x.quantity})),notes}});toast.success(`Pedido ${r.number} enviado`);setCart([]);setNotes('');void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
