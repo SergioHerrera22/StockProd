@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, setToken, setUnauthorizedHandler } from '../lib/api';
-import { hasPermission, type Role, type Permission } from '../lib/permissions';
+import { hasPermissionWithFallback, type Role, type Permission } from '../lib/permissions';
 import { stopForLogout, clearSharePersistence } from '../lib/gpsShare';
 
 export interface AuthUser {
@@ -66,6 +66,6 @@ export const useAuth = create<AuthState>((set, get) => {
       set({ user: null });
     },
 
-    can: (permission) => hasPermission(get().user?.role, permission, get().user?.permissions),
+    can: (permission) => hasPermissionWithFallback(get().user?.role, permission, get().user?.permissions),
   };
 });
