@@ -43,7 +43,7 @@ router.get(
       const rows = await c.query<{ total?: string }>(
         `SELECT p.id, p.code, p.barcode, p.name, p.description, p.brand, p.category_id,
                 c.name AS category_name, p.unit, p.min_stock, p.cost, p.reference_price,
-                p.is_active, p.created_at, p.updated_at, p.observation,
+                p.is_active, p.created_at, p.updated_at,
                 COUNT(*) OVER() AS total
          FROM products p LEFT JOIN categories c ON c.id = p.category_id
          ${where}
@@ -73,9 +73,9 @@ router.get(
        ${where} ORDER BY p.code`,
       params
     );
-    const header = 'codigo;barras;nombre;marca;categoria;unidad;stock_minimo;costo;precio_referencia;activo;observacion';
+    const header = 'codigo;barras;nombre;marca;categoria;unidad;stock_minimo;costo;precio_referencia;activo';
     const lines = rows.rows.map((r: Record<string, unknown>) =>
-      [r.code, r.barcode ?? '', r.name, r.brand ?? '', r.category ?? '', r.unit, r.min_stock, r.cost ?? '', r.reference_price ?? '', r.is_active ? 'SI' : 'NO', r.observation ?? '']
+      [r.code, r.barcode ?? '', r.name, r.brand ?? '', r.category ?? '', r.unit, r.min_stock, r.cost ?? '', r.reference_price ?? '', r.is_active ? 'SI' : 'NO']
         .map((v) => String(v).replace(/;/g, ',').replace(/\n/g, ' '))
         .join(';')
     );
