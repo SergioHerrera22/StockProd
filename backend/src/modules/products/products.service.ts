@@ -18,6 +18,7 @@ export interface ProductInput {
   isActive?: boolean;
   supplierIds?: number[];
   primarySupplierId?: number | null;
+  observation?: string | null;
 }
 
 const UNIT_ENUM = ['UNIDAD', 'LITRO', 'KG', 'METRO', 'OTRO'];

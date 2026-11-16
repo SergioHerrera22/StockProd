@@ -41,6 +41,7 @@ export interface Product {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  observation: string | null;
 }
 
 export interface ProductStockRow {
