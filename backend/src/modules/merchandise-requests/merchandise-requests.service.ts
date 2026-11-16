@@ -7,7 +7,7 @@ import { hasPermission } from '../../lib/permissions';
 import { logger } from '../../lib/logger';
 import { createAlert } from '../../services/alerts.service';
 
-type RequestItem = { productId: number; quantity: number; observation?: string };
+type RequestItem = { productId: number; quantity: number };
 async function assertWarehouseManager(user: AuthUser, c?: PoolClient) { if(user.role==='ADMIN') return; if(!hasPermission(user.role,'merchandise_requests.manage',user.permissions)) throw ApiError.forbidden(); const rows=c ? await c.query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true") : await query("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true"); if(rows.rows.length!==1 || Number(user.locationId)!==Number(rows.rows[0].id)) throw ApiError.forbidden('Solo el encargado del Depósito Central puede gestionar todos los pedidos.'); }
 async function centralWarehouseId(c: PoolClient): Promise<number> {
   const r = await c.query<{id:number}>("SELECT id FROM locations WHERE type='DEPOSITO' AND is_active=true ORDER BY id");
@@ -51,16 +51,15 @@ export async function getMerchandiseRequest(user: AuthUser, id: number) {
 export async function createMerchandiseRequest(user: AuthUser, items: RequestItem[], notes?: string, ip?:string) {
   if(!user.locationId) throw ApiError.forbidden('Tu usuario no tiene una sucursal asignada.');
   if(user.role==='TRANSPORTE') throw ApiError.forbidden();
-  const merged=new Map<number,{quantity:number,observation:string}>();
+  const merged=new Map<number,number>();
   for(const it of items){
     const scaled=it.quantity*1000;
     if(!Number.isInteger(it.productId)||it.productId<=0||!Number.isFinite(it.quantity)||it.quantity<=0||it.quantity>99999999999.999||Math.abs(scaled-Math.round(scaled))>1e-7)
       throw ApiError.badRequest('Cada producto debe tener una cantidad mayor a cero y con un máximo de 3 decimales.');
-    const total=(merged.get(it.productId)||{quantity:0,observation:''}).quantity+it.quantity;
+    const total=(merged.get(it.productId)||0)+it.quantity;
     if(!Number.isFinite(total)||Math.abs(total*1000-Math.round(total*1000))>1e-7)
       throw ApiError.badRequest('La cantidad acumulada supera la precisión permitida.');
-    const obs=(merged.get(it.productId)||{quantity:0,observation:''}).observation||it.observation||'';
-    merged.set(it.productId,{quantity:total,observation:obs});
+    merged.set(it.productId,total);
   }
   if(!merged.size) throw ApiError.badRequest('Agregá al menos un producto.');
   return withTx(async c=>{
@@ -75,10 +74,8 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
       VALUES ('PENDIENTE',$1,$2,$3,$4) RETURNING id`,[origin,user.locationId,user.id,notes?.trim()||null]);
     const id=ins.rows[0].id, number='PED-'+String(id).padStart(7,'0');
     await c.query('UPDATE merchandise_requests SET number=$1 WHERE id=$2',[number,id]);
-    const obsArray=ids.map((id)=>merged.get(id)?.observation ?? '');
-    const qtyArray=ids.map((id)=>merged.get(id)?.quantity ?? 0);
-    await c.query(`INSERT INTO merchandise_request_items(request_id,product_id,quantity_requested,observation)
-      SELECT x.p,x.q,x.o FROM unnest($2::int[],$3::numeric[],$4::text[]) AS x(p,q,o)`,[id,ids,qtyArray,obsArray]);
+    await c.query(`INSERT INTO merchandise_request_items(request_id,product_id,quantity_requested)
+      SELECT $1,p,q FROM unnest($2::int[],$3::numeric[]) AS x(p,q)`,[id,ids,[...merged.values()]]);
     await createAlert({
       code: 'NEW_MERCHANDISE_REQUEST',
       severity: 'INFO',
