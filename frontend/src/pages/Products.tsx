@@ -379,7 +379,7 @@ export default function Products() {
       supplierIds: linkedSuppliers.map((s) => s.id),
       primarySupplierId: String(linkedSuppliers.find((s) => s.is_primary)?.id ?? ''),
     });
-    setDuplicates[];
+    setDuplicates([]);
     setScanOpen(false);
     setModalOpen(true);
   }
