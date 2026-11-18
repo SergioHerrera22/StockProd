@@ -236,7 +236,7 @@ export default function LoadCenter() {
       <div className="flex flex-wrap gap-2"><select value={issue} onChange={(e)=>{setIssue(e.target.value as Issue);setQualityPage(1)}} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">{Object.entries(issueLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
         <SearchInput
               value={qualityQ}
-              onChange={(e)=>{setQualityQ(e.target.value);setQualityPage(1)}}
+              onChange={(value)=>{setQualityQ(value);setQualityPage(1)}}
               placeholder="Buscar por código o descripción"
               className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
@@ -259,7 +259,7 @@ export default function LoadCenter() {
 
     {tab==='labels' && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
       <div><h2 className="font-semibold">Impresión de etiquetas por lote</h2><p className="mt-1 text-sm text-slate-500">Buscá por código o descripción, seleccioná productos y generá etiquetas de 38 × 21 mm. No incluye productos sin código de barras.</p></div>
-      <form className="flex gap-2" onSubmit={e=>{e.preventDefault();void searchLabels()}}><SearchInput value={labelQ} onChange={e=>setLabelQ(e.target.value)} placeholder="Código o descripción" className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"/><button disabled={labelBusy} className="rounded-lg border px-4 py-2 text-sm">{labelBusy?'Buscando…':'Buscar'}</button></form>
+      <form className="flex gap-2" onSubmit={e=>{e.preventDefault();void searchLabels()}}><SearchInput value={labelQ} onChange={value=>setLabelQ(value)} placeholder="Código o descripción" className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"/><button disabled={labelBusy} className="rounded-lg border px-4 py-2 text-sm">{labelBusy?'Buscando…':'Buscar'}</button></form>
       {labelResults.length>0&&<div className="max-h-64 overflow-auto rounded border">{labelResults.map(p=><label key={p.id} className="flex items-center gap-3 border-b p-2 text-sm"><input type="checkbox" checked={selectedLabels.some(x=>x.id===p.id)} onChange={()=>toggleLabel(p)}/><span className="min-w-0 flex-1"><b className="block truncate">{p.name}</b><small className="font-mono text-slate-500">{p.code} · {p.barcode??'Sin barras'}</small></span>{!p.barcode&&<small className="text-amber-700">Sin barras</small>}</label>)}</div>}
       <div className="flex flex-wrap items-end justify-between gap-3 border-t pt-3"><div className="flex items-end gap-3"><label className="text-xs text-slate-500">Copias por producto<input type="number" min="1" max="20" value={labelCopies} onChange={e=>setLabelCopies(Math.max(1,Math.min(20,Number(e.target.value)||1)))} className="mt-1 block w-20 rounded border px-2 py-2 text-sm"/></label><p className="text-xs text-slate-500">{selectedCount} seleccionados · {readyLabels} listos para imprimir</p></div><button disabled={!readyLabels} onClick={printBatchLabels} className="rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Imprimir lote</button></div>
     </section>}
