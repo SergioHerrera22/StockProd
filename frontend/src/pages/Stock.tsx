@@ -258,7 +258,7 @@ export default function StockPage() {
         <SearchInput
           placeholder="Buscar producto…"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(value) => setQ(value)}
           className="min-w-[200px] flex-1 sm:max-w-xs"
         />
       </div>
