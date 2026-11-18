@@ -5,7 +5,7 @@ import { asyncH } from '../../middleware/errorHandler';
 import { idempotent } from '../../middleware/idempotency';
 import { pathId, strParam } from '../../lib/pagination';
 import { query } from '../../db/pool';
-import { createMerchandiseRequest, getMerchandiseRequest, listMerchandiseRequests, setMerchandiseRequestStatus } from './merchandise-requests.service';
+import { createMerchandiseRequest, getMerchandiseRequest, listMerchandiseRequests, saveWarehouseObservation, setMerchandiseRequestStatus } from './merchandise-requests.service';
 const router=Router(); router.use(authRequired);
 const quantitySchema=z.number().finite().positive().max(99999999999.999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<1e-7,'La cantidad admite hasta 3 decimales.');
 const itemsSchema=z.array(z.object({productId:z.number().int().positive(),quantity:quantitySchema})).min(1).max(300);
@@ -21,6 +21,10 @@ router.get('/products',requirePerm('merchandise_requests.use'),asyncH(async(req,
 router.get('/',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>res.json({requests:await listMerchandiseRequests(req.user!,strParam(req.query.status))})));
 router.get('/:id',requirePerm('merchandise_requests.use'),asyncH(async(req,res)=>res.json({request:await getMerchandiseRequest(req.user!,pathId(req.params.id))})));
 router.post('/',requirePerm('merchandise_requests.use'),idempotent(asyncH(async(req,res)=>{const d=z.object({items:itemsSchema,notes:z.string().max(1000).optional()}).parse(req.body);res.status(201).json(await createMerchandiseRequest(req.user!,d.items,d.notes,req.ip));})));
+router.patch('/:id/warehouse-observation',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>{
+ const d=z.object({observation:z.string().max(1000)}).parse(req.body);
+ res.json(await saveWarehouseObservation(req.user!,pathId(req.params.id),d.observation,req.ip));
+}));
 router.post('/:id/seen',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>res.json(await setMerchandiseRequestStatus(req.user!,pathId(req.params.id),'VISTO',undefined,req.ip))));
 router.post('/:id/preparing',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>res.json(await setMerchandiseRequestStatus(req.user!,pathId(req.params.id),'EN_PREPARACION',undefined,req.ip))));
 router.post('/:id/attended',requirePerm('merchandise_requests.manage'),asyncH(async(req,res)=>res.json(await setMerchandiseRequestStatus(req.user!,pathId(req.params.id),'ATENDIDO',undefined,req.ip))));
