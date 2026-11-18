@@ -1,4 +1,3 @@
-
 name: Deploy to Hostinger
 
 on:
@@ -225,6 +224,7 @@ jobs:
           cp -a frontend/dist/. public/
           test -f public/index.html
           test -d public/assets
+
       - name: Download package files
         uses: actions/download-artifact@v4
         with:
@@ -280,14 +280,35 @@ jobs:
           username: ${{ secrets.HOSTINGER_SSH_USER }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
           port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          script_stop: true
+          command_timeout: 10m
           script: |
-            cd ${{ secrets.HOSTINGER_SSH_DIR }}
+            set -eu
 
-            if [ -f "backend/scripts/migrate.mjs" ]; then
-              node backend/scripts/migrate.mjs
-            fi
+            BASE="/home/u843286633/domains/stock.roblespinturerias.com/hbuilds"
+            NODE="/opt/alt/alt-nodejs20/root/usr/bin/node"
+            ENV_FILE="$BASE/config/.env"
+            NODE_MODULES="$BASE/current/nodejs/node_modules"
 
-            pm2 restart robles-stock || true
+            echo "Verificando entorno de producción..."
+
+            test -x "$NODE"
+            test -r "$ENV_FILE"
+            test -f "$BASE/current/nodejs/backend/scripts/migrate.mjs"
+            test -f "$BASE/current/nodejs/backend/migrations/034_merchandise_request_warehouse_observation.sql"
+            test -f "$BASE/current/nodejs/backend/migrations/035_merchandise_request_missing_quantity.sql"
+
+            echo "Node:"
+            "$NODE" --version
+
+            cd "$BASE/current/nodejs/backend"
+
+            export DOTENV_CONFIG_PATH="$ENV_FILE"
+
+            echo "Ejecutando migraciones con la configuración de Hostinger..."
+            "$NODE" -r "$NODE_MODULES/dotenv/config.js" scripts/migrate.mjs
+
+            echo "Migraciones ejecutadas correctamente."
 
       - name: Notify deployment success
         if: success()
