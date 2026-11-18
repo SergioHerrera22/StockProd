@@ -35,9 +35,11 @@ export async function listMerchandiseRequests(user: AuthUser, status?: string) {
 }
 export async function getMerchandiseRequest(user: AuthUser, id: number) {
   return withTx(async c => {
-    const r=await c.query(`SELECT r.*, src.name origin_name,dst.name destination_name,u.full_name created_by_name
+    const r=await c.query(`SELECT r.*, src.name origin_name,dst.name destination_name,u.full_name created_by_name,
+      hu.full_name warehouse_observation_by_name
       FROM merchandise_requests r JOIN locations src ON src.id=r.origin_location_id
       JOIN locations dst ON dst.id=r.destination_location_id JOIN users u ON u.id=r.created_by
+      LEFT JOIN users hu ON hu.id=r.warehouse_observation_by
       WHERE r.id=$1`,[id]);
     const row=r.rows[0]; if(!row) throw ApiError.notFound('Pedido no encontrado');
     const manager=hasPermission(user.role,'merchandise_requests.manage',user.permissions);
@@ -91,6 +93,30 @@ export async function createMerchandiseRequest(user: AuthUser, items: RequestIte
     return {id,number,status:'PENDIENTE'};
   });
 }
+export async function saveWarehouseObservation(user: AuthUser, id: number, observation: string, ip?: string) {
+  await assertWarehouseManager(user);
+  return withTx(async c => {
+    const current = await c.query<{ status: string; warehouse_observation: string | null }>(
+      'SELECT status, warehouse_observation FROM merchandise_requests WHERE id=$1 FOR UPDATE', [id]
+    );
+    if (!current.rows[0]) throw ApiError.notFound('Pedido no encontrado');
+    if (!['PENDIENTE','VISTO','EN_PREPARACION'].includes(current.rows[0].status)) {
+      throw ApiError.conflict('No se puede modificar la observación de un pedido resuelto.');
+    }
+    const clean = observation.trim();
+    await c.query(
+      'UPDATE merchandise_requests SET warehouse_observation=$1, warehouse_observation_by=$2, warehouse_observation_at=now(), updated_at=now() WHERE id=$3',
+      [clean || null, user.id, id]
+    );
+    await writeAudit(c, {
+      userId: user.id, action: 'MERCHANDISE_REQUEST_WAREHOUSE_OBSERVATION',
+      entity: 'merchandise_request', entityId: id,
+      details: { previous: current.rows[0].warehouse_observation, observation: clean || null }, ip
+    });
+    return { ok: true, warehouseObservation: clean || null };
+  });
+}
+
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'VISTO'|'EN_PREPARACION'|'ATENDIDO'|'RECHAZADO',reason?:string,ip?:string){
  let stage='validar encargado de depósito';
   try {
