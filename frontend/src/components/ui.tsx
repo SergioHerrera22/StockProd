@@ -1,5 +1,5 @@
 import {
-  createContext, forwardRef, useContext, useEffect, useRef, useState,
+  createContext, forwardRef, useContext, useEffect, useImperativeHandle, useRef, useState,
   type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode,
   type SelectHTMLAttributes, type TextareaHTMLAttributes,
 } from 'react';
@@ -42,17 +42,73 @@ const inputCls = `w-full rounded-lg border border-slate-300 bg-white px-3 py-2 t
   disabled:bg-slate-100 disabled:text-slate-500`;
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
-  function Input(props, ref) {
-    return <input ref={ref} {...props} className={`${inputCls} ${props.className ?? ''}`} />;
+  function Input({ className = '', type = 'text', onChange, value, defaultValue, enterKeyHint, inputMode, ...props }, forwardedRef) {
+    const inputRef = useRef<HTMLInputElement>(null);
+    const [currentValue, setCurrentValue] = useState(String(value ?? defaultValue ?? ''));
+    useImperativeHandle(forwardedRef, () => inputRef.current as HTMLInputElement);
+    useEffect(() => {
+      if (value !== undefined) setCurrentValue(String(value ?? ''));
+    }, [value]);
+    const clearable = ['text', 'search', 'email', 'url', 'tel', 'password'].includes(type);
+    const clear = () => {
+      const el = inputRef.current;
+      if (!el) return;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(el, '');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      setCurrentValue('');
+      el.focus();
+    };
+    return (
+      <div className={"relative w-full " + className}>
+        <input
+          ref={inputRef}
+          {...props}
+          type={type}
+          value={value}
+          defaultValue={defaultValue}
+          onChange={(event) => { setCurrentValue(event.currentTarget.value); onChange?.(event); }}
+          enterKeyHint={enterKeyHint ?? (type === 'text' || type === 'search' ? 'search' : undefined)}
+          inputMode={inputMode ?? (type === 'text' || type === 'search' ? 'search' : undefined)}
+          className={inputCls + ' ' + (clearable ? 'pr-10 ' : '') + className}
+        />
+        {clearable && currentValue.length > 0 && !props.disabled && (
+          <button type="button" aria-label="Borrar contenido" title="Borrar contenido" onClick={clear}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-200">✕</button>
+        )}
+      </div>
+    );
   }
 );
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} className={`${inputCls} ${props.className ?? ''}`} />;
+  return <select {...props} className={inputCls + ' ' + (props.className ?? '')} />;
 }
 
-export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={`${inputCls} ${props.className ?? ''}`} />;
+export function Textarea({ className = '', onChange, value, defaultValue, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const [currentValue, setCurrentValue] = useState(String(value ?? defaultValue ?? ''));
+  useEffect(() => { if (value !== undefined) setCurrentValue(String(value ?? '')); }, [value]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const clear = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    setter?.call(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    setCurrentValue('');
+    el.focus();
+  };
+  return (
+    <div className={"relative w-full " + className}>
+      <textarea ref={textareaRef} {...props} value={value} defaultValue={defaultValue}
+        onChange={(event) => { setCurrentValue(event.currentTarget.value); onChange?.(event); }}
+        className={inputCls + ' ' + (currentValue.length ? 'pr-10 ' : '') + className} />
+      {currentValue.length > 0 && !props.disabled && (
+        <button type="button" aria-label="Borrar contenido" title="Borrar contenido" onClick={clear}
+          className="absolute right-2 top-2 rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-200">✕</button>
+      )}
+    </div>
+  );
 }
 
 export function Field({ label, hint, required, children, className = '' }: {
