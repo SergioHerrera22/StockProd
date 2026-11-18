@@ -40,7 +40,50 @@ export default function MerchandiseRequests(){
   {q&&<Button size="sm" variant="secondary" onClick={()=>void search(q)}>Buscar</Button>}
   {results.length>0&&<div className="max-h-64 divide-y overflow-y-auto rounded-lg border">{results.map(p=><button key={p.id} onClick={()=>add(p)} className="flex w-full items-center justify-between p-3 text-left hover:bg-slate-50"><span><b>{p.name}</b><small className="block text-slate-500">{p.code}{p.brand?' · '+p.brand:''}</small></span><span className="text-sm text-brand-700">Seleccionar</span></button>)}</div>}
   <h3 className="font-semibold">Productos del pedido ({cart.length})</h3>
-  {cart.length===0?<p className="rounded-lg bg-slate-50 p-5 text-center text-sm text-slate-500">Escaneá o buscá un producto para comenzar.</p>:<div className="divide-y rounded-lg border">{cart.map(x=><div key={x.productId} className="flex flex-wrap items-center justify-between gap-2 p-3"><div><b>{x.name}</b><small className="block text-slate-500">{x.code}</small></div><div className="flex items-center gap-2"><Input type="number" min="0.001" step="0.001" className="w-24" value={x.quantity} onChange={e=>setCart(old=>old.map(y=>y.productId===x.productId?{...y,quantity:Number(e.target.value)}:y))}/><Button size="sm" variant="ghost" onClick={()=>setCart(old=>old.filter(y=>y.productId!==x.productId))}>Quitar</Button></div><small className="w-full text-slate-500">Cantidad en {x.unit} · admite hasta 3 decimales</small></div>)}</div>
+  {cart.length === 0 ? (
+    <p className="rounded-lg bg-slate-50 p-5 text-center text-sm text-slate-500">
+      Escaneá o buscá un producto para comenzar.
+    </p>
+  ) : (
+    <div className="divide-y rounded-lg border">
+      {cart.map((x) => (
+        <div key={x.productId} className="flex flex-wrap items-center justify-between gap-2 p-3">
+          <div>
+            <b>{x.name}</b>
+            <small className="block text-slate-500">{x.code}</small>
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min="0.001"
+              step="0.001"
+              className="w-24"
+              value={x.quantity}
+              onChange={(e) =>
+                setCart((old) =>
+                  old.map((y) =>
+                    y.productId === x.productId
+                      ? { ...y, quantity: Number(e.target.value) }
+                      : y
+                  )
+                )
+              }
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setCart((old) => old.filter((y) => y.productId !== x.productId))}
+            >
+              Quitar
+            </Button>
+          </div>
+          <small className="w-full text-slate-500">
+            Cantidad en {x.unit} · admite hasta 3 decimales
+          </small>
+        </div>
+      ))}
+    </div>
+  )}
   <Field label="Observaciones (opcional)"><Textarea rows={2} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Aclaraciones para el depósito…"/></Field>
   <Button className="w-full" disabled={!cart.length||busy} loading={busy} onClick={()=>void submit()}>Enviar pedido al Depósito Central</Button>
  </Card>}
