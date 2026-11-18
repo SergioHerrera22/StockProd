@@ -5,7 +5,7 @@ import { exportCSV, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Category, Product, ProductStockRow } from '../types';
 import {
-  Badge, Button, Card, Field, FormRow, SearchInput, Modal, PageHeader, Select,
+  Badge, Button, Card, Field, FormRow, Input, SearchInput, Modal, PageHeader, Select,
   Spinner, Textarea, useConfirm,
 } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
@@ -867,7 +867,7 @@ export default function Products() {
           <SearchInput
             placeholder="Buscar por nombre, código, marca o barras…"
             value={q}
-            onChange={(e) => { setQ(e.target.value); setPage(1); }}
+            onChange={(value) => { setQ(value); setPage(1); }}
             className="min-w-[220px] flex-1"
           />
           <Button
