@@ -40,6 +40,21 @@ function Protected({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function RequireAnyPerm({ perms, children }: { perms: Permission[]; children: ReactNode }) {
+  const user = useAuth((s) => s.user);
+  if (!user) return <Navigate to="/login" replace />;
+  if (!perms.some((perm) => hasPermissionWithFallback(user.role, perm, user.permissions))) {
+    return (
+      <div className="rounded-xl bg-white p-8 text-center shadow-sm">
+        <div className="text-4xl">🔒</div>
+        <h2 className="mt-2 font-semibold text-slate-700">Sin permisos</h2>
+        <p className="text-sm text-slate-400">Tu rol no tiene acceso a esta sección.</p>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
 function RequirePerm({ perm, children }: { perm: Permission; children: ReactNode }) {
   const user = useAuth((s) => s.user);
   if (!user) return <Navigate to="/login" replace />;
@@ -81,7 +96,7 @@ export default function App() {
               <Route path="proveedores" element={<RequirePerm perm="suppliers.manage"><Suppliers /></RequirePerm>} />
               <Route path="entradas" element={<RequirePerm perm="entries.read"><Entries /></RequirePerm>} />
               <Route path="transferencias" element={<RequirePerm perm="transfers.read"><Transfers /></RequirePerm>} />
-              <Route path="pedir-mercaderia" element={<RequirePerm perm="merchandise_requests.use"><MerchandiseRequests /></RequirePerm>} />
+              <Route path="pedir-mercaderia" element={<RequireAnyPerm perms={["merchandise_requests.use", "merchandise_requests.manage"]}><MerchandiseRequests /></RequireAnyPerm>} />
               <Route path="inventarios" element={<RequirePerm perm="counts.read"><Counts /></RequirePerm>} />
               <Route path="movimientos" element={<RequirePerm perm="movements.read"><Movements /></RequirePerm>} />
               <Route path="reportes" element={<RequirePerm perm="reports.read"><Reports /></RequirePerm>} />

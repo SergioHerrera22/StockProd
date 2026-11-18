@@ -13,6 +13,7 @@ interface NavItem {
   label: string;
   icon: string;
   perm: Permission;
+  orPerm?: Permission;
   /** Muestra contador de pendientes (endpoint /alerts/pending-count). */
   badge?: boolean;
 }
@@ -27,7 +28,7 @@ const NAV: NavItem[] = [
   { to: '/proveedores', label: 'Mis proveedores', icon: '🏢', perm: 'suppliers.manage' },
   { to: '/entradas', label: 'Ingresar mercadería', icon: '📥', perm: 'entries.read' },
   { to: '/transferencias', label: 'Transferencia entre depósitos', icon: '🔁', perm: 'transfers.read' },
-  { to: '/pedir-mercaderia', label: 'Ingresar mercadería', icon: '📤', perm: 'merchandise_requests.use' },
+  { to: '/pedir-mercaderia', label: 'Pedidos de mercadería', icon: '📤', perm: 'merchandise_requests.use', orPerm: 'merchandise_requests.manage' },
   { to: '/repartos', label: 'Envíos/Reparto', icon: '🚚', perm: 'tracking.read' },
   { to: '/mi-reparto', label: 'Mi Reparto', icon: '👕', perm: 'tracking.gps' },
   { to: '/entregas-atrasos', label: 'Atrasos', icon: '⏳', perm: 'tracking.read' },
@@ -116,7 +117,7 @@ export function Layout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const items = NAV.filter((n) => can(n.perm));
+  const items = NAV.filter((n) => can(n.perm) || (!!n.orPerm && can(n.orPerm)));
 
   const gpsVisible = gps.state === 'active' || gps.state === 'paused' || gps.state === 'starting';
 
