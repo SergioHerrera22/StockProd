@@ -95,8 +95,16 @@ async function main() {
   ok(dup.status === 409, 'Rechaza código duplicado (409)');
 
   const prodDetail = await api('GET', `/products/${pid}`, { token: T });
-  ok(prodDetail.json.stock.length >= 4, 'Detalle de producto muestra stock por ubicación');
-  ok(prodDetail.json.stock.every((s) => Number(s.quantity) === 0), 'Stock inicial en cero en todas las ubicaciones');
+  const productStock = prodDetail.json?.stock;
+  const productDetailOk = prodDetail.status === 200 && Array.isArray(productStock);
+  ok(
+    productDetailOk && productStock.length >= 4,
+    `Detalle de producto muestra stock por ubicación (HTTP ${prodDetail.status}${productDetailOk ? `, ubicaciones=${productStock.length}` : `, respuesta=${JSON.stringify(prodDetail.json)}`})`
+  );
+  ok(
+    productDetailOk && productStock.every((s) => Number(s.quantity) === 0),
+    'Stock inicial en cero en todas las ubicaciones'
+  );
 
   // ---------- Importación tolerante al formato ----------
   console.log('[3b] Importación con espacios, filas vacías y duplicados');
