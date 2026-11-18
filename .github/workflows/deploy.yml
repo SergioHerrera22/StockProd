@@ -219,6 +219,12 @@ jobs:
           name: frontend-dist
           path: frontend/dist/
 
+      - name: Prepare frontend for deployment
+        run: |
+          mkdir -p public
+          cp -a frontend/dist/. public/
+          test -f public/index.html
+          test -d public/assets
       - name: Download package files
         uses: actions/download-artifact@v4
         with:
