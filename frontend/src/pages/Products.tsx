@@ -1030,7 +1030,7 @@ export default function Products() {
             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">1. Identificar producto</label>
             <form onSubmit={(e) => { e.preventDefault(); void findBatchProduct(); }}>
               <div className="flex gap-2">
-                <SearchInput ref={batchLookupRef} value={batchLookup} onChange={(e) => setBatchLookup(e.target.value)}
+                <SearchInput ref={batchLookupRef} value={batchLookup} onChange={(value) => setBatchLookup(value)}
                   placeholder="Escaneá el código interno o escribí código/nombre…" autoComplete="off"
                   disabled={batchSearching || batchSaving || !!batchProduct} />
                 <Button type="submit" loading={batchSearching} disabled={!batchLookup.trim() || !!batchProduct}>Buscar</Button>
