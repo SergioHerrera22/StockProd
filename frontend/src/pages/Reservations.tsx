@@ -351,7 +351,7 @@ export default function ReservationsPage() {
         <SearchInput
           placeholder="Buscar por orden, código o cliente…"
           value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(1); }}
+          onChange={(value) => { setQ(value); setPage(1); }}
           className="input w-64"
         />
       </div>
