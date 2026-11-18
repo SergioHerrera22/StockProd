@@ -117,6 +117,41 @@ export async function saveWarehouseObservation(user: AuthUser, id: number, obser
   });
 }
 
+export async function saveMissingQuantity(user: AuthUser, requestId: number, itemId: number, missingQuantity: number, ip?: string) {
+  await assertWarehouseManager(user);
+  if (!Number.isFinite(missingQuantity) || missingQuantity < 0 || missingQuantity > 99999999999.999 ||
+      Math.abs(missingQuantity * 1000 - Math.round(missingQuantity * 1000)) > 1e-7) {
+    throw ApiError.badRequest('La cantidad faltante debe ser mayor o igual a cero y admitir hasta 3 decimales.');
+  }
+  return withTx(async c => {
+    const request = await c.query<{status:string}>(
+      'SELECT status FROM merchandise_requests WHERE id=$1 FOR UPDATE', [requestId]
+    );
+    if (!request.rows[0]) throw ApiError.notFound('Pedido no encontrado');
+    if (!['PENDIENTE','VISTO','EN_PREPARACION'].includes(request.rows[0].status)) {
+      throw ApiError.conflict('No se puede modificar un pedido resuelto.');
+    }
+    const item = await c.query<{quantity_requested:string;quantity_missing:string}>(
+      'SELECT quantity_requested, quantity_missing FROM merchandise_request_items WHERE id=$1 AND request_id=$2 FOR UPDATE',
+      [itemId, requestId]
+    );
+    if (!item.rows[0]) throw ApiError.notFound('Producto del pedido no encontrado');
+    if (missingQuantity > Number(item.rows[0].quantity_requested)) {
+      throw ApiError.badRequest('La cantidad faltante no puede superar la cantidad solicitada.');
+    }
+    await c.query(
+      'UPDATE merchandise_request_items SET quantity_missing=$1 WHERE id=$2 AND request_id=$3',
+      [missingQuantity, itemId, requestId]
+    );
+    await writeAudit(c, {
+      userId:user.id, action:'MERCHANDISE_REQUEST_MISSING_QUANTITY',
+      entity:'merchandise_request_item', entityId:itemId,
+      details:{requestId, previous:item.rows[0].quantity_missing, quantityMissing:missingQuantity}, ip
+    });
+    return {ok:true, quantityMissing:missingQuantity};
+  });
+}
+
 export async function setMerchandiseRequestStatus(user: AuthUser,id:number,status:'VISTO'|'EN_PREPARACION'|'ATENDIDO'|'RECHAZADO',reason?:string,ip?:string){
  let stage='validar encargado de depósito';
   try {
