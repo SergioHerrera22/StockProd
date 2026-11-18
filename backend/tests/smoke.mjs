@@ -85,7 +85,14 @@ async function main() {
     cost: 1000,
   };
   const created = await api('POST', '/products', { token: T, body: prodBody });
-  ok(created.status === 201 && created.json.id, 'Producto creado');
+  const productCreated = created.status === 201 && Number.isInteger(created.json?.id);
+  ok(
+    productCreated,
+    `Producto creado (HTTP ${created.status}; respuesta=${JSON.stringify(created.json)})`
+  );
+  if (!productCreated) {
+    throw new Error('Se detiene smoke: no se creó el producto; revisar la respuesta HTTP anterior antes de probar duplicados, detalle o entradas.');
+  }
   const pid = created.json.id;
   const supplierCreated = await api('POST', '/suppliers', { token: T, body: { name: `Proveedor Smoke ${stamp}` } });
   const supplierId = supplierCreated.json?.id;
@@ -95,8 +102,16 @@ async function main() {
   ok(dup.status === 409, 'Rechaza código duplicado (409)');
 
   const prodDetail = await api('GET', `/products/${pid}`, { token: T });
-  ok(prodDetail.json.stock.length >= 4, 'Detalle de producto muestra stock por ubicación');
-  ok(prodDetail.json.stock.every((s) => Number(s.quantity) === 0), 'Stock inicial en cero en todas las ubicaciones');
+  const productStock = prodDetail.json?.stock;
+  const productDetailOk = prodDetail.status === 200 && Array.isArray(productStock);
+  ok(
+    productDetailOk && productStock.length >= 4,
+    `Detalle de producto muestra stock por ubicación (HTTP ${prodDetail.status}${productDetailOk ? `, ubicaciones=${productStock.length}` : `, respuesta=${JSON.stringify(prodDetail.json)}`})`
+  );
+  ok(
+    productDetailOk && productStock.every((s) => Number(s.quantity) === 0),
+    'Stock inicial en cero en todas las ubicaciones'
+  );
 
   // ---------- Importación tolerante al formato ----------
   console.log('[3b] Importación con espacios, filas vacías y duplicados');
@@ -135,7 +150,14 @@ async function main() {
     token: T,
     body: { locationId: dep.id, type: 'COMPRA', supplierId, items: [{ productId: pid, quantity: 100, unitCost: 1000 }] },
   });
-  ok(entry.status === 201 && entry.json.number.startsWith('I-'), `Entrada borrador ${entry.json?.number} creada`);
+  const entryCreated = entry.status === 201 && typeof entry.json?.id === 'number' && typeof entry.json?.number === 'string';
+  ok(
+    entryCreated,
+    `Entrada borrador creada (HTTP ${entry.status}; respuesta=${JSON.stringify(entry.json)})`
+  );
+  if (!entryCreated) {
+    throw new Error('Se detiene smoke: no se creó la entrada; no se deben ejecutar confirmación ni consultas dependientes.');
+  }
   const linksBeforeConfirm = await api('GET', `/products/${pid}/suppliers`, { token: T });
   ok(linksBeforeConfirm.status === 200 && !linksBeforeConfirm.json.suppliers.some((s) => s.id === supplierId), 'La compra en borrador todavía no asocia el proveedor al producto');
   // Confirmar con el encargado (segregación de funciones: admin no puede confirmar su propia entrada)

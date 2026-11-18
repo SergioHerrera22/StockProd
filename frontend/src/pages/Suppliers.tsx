@@ -1,6 +1,6 @@
 import { useCallback,useEffect,useMemo,useState } from 'react';
 import { api } from '../lib/api';
-import { Badge,Button,Card,Field,SearchInput,Modal,PageHeader,Textarea } from '../components/ui';
+import { Badge,Button,Card,Field,Input,SearchInput,Modal,PageHeader,Textarea } from '../components/ui';
 import { useToast } from '../components/Toast';
 import type { Supplier } from '../types';
 
@@ -86,7 +86,7 @@ export default function Suppliers(){
 
   <Card>
    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-semibold">Asignación de proveedores por marca</h2><p className="mt-1 text-xs text-slate-500">Cada marca aparece una sola vez; al asignarla, todos sus productos activos quedan asociados al proveedor elegido.</p></div>
-    <SearchInput value={brandQuery} onChange={e=>setBrandQuery(e.target.value)} placeholder="Buscar marca…" className="max-w-xs"/>
+    <SearchInput value={brandQuery} onChange={value=>setBrandQuery(value)} placeholder="Buscar marca…" className="max-w-xs"/>
    </div>
    {loading?<p className="p-6 text-sm text-slate-500">Cargando marcas…</p>:visibleBrands.length===0?<p className="p-6 text-sm text-slate-500">No se encontraron marcas en el catálogo.</p>:
     <div className="divide-y divide-slate-100">{visibleBrands.map(b=><div key={b.brand} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,320px)_auto] md:items-center">

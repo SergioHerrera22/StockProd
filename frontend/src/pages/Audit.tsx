@@ -74,7 +74,7 @@ export default function Audit() {
           <SearchInput
             placeholder="Buscar acción (ej: DELIVERY)…"
             value={action}
-            onChange={(e) => { setAction(e.target.value); setPage(1); }}
+            onChange={(value) => { setAction(value); setPage(1); }}
             className="min-w-[200px] flex-1"
           />
           <Select value={entity} onChange={(e) => { setEntity(e.target.value); setPage(1); }} className="w-44">

@@ -288,30 +288,26 @@ export function Tabs<T extends string>({ tabs, value, onChange }: {
 }
 
 /* ============ Input de búsqueda con botón de limpiar ============ */
-export function SearchInput({
-  value,
-  onChange,
-  placeholder,
-  className = '',
-  ...rest
-}: {
+export const SearchInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'> & {
   value: string;
   onChange: (value: string) => void;
-  placeholder?: string;
-  className?: string;
-}) {
-  const [hasText, setHasText] = useState(false);
+}>(function SearchInput({ value, onChange, placeholder, className = '', ...rest }, ref) {
+  const [hasText, setHasText] = useState(value.trim() !== '');
+
+  useEffect(() => {
+    setHasText(value.trim() !== '');
+  }, [value]);
 
   return (
     <div className={`relative w-full ${className}`}>
       <input
+        ref={ref}
         value={value}
         onChange={(e) => {
-          const val = e.target.value;
-          onChange(val);
-          setHasText(val.trim() !== '');
+          const nextValue = e.target.value;
+          onChange(nextValue);
         }}
-        className={`${inputCls} ${hasText ? 'pl-12' : ''} ${rest.className ?? ''}`}
+        className={`${inputCls} ${hasText ? 'pl-12' : ''}`}
         placeholder={placeholder}
         {...rest}
       />
@@ -320,17 +316,14 @@ export function SearchInput({
           type="button"
           className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg border border-slate-200 p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:ring-offset-1"
           aria-label="Borrar búsqueda"
-          onClick={() => {
-            onChange('');
-            setHasText(false);
-          }}
+          onClick={() => onChange('')}
         >
           ✕
         </button>
       )}
     </div>
   );
-}
+});
 
 /* ============ Fila de formulario ============ */
 export function FormRow({ children, cols = 2 }: { children: ReactNode; cols?: 1 | 2 | 3 }) {

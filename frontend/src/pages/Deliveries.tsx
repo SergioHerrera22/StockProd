@@ -217,7 +217,7 @@ export default function Deliveries() {
           <SearchInput
             placeholder="Buscar por número o factura…"
             value={q}
-            onChange={(e) => { setQ(e.target.value); setPage(1); }}
+            onChange={(value) => { setQ(value); setPage(1); }}
             className="min-w-[200px] flex-1"
           />
           <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-40">

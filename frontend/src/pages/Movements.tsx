@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, downloadCsv, qs } from '../lib/api';
 import { exportCSV, fmtDateTime, fmtQty, todayISO } from '../lib/format';
 import type { Location, Movement } from '../types';
-import { Badge, Button, Card, SearchInput, PageHeader, Select } from '../components/ui';
+import { Badge, Button, Card, Input, SearchInput, PageHeader, Select } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
 
@@ -158,7 +158,7 @@ export default function Movements() {
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput placeholder="Producto, documento o motivo…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} className="min-w-[180px] flex-1" />
+          <SearchInput placeholder="Producto, documento o motivo…" value={q} onChange={(value) => { setQ(value); setPage(1); }} className="min-w-[180px] flex-1" />
           <Select value={locationId} onChange={(e) => { setLocationId(e.target.value); setPage(1); }} className="w-44">
             <option value="">Todas las ubicaciones</option>
             {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}

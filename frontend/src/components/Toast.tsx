@@ -35,7 +35,7 @@ const STYLES: Record<ToastType, { icon: string; cls: string }> = {
 function playBeep(frequency: number = 440, duration: number = 300): void {
   try {
     // Si ya existe un contexto, reutilízalo; de lo contrario, crear uno nuevo
-    let ctx: AudioContext | OscillatorNode | null = null;
+    let ctx: AudioContext | null = null;
     // Intentar obtener contexto existente o crear uno nuevo
     if ((window as any)._beepContext) {
       ctx = (window as any)._beepContext;
@@ -43,6 +43,10 @@ function playBeep(frequency: number = 440, duration: number = 300): void {
       ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
       (window as any)._beepContext = ctx;
     }
+
+    // TypeScript no puede garantizar que el contexto se haya inicializado
+    // en todas las ramas; salir si el navegador no pudo crearlo.
+    if (!ctx) return;
 
     // Crear oscilador
     const oscillator = ctx.createOscillator();

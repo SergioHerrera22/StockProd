@@ -4,7 +4,7 @@ import { fmtDateTime, fmtQty } from '../lib/format';
 import { useAuth } from '../store/auth';
 import type { Location, StockCount } from '../types';
 import {
-  Badge, Button, Card, Field, SearchInput, Modal, PageHeader, Select, Spinner, Textarea, useConfirm,
+  Badge, Button, Card, Field, Input, SearchInput, Modal, PageHeader, Select, Spinner, Textarea, useConfirm,
 } from '../components/ui';
 import { DataTable, type Column } from '../components/DataTable';
 import { useToast } from '../components/Toast';
@@ -245,7 +245,7 @@ export default function Counts() {
             <div className="sticky top-0 z-10 mb-3 space-y-2 bg-white pb-2">
               <SearchInput
                 value={countSearch}
-                onChange={(e) => setCountSearch(e.target.value)}
+                onChange={(value) => setCountSearch(value)}
                 placeholder="Buscar producto por código o descripción…"
                 aria-label="Buscar productos del inventario"
                 className="w-full"
