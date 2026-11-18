@@ -259,9 +259,6 @@ jobs:
             backend/.env.example
             frontend/.env.example
             backend/src/**
-            backend/migrations/**
-            backend/scripts/**
-            backend/tests/**
             backend/tsconfig.json
             frontend/src/**
             frontend/public/**
