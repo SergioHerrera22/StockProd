@@ -44,6 +44,10 @@ function playBeep(frequency: number = 440, duration: number = 300): void {
       (window as any)._beepContext = ctx;
     }
 
+    // TypeScript no puede garantizar que el contexto se haya inicializado
+    // en todas las ramas; salir si el navegador no pudo crearlo.
+    if (!ctx) return;
+
     // Crear oscilador
     const oscillator = ctx.createOscillator();
     const gainNode = ctx.createGain();
