@@ -60,7 +60,7 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
       el.focus();
     };
     return (
-      <div className="relative w-full">
+      <div className={"relative w-full " + className}>
         <input
           ref={inputRef}
           {...props}
@@ -99,7 +99,7 @@ export function Textarea({ className = '', onChange, value, defaultValue, ...pro
     el.focus();
   };
   return (
-    <div className="relative w-full">
+    <div className={"relative w-full " + className}>
       <textarea ref={textareaRef} {...props} value={value} defaultValue={defaultValue}
         onChange={(event) => { setCurrentValue(event.currentTarget.value); onChange?.(event); }}
         className={inputCls + ' ' + (currentValue.length ? 'pr-10 ' : '') + className} />
