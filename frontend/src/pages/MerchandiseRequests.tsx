@@ -9,13 +9,13 @@ import { useToast } from '../components/Toast';
 type Req={id:number;number:string;status:string;notes:string|null;created_at:string;destination_name:string;created_by_name:string;item_count:number};
 type ProductOption={id:number;code:string;barcode:string|null;name:string;brand:string|null;unit:string};
 type Item={productId:number;code:string;name:string;quantity:number;unit:string};
-type Detail=Req & {origin_name:string;warehouse_observation:string|null;warehouse_observation_by_name:string|null;warehouse_observation_at:string|null;items:Array<{id:number;product_id:number;quantity_requested:string;code:string;name:string;unit:string}>};
+type Detail=Req & {origin_name:string;warehouse_observation:string|null;warehouse_observation_by_name:string|null;warehouse_observation_at:string|null;items:Array<{id:number;product_id:number;quantity_requested:string;quantity_missing:string;code:string;name:string;unit:string}>};
 const stateLabel:Record<string,string>={PENDIENTE:'Pendiente',VISTO:'Visto',EN_PREPARACION:'Preparado',ATENDIDO:'Atendido',RECHAZADO:'Rechazado'};
 export default function MerchandiseRequests(){
  const {user,can}=useAuth(); const toast=useToast();
  const [q,setQ]=useState(''); const [results,setResults]=useState<ProductOption[]>([]); const [cart,setCart]=useState<Item[]>([]);
  const [notes,setNotes]=useState(''); const [rows,setRows]=useState<Req[]>([]); const [detail,setDetail]=useState<Detail|null>(null);
- const [busy,setBusy]=useState(false); const [warehouseObservation,setWarehouseObservation]=useState('');
+ const [busy,setBusy]=useState(false); const [warehouseObservation,setWarehouseObservation]=useState(''); const [missingValues,setMissingValues]=useState<Record<number,string>>({});
  const manager=can('merchandise_requests.manage');
  const load=useCallback(async()=>{try{const r=await api<{requests:Req[]}>('/merchandise-requests');setRows(r.requests);}catch(e){toast.error((e as Error).message);}},[]);
  useEffect(()=>{void load();},[load]);
@@ -29,7 +29,22 @@ export default function MerchandiseRequests(){
  async function addByCode(code:string){const term=code.trim();setQ(term);const products=await search(term);const exact=products.filter(p=>p.code.toLocaleLowerCase()===term.toLocaleLowerCase()||(p.barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase());if(exact.length===1){add(exact[0]);return;}if(products.length===1 && (products[0].code.toLocaleLowerCase()===term.toLocaleLowerCase()||(products[0].barcode||'').toLocaleLowerCase()===term.toLocaleLowerCase())){add(products[0]);}}
  function add(p:ProductOption){setCart(old=>old.some(x=>x.productId===p.id)?old:[...old,{productId:p.id,code:p.code,name:p.name,quantity:3,unit:p.unit}]);setResults([]);setQ('');}
  async function submit(){if(!cart.length)return;for(const x of cart)if(!Number.isFinite(x.quantity)||x.quantity<=0||Math.abs(x.quantity*1000-Math.round(x.quantity*1000))>1e-7){toast.error('Ingresá una cantidad mayor a cero, con hasta 3 decimales.');return;}setBusy(true);try{const r=await api<{number:string}>('/merchandise-requests',{method:'POST',body:{items:cart.map(x=>({productId:x.productId,quantity:x.quantity})),notes}});toast.success(`Pedido ${r.number} enviado`);setCart([]);setNotes('');void load();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
- async function openDetail(r:Req){try{const d=await api<{request:Detail}>(`/merchandise-requests/${r.id}`);setDetail(d.request);setWarehouseObservation(d.request.warehouse_observation||'');}catch(e){toast.error((e as Error).message);}}
+ async function openDetail(r:Req){try{const d=await api<{request:Detail}>(`/merchandise-requests/${r.id}`);setDetail(d.request);setWarehouseObservation(d.request.warehouse_observation||'');setMissingValues(Object.fromEntries(d.request.items.map(i=>[i.id,String(i.quantity_missing??0)])));}catch(e){toast.error((e as Error).message);}}
+ async function saveMissing(itemId:number){
+  if(!detail)return;
+  const raw=missingValues[itemId]??'0';
+  const quantityMissing=Number(raw);
+  const item=detail.items.find(i=>i.id===itemId);
+  if(!item||!Number.isFinite(quantityMissing)||quantityMissing<0||quantityMissing>Number(item.quantity_requested)){
+   toast.error('La cantidad faltante debe estar entre cero y la cantidad solicitada.');return;
+  }
+  setBusy(true);
+  try{
+   await api('/merchandise-requests/'+detail.id+'/items/'+itemId+'/missing-quantity',{method:'PATCH',body:{quantityMissing}});
+   toast.success('Cantidad faltante guardada');
+   await openDetail({id:detail.id} as Req);
+  }catch(e){toast.error((e as Error).message);}finally{setBusy(false);}
+ }
  async function saveObservation(){
   if(!detail)return;
   setBusy(true);
@@ -108,7 +123,12 @@ export default function MerchandiseRequests(){
    <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
     <span>Código: {i.code}</span><span>Unidad: {i.unit}</span>
     <span className="font-semibold text-slate-800">Solicitado: {fmtQty(i.quantity_requested)} {i.unit}</span>
+    <span className="font-semibold text-amber-700">Faltante: {fmtQty(i.quantity_missing ?? '0')} {i.unit}</span>
    </div>
+   {manager&&['PENDIENTE','VISTO','EN_PREPARACION'].includes(detail.status)&&<div className="mt-3 flex items-end gap-2">
+    <Field label="Cantidad faltante"><Input type="number" min="0" max={i.quantity_requested} step="0.001" value={missingValues[i.id]??'0'} onChange={e=>setMissingValues(old=>({...old,[i.id]:e.target.value}))}/></Field>
+    <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void saveMissing(i.id)}>Guardar</Button>
+   </div>}
   </div>)}</div>
  </section>
  {detail.notes&&<div className="rounded-lg bg-slate-50 p-3 text-sm"><b>Observación de la sucursal</b><p className="mt-1 whitespace-pre-wrap">{detail.notes}</p></div>}
