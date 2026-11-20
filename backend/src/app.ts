@@ -97,20 +97,22 @@ export function createApp() {
   app.use('/api/tracking', trackingRoutes);
   app.use('/api/drivers', driversRoutes);
 
-  // En produccion sirve el frontend compilado
-  // Desarrollo: ../../frontend/dist | Hostinger (root): ./public
+  // En producción sirve el frontend compilado.
+  // Local: backend/dist -> frontend/dist.
+  // Hostinger: backend/dist -> public/ (el workflow copia frontend/dist dentro de nodejs/public).
+  // Se prioriza la ruta explícita de despliegue para no servir una carpeta public antigua.
   const candidates = [
-    path.resolve(__dirname, '../../frontend/dist'),  // dev local
-    path.resolve(__dirname, '../../../public'),      // Hostinger (dist/index.js -> root/public)
-    path.resolve(process.cwd(), 'public'),           // Hostinger (cwd = root)
+    path.resolve(__dirname, '../../frontend/dist'), // desarrollo local
+    path.resolve(__dirname, '../../public'),         // Hostinger: current/nodejs/public
+    path.resolve(process.cwd(), 'public'),           // fallback según el directorio de inicio de Node
   ];
-  const distDir = candidates.find((d) => fs.existsSync(d));
+  const distDir = candidates.find((d) => fs.existsSync(path.join(d, 'index.html')));
   if (config.isProd && distDir) {
-    // Assets de Vite con hash inmutable y el index.html siempre fresco
-    // (Cache-Control equivocado tendria a todos con la version vieja).
     app.use(express.static(distDir, {
       setHeaders: (res, filePath) => {
-        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        if (path.basename(filePath) === 'index.html') {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         }
       },
