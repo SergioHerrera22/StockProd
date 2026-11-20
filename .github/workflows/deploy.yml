@@ -243,34 +243,31 @@ jobs:
           ${{ secrets.HOSTINGER_FRONTEND_ENV }}
           EOF
 
-      - name: Deploy to Hostinger via FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+      - name: Validate deployment bundle
+        run: |
+          set -euo pipefail
+          test -s backend/dist/index.js
+          test -s backend/package.json
+          test -s backend/package-lock.json
+          test -s backend/scripts/migrate.mjs
+          test -d backend/migrations
+          test -s backend/.env
+          test -s public/index.html
+          test -d public/assets
+
+      - name: Deploy to Hostinger via SFTP (SSH)
+        uses: appleboy/scp-action@v0.1.7
         with:
-          server: ${{ secrets.HOSTINGER_FTP_HOST }}
-          username: ${{ secrets.HOSTINGER_FTP_USER }}
-          password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
-          server-dir: ${{ secrets.HOSTINGER_FTP_DIR }}/
-          local-dir: ./
-          exclude: |
-            **/.git*
-            **/.github*
-            **/node_modules/**
-            **/*.log
-            backend/.env.example
-            frontend/.env.example
-            backend/src/**
-            backend/tsconfig.json
-            frontend/src/**
-            frontend/public/**
-            frontend/vite.config.ts
-            frontend/tsconfig.json
-            frontend/tailwind.config.js
-            frontend/postcss.config.js
-            frontend/index.html
-            docs/**
-            README.md
-            .gitignore
-            *.md
+          host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          username: ${{ secrets.HOSTINGER_SSH_USER }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          source: "backend/dist/**,backend/package.json,backend/package-lock.json,backend/migrations/**,backend/scripts/**,backend/.env,public/**"
+          target: "/home/u843286633/domains/stock.roblespinturerias.com/hbuilds/current/nodejs"
+          strip_components: 0
+          overwrite: true
+          timeout: 2m
+          command_timeout: 10m
 
       - name: Run database migrations on Hostinger (via SSH)
         if: ${{ env.HOSTINGER_SSH_HOST != '' }}
