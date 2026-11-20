@@ -100,9 +100,10 @@ export function createApp() {
   // En produccion sirve el frontend compilado
   // Desarrollo: ../../frontend/dist | Hostinger (root): ./public
   const candidates = [
-    path.resolve(__dirname, '../../frontend/dist'),  // dev local
-    path.resolve(__dirname, '../../../public'),      // Hostinger (dist/index.js -> root/public)
-    path.resolve(process.cwd(), 'public'),           // Hostinger (cwd = root)
+    path.resolve(process.cwd(), 'public'),           // Hostinger: deployed frontend in current/nodejs/public
+    path.resolve(__dirname, '../../public'),         // Hostinger: backend/dist -> nodejs/public
+    path.resolve(__dirname, '../../frontend/dist'),  // desarrollo local
+    path.resolve(__dirname, '../../../public'),      // compatibilidad con instalaciones anteriores
   ];
   const distDir = candidates.find((d) => fs.existsSync(d));
   if (config.isProd && distDir) {
@@ -112,6 +113,11 @@ export function createApp() {
       setHeaders: (res, filePath) => {
         if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (path.basename(filePath) === 'index.html') {
+          // El HTML debe revalidarse siempre para descubrir los nuevos hashes de Vite.
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
         }
       },
     }));
